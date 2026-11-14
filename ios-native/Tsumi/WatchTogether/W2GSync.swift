@@ -229,11 +229,13 @@ enum W2GSync {
       if !alive { return W2GBadge(kind: .nosignal, text: "No signal") }
     }
 
+    if status.state == .idle { return W2GBadge(kind: .idle, text: "Not in the player") }
+    // v2.2: an independent member shows no drift (same order as sync.js).
+    if !status.following { return W2GBadge(kind: .independent, text: "Watching on their own") }
     switch status.state {
-    case .idle: return W2GBadge(kind: .idle, text: "Not in the player")
     case .loading: return W2GBadge(kind: .loading, text: "Loading")
     case .buffering: return W2GBadge(kind: .buffering, text: "Buffering")
-    case .playing, .paused: break
+    case .playing, .paused, .idle: break
     }
 
     // We are not watching: nothing to compare with, show what the member does.
@@ -272,6 +274,7 @@ enum W2GSync {
   ) -> W2GAutoSyncResult {
     let idle = W2GAutoSyncResult(memory: W2GAutoSyncMemory(streak: 0, lastSyncAt: memory.lastSyncAt), seekTo: nil)
     guard enabled, !isHost, let hostStatus, let local else { return idle }
+    guard hostStatus.following, local.following else { return idle }
     guard hostStatus.state == .playing, local.state == .playing else { return idle }
     guard hostStatus.mediaKey == local.mediaKey else { return idle }
 
@@ -306,6 +309,212 @@ enum W2GSync {
       return W2GHostTarget(time: lastPlayer.time + elapsed, paused: lastPlayer.paused, mediaKey: nil)
     }
     return nil
+  }
+
+  // MARK: - v2.1 source, presence, invite (sync.js "v2.1"), v2.2 independent watching
+
+  /// The same member and kind announces at most once every 5 s.
+  static let presenceDebounceMs: Double = 5_000
+  /// "is buffering…" once a buffering period lasts more than 8 s.
+  static let bufferingAnnounceMs: Double = 8_000
+  /// "lost connection" once "No signal" (no status, no pong) lasted 10 s: 10 s + 10 s without either.
+  static let lostConnectionMs: Double = noSignalMs + 10_000
+  /// A joined invite whose episode never loads is dropped after this long.
+  static let inviteJoinTTLMs: Double = 120_000
+
+  private static let watchingStates: [W2GPlaybackState] = [.loading, .playing, .paused]
+
+  /// `status.source`: extension / addon name, then the server label, joined with " · " (max 80 characters).
+  static func formatSource(_ parts: [String?]) -> String {
+    let kept = parts.compactMap { part -> String? in
+      guard let part else { return nil }
+      let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? nil : trimmed
+    }
+    return String(kept.joined(separator: " \u{00B7} ").prefix(80))
+  }
+
+  /// w2g.js mediaKey split: "mediaId:episode" or "mediaId:season:episode"; nil otherwise.
+  static func parseMediaKey(_ key: String) -> (mediaId: String, season: String?, episode: String)? {
+    guard !key.isEmpty else { return nil }
+    let parts = key.split(separator: ":", omittingEmptySubsequences: false).map { String($0) }
+    if parts.count == 2 { return (mediaId: parts[0], season: nil, episode: parts[1]) }
+    if parts.count == 3 { return (mediaId: parts[0], season: parts[1].isEmpty ? nil : parts[1], episode: parts[2]) }
+    return nil
+  }
+
+  private static func validPart(_ value: String?) -> Bool {
+    guard let value else { return false }
+    return !value.isEmpty && value != "undefined" && value != "null"
+  }
+
+  /// "Episode 5", or "S2 E5" when a season is known; nil without an episode number.
+  static func formatEpisode(season: String?, episode: String?) -> String? {
+    guard validPart(episode), let episode else { return nil }
+    if validPart(season), let season { return "S\(season) E\(episode)" }
+    return "Episode \(episode)"
+  }
+
+  /// Label of an episode (sync.js episodeLabelOf): "Episode 5" / "S2 E5".
+  static func episodeLabel(number: Int, season: Int?, localEpisode: Int?) -> String {
+    formatEpisode(season: season.map { String($0) }, episode: String(localEpisode ?? number)) ?? "Episode \(number)"
+  }
+
+  /// Label for "Alice switched to {label}": the episode of the new key, or "another title" when the media differs.
+  static func switchLabel(from previousKey: String, to newKey: String) -> String {
+    guard let next = parseMediaKey(newKey) else { return "another title" }
+    if let previous = parseMediaKey(previousKey), previous.mediaId != next.mediaId { return "another title" }
+    return formatEpisode(season: next.season, episode: next.episode) ?? "another title"
+  }
+
+  /// System line / notice of a presence change.
+  static func describePresence(_ event: W2GPresenceEvent, name: String) -> String {
+    switch event.kind {
+    case .started: return "\(name) started watching"
+    case .again: return "\(name) is watching again"
+    case .stopped: return "\(name) stopped watching"
+    case .switched: return "\(name) switched to \(event.detail.isEmpty ? "another title" : event.detail)"
+    case .source: return "\(name) changed source: \(event.detail)"
+    case .buffering: return "\(name) is buffering\u{2026}"
+    case .lost: return "\(name) lost connection"
+    case .independent: return "\(name) is watching on their own"
+    case .rejoined: return "\(name) is back in sync"
+    case .watching: return "\(name) is watching \(event.detail.isEmpty ? "another title" : event.detail)"
+    }
+  }
+
+  /// Presence announcements caused by a `status` received from another member (never for ourselves).
+  static func presenceAfterStatus(_ memory: W2GPresenceMemory, status: W2GStatus, now: Double) -> W2GPresenceStep {
+    let previous = memory.lastStatus
+    var events: [W2GPresenceEvent] = []
+    if let previous {
+      if status.state == .idle && previous.state != .idle {
+        events.append(W2GPresenceEvent(kind: .stopped))
+      }
+      if previous.state == .idle && watchingStates.contains(status.state) {
+        events.append(W2GPresenceEvent(kind: .again))
+      }
+      // v2.2: independent watching.
+      if previous.following && !status.following {
+        events.append(W2GPresenceEvent(kind: .independent))
+      } else if !previous.following && status.following {
+        events.append(W2GPresenceEvent(kind: .rejoined))
+      }
+      let previousKey = previous.mediaKey
+      let nextKey = status.mediaKey
+      if status.state != .idle && !previousKey.isEmpty && !nextKey.isEmpty && previousKey != nextKey {
+        if !status.following {
+          // v2.2: "Alice is watching {title · episode}" replaces "switched to".
+          let label = status.nowPlaying?.label ?? ""
+          events.append(W2GPresenceEvent(kind: .watching, detail: label.isEmpty ? switchLabel(from: previousKey, to: nextKey) : label))
+        } else {
+          events.append(W2GPresenceEvent(kind: .switched, detail: switchLabel(from: previousKey, to: nextKey)))
+        }
+      }
+      if previousKey == nextKey && !previous.source.isEmpty && !status.source.isEmpty && previous.source != status.source {
+        events.append(W2GPresenceEvent(kind: .source, detail: status.source))
+      }
+    } else if watchingStates.contains(status.state) {
+      // The first status after joining only says "started watching".
+      events.append(W2GPresenceEvent(kind: .started))
+    }
+    let buffering = status.state == .buffering
+    let continued = buffering && previous?.state == .buffering && memory.bufferingSince != nil
+    var next = memory
+    next.lastStatus = status
+    next.lostAnnounced = false
+    next.bufferingSince = buffering ? (continued ? memory.bufferingSince : now) : nil
+    next.bufferingAnnounced = continued ? memory.bufferingAnnounced : false
+    return debounced(next, events, now: now)
+  }
+
+  /// Time-based announcements, checked about once a second: long buffering, lost connection.
+  static func presenceTick(_ memory: W2GPresenceMemory, lastStatusAt: Double?, lastPongAt: Double?, now: Double) -> W2GPresenceStep {
+    guard let status = memory.lastStatus else { return W2GPresenceStep(memory: memory, events: []) }
+    var next = memory
+    var events: [W2GPresenceEvent] = []
+    if status.state == .buffering, let since = next.bufferingSince, !next.bufferingAnnounced, now - since > bufferingAnnounceMs {
+      next.bufferingAnnounced = true
+      events.append(W2GPresenceEvent(kind: .buffering))
+    }
+    let lastSignal = max(lastStatusAt ?? -Double.infinity, lastPongAt ?? -Double.infinity)
+    if !next.lostAnnounced && now - lastSignal >= lostConnectionMs {
+      next.lostAnnounced = true
+      events.append(W2GPresenceEvent(kind: .lost))
+    }
+    guard !events.isEmpty else { return W2GPresenceStep(memory: next, events: []) }
+    return debounced(next, events, now: now)
+  }
+
+  private static func debounced(_ memory: W2GPresenceMemory, _ events: [W2GPresenceEvent], now: Double) -> W2GPresenceStep {
+    var next = memory
+    var kept: [W2GPresenceEvent] = []
+    for event in events {
+      let key = event.kind.rawValue
+      if let last = next.lastAnnounced[key], now - last < presenceDebounceMs { continue }
+      next.lastAnnounced[key] = now
+      kept.append(event)
+    }
+    return W2GPresenceStep(memory: next, events: kept)
+  }
+
+  /// "Invite to watch" on a member row (sync.js canInvite): we play a media; the member is a v2 client that is
+  /// idle, on another episode, watching on its own, or without signal for 10 s; in `host` mode only the host invites.
+  static func canInvite(
+    selfWatching: Bool,
+    hasMedia: Bool,
+    mode: W2GMode,
+    isHost: Bool,
+    isSelf: Bool,
+    protocolVersion: Int?,
+    badge: W2GBadge.Kind,
+    status: W2GStatus?,
+    receivedAt: Double?,
+    now: Double
+  ) -> Bool {
+    guard selfWatching, hasMedia, !isSelf, (protocolVersion ?? 1) >= protocolVersion2 else { return false }
+    if mode == .host && !isHost { return false }
+    if status?.state == .idle || badge == .idle || badge == .other || badge == .independent { return true }
+    guard badge == .nosignal, status != nil, let receivedAt else { return false }
+    return now - receivedAt >= noSignalMs
+  }
+
+  private static let protocolVersion2 = 2
+
+  /// sync.js acceptsInvite: for us, not from us; anyone in `everyone` mode, the host only in `host` mode.
+  static func acceptsInvite(to: String?, selfId: String, senderId: String, hostId: String?, mode: W2GMode) -> Bool {
+    guard let to, to == selfId, senderId != selfId else { return false }
+    return mode != .host || senderId == hostId
+  }
+
+  /// sync.js inviteTarget: the host's expected position if it is on the same episode, else the inviter's time
+  /// plus the elapsed time when it was playing. `fromHost` tells which one was used.
+  static func inviteTarget(key: String, time: Double, paused: Bool, receivedAt: Double, host: W2GHostTarget?, now: Double) -> (time: Double, paused: Bool, fromHost: Bool) {
+    if let host, let hostKey = host.mediaKey, hostKey == key, host.time.isFinite {
+      return (time: host.time, paused: host.paused, fromHost: true)
+    }
+    let elapsed = paused ? 0 : max(0, now - receivedAt) / 1000
+    return (time: max(0, time + elapsed), paused: paused, fromHost: false)
+  }
+
+  /// v2.2 `nowPlaying.episode`: "Movie" for a single-episode movie, else "Episode 5" / "S2 E5".
+  static func nowPlayingEpisode(isMovie: Bool, episodes: Int?, number: Int, season: Int?, localEpisode: Int?) -> String {
+    if isMovie && (episodes ?? 1) <= 1 { return "Movie" }
+    return episodeLabel(number: number, season: season, localEpisode: localEpisode)
+  }
+
+  /// v2.2 host hand-off when the host stops following: the smallest userId among the connected v2 peers whose
+  /// last `status` does not say `following: false`; nil when there is none (the host stays).
+  static func handOffTarget(_ peers: [W2GElectionCandidate]) -> String? {
+    electHost(peers.filter { ($0.protocolVersion ?? 1) >= protocolVersion2 && $0.following }.map { $0.userId })
+  }
+
+  /// v2.2 host migration: members that follow first; everyone when nobody follows.
+  static func migrationCandidates(selfId: String, selfFollowing: Bool, peers: [W2GElectionCandidate]) -> [String] {
+    var following: [String] = selfFollowing ? [selfId] : []
+    following += peers.filter { $0.following }.map { $0.userId }
+    if !following.isEmpty { return following }
+    return [selfId] + peers.map { $0.userId }
   }
 }
 
@@ -358,6 +567,12 @@ struct W2GStatus: Equatable {
   var time: Double
   var mediaKey: String
   var rate: Double
+  /// v2.1 `status.source`: "Extension · Server", "" when unknown (informational, never compared for sync).
+  var source: String = ""
+  /// v2.2 `status.following` (true when absent).
+  var following: Bool = true
+  /// v2.2 `status.nowPlaying`, nil when not in the player.
+  var nowPlaying: W2GNowPlaying? = nil
 }
 
 /// Our own player; `time` was read at `at` (ms).
@@ -367,9 +582,13 @@ struct W2GLocalStatus: Equatable {
   var mediaKey: String
   var rate: Double
   var at: Double
+  /// v2.1 `status.source`.
+  var source: String = ""
+  /// v2.2 `status.following`.
+  var following: Bool = true
 
   var status: W2GStatus {
-    W2GStatus(state: state, time: time, mediaKey: mediaKey, rate: rate)
+    W2GStatus(state: state, time: time, mediaKey: mediaKey, rate: rate, source: source, following: following)
   }
 
   static func idle(at now: Double) -> W2GLocalStatus {
@@ -382,12 +601,14 @@ struct W2GSignal: Equatable {
   var status: W2GStatus?
   var receivedAt: Double?
   var rtt: Double?
+  /// When the last `pong` arrived (ms), for "lost connection".
+  var pongAt: Double?
 }
 
 /// Sync badge of a member row.
 struct W2GBadge: Equatable {
   enum Kind: String {
-    case old, nosignal, idle, loading, buffering, other, sync, ahead, behind, playing, paused
+    case old, nosignal, idle, loading, buffering, other, sync, ahead, behind, playing, paused, independent
   }
 
   var kind: Kind
@@ -420,4 +641,63 @@ struct W2GHostTarget: Equatable {
   var paused: Bool
   /// nil when only a `player` event is known (no mediaKey to compare).
   var mediaKey: String?
+}
+
+// MARK: - v2.1 presence and invite values, v2.2 now playing
+
+enum W2GPresenceKind: String {
+  case started
+  case again
+  case stopped
+  case switched
+  case source
+  case buffering
+  case lost
+  /// v2.2 `following` true → false.
+  case independent
+  /// v2.2 `following` false → true.
+  case rejoined
+  /// v2.2 `mediaKey` change while not following.
+  case watching
+}
+
+/// One presence announcement; `detail` is the episode label, the new source or what is watched.
+struct W2GPresenceEvent: Equatable {
+  var kind: W2GPresenceKind
+  var detail: String = ""
+}
+
+/// What is remembered of a member to derive its presence announcements (sync.js Presence).
+struct W2GPresenceMemory: Equatable {
+  var lastStatus: W2GStatus?
+  var bufferingSince: Double?
+  var bufferingAnnounced = false
+  var lostAnnounced = false
+  /// Last announcement time per kind (`W2GPresenceKind.rawValue`), for the 5 s debounce.
+  var lastAnnounced: [String: Double] = [:]
+}
+
+struct W2GPresenceStep: Equatable {
+  var memory: W2GPresenceMemory
+  var events: [W2GPresenceEvent]
+}
+
+/// v2.2 `status.nowPlaying` `{ mediaId, title, episode }`.
+struct W2GNowPlaying: Equatable {
+  var mediaId: String
+  var title: String
+  var episode: String
+
+  /// "Title · Episode 5"
+  var label: String {
+    W2GSync.formatSource([title, episode])
+  }
+}
+
+/// A member for host election / hand-off.
+struct W2GElectionCandidate: Equatable {
+  var userId: String
+  var protocolVersion: Int?
+  /// Its last `status` does not say `following: false`.
+  var following: Bool
 }

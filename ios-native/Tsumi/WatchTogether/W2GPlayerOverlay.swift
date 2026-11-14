@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // Watch Together inside the player (common/routes/w2g/components/PlayerW2G.svelte, PROTOCOL.md "UI requirements"):
 // the Watch Together button with its unread badge, the side panel (members with crown, sync badge and host actions,
@@ -61,6 +62,7 @@ struct W2GPlayerLayer: View {
     .animation(.easeInOut(duration: 0.2), value: client.overlayNotices)
     .animation(.easeInOut(duration: 0.2), value: client.bubbles)
     .animation(.easeInOut(duration: 0.2), value: client.pendingRequests)
+    .animation(.easeInOut(duration: 0.2), value: client.invites)
   }
 
   private var overlays: some View {
@@ -96,9 +98,9 @@ struct W2GPlayerLayer: View {
             if !controlsVisible && !panelOpen && client.unreadCount > 0 {
               W2GPlayerButton(unread: client.unreadCount, floating: true) { panelOpen = true }
             }
-            ForEach(client.pendingRequests) { request in
-              W2GRequestPrompt(request: request, client: client)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
+            // With the panel open they move to its top, so they are never under it.
+            if !panelOpen {
+              W2GPromptStack(client: client)
             }
           }
         }
@@ -123,9 +125,10 @@ struct W2GPlayerLayer: View {
             } label: {
               Text(request.label)
                 .font(.subheadline.weight(.bold))
+                .foregroundStyle(W2GAccentStyle.text)
                 .padding(.horizontal, 12)
                 .frame(minHeight: 34)
-                .background(Capsule().fill(Color.accentColor))
+                .background(Capsule().fill(W2GAccentStyle.fill))
             }
             .buttonStyle(.plain)
           }
@@ -177,9 +180,10 @@ struct W2GRequestPrompt: View {
         } label: {
           Label("Accept", systemImage: "checkmark")
             .font(.subheadline.weight(.bold))
+            .foregroundStyle(W2GAccentStyle.text)
             .padding(.horizontal, 12)
             .frame(minHeight: 36)
-            .background(Capsule().fill(Color.accentColor))
+            .background(Capsule().fill(W2GAccentStyle.fill))
         }
         .buttonStyle(.plain)
         Button {
@@ -305,7 +309,14 @@ struct W2GPlayerPanel: View {
   var body: some View {
     VStack(spacing: 0) {
       header
+      if !client.pendingRequests.isEmpty || !client.invites.isEmpty {
+        // Host requests and invites stay visible and tappable while the panel is open.
+        W2GPromptStack(client: client, alignment: .leading)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 6)
+      }
       quickActions
+      independentToggle
       Picker("Section", selection: $section) {
         Text("Chat").tag(PanelTab.chat)
         Text("People (\(client.memberViews().count))").tag(PanelTab.people)
@@ -357,17 +368,45 @@ struct W2GPlayerPanel: View {
     .padding(.top, 6)
   }
 
-  /// Request pause / play (non-host in `host` mode), Resync, Start together, Resync everyone.
+  /// v2.2 "Watch on my own".
+  private var independentToggle: some View {
+    Toggle(isOn: independentBinding) {
+      VStack(alignment: .leading, spacing: 1) {
+        Text("Watch on my own")
+          .font(.subheadline.weight(.semibold))
+        Text("Nothing you play is sent to the lobby")
+          .font(.caption2)
+          .foregroundStyle(.white.opacity(0.6))
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.bottom, 4)
+  }
+
+  private var independentBinding: Binding<Bool> {
+    let client = self.client
+    return Binding(
+      get: { !client.following },
+      set: { value in client.setFollowing(!value) }
+    )
+  }
+
+  /// Rejoin, Request pause / play (non-host in `host` mode), Resync, Start together, Resync everyone.
   private var quickActions: some View {
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 8) {
+        if let label = client.rejoinLabel {
+          actionButton("Rejoin \(label)", systemImage: "arrow.uturn.backward.circle.fill") {
+            client.rejoin()
+          }
+        }
         if client.controlLocked {
           let hostPaused = client.hostPaused
           actionButton(hostPaused ? "Request play" : "Request pause", systemImage: "hand.raised.fill") {
             _ = client.request(hostPaused ? .play : .pause)
           }
         }
-        if !client.isHost && client.isWatching {
+        if !client.isHost && client.isWatching && client.following {
           actionButton("Resync", systemImage: "arrow.triangle.2.circlepath") {
             _ = client.resync()
           }
@@ -377,7 +416,7 @@ struct W2GPlayerPanel: View {
             _ = client.startTogether()
           }
         }
-        if client.isHost && client.isWatching {
+        if client.isHost && client.isWatching && client.following {
           actionButton("Resync everyone", systemImage: "crown.fill") {
             _ = client.resyncEveryone()
           }
@@ -508,7 +547,8 @@ struct W2GPlayerPanel: View {
                 canManage: client.isHost,
                 compact: true,
                 onKick: { _ = client.kick(member.userId) },
-                onTransfer: { _ = client.transferHost(to: member.userId) }
+                onTransfer: { _ = client.transferHost(to: member.userId) },
+                onInvite: { _ = client.invite(member.userId) }
               )
             }
           }
@@ -583,9 +623,109 @@ struct W2GPanelChatLine: View {
       let outgoing = message.direction == .outgoing
       (Text(outgoing ? "You" : message.user.displayName).bold() + Text(" ") + Text(message.text))
         .font(.subheadline)
-        .foregroundStyle(outgoing ? Color.accentColor : Color.white)
+        .foregroundStyle(Color.white)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, outgoing ? 8 : 0)
+        .padding(.vertical, outgoing ? 4 : 0)
+        .background(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color.white.opacity(outgoing ? 0.12 : 0))
+        )
     }
+  }
+}
+
+/// The app accent (Settings > Interface accent colour, else the AccentColor asset, which is white) and a text
+/// colour that stays readable on it (WCAG relative luminance).
+@MainActor
+enum W2GAccentStyle {
+  static var fill: Color { Color(uiColor: accent) }
+
+  static var text: Color { luminance(accent) > 0.179 ? Color.black : Color.white }
+
+  private static var accent: UIColor {
+    if let custom = TsumiAppearanceStyle.color(hex: AppSettings.shared.values.accentColor) {
+      return UIColor(custom)
+    }
+    return UIColor(named: "AccentColor") ?? UIColor.systemBlue
+  }
+
+  private static func luminance(_ color: UIColor) -> Double {
+    var red: CGFloat = 0
+    var green: CGFloat = 0
+    var blue: CGFloat = 0
+    var alpha: CGFloat = 0
+    guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return 0 }
+    return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+  }
+
+  private static func linear(_ component: CGFloat) -> Double {
+    let value = min(max(Double(component), 0), 1)
+    return value <= 0.03928 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+  }
+}
+
+/// Host request prompts and received invites (beside the video, at the top of the open panel, or app-wide).
+@MainActor
+struct W2GPromptStack: View {
+  let client: WatchTogetherClient
+  var alignment: HorizontalAlignment = .trailing
+
+  var body: some View {
+    VStack(alignment: alignment, spacing: 8) {
+      ForEach(client.invites) { invite in
+        W2GInvitePrompt(invite: invite, client: client)
+          .transition(.move(edge: .trailing).combined(with: .opacity))
+      }
+      ForEach(client.pendingRequests) { request in
+        W2GRequestPrompt(request: request, client: client)
+          .transition(.move(edge: .trailing).combined(with: .opacity))
+      }
+    }
+  }
+}
+
+/// "Alice invites you to watch <title> · Episode 5" [Join] [Dismiss] (no timeout).
+@MainActor
+struct W2GInvitePrompt: View {
+  let invite: W2GInvite
+  let client: WatchTogetherClient
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(invite.prompt)
+        .font(.subheadline.weight(.semibold))
+        .lineLimit(3)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        Button {
+          client.acceptInvite(invite.id)
+        } label: {
+          Label("Join", systemImage: "play.fill")
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(W2GAccentStyle.text)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 36)
+            .background(Capsule().fill(W2GAccentStyle.fill))
+        }
+        .buttonStyle(.plain)
+        Button {
+          client.dismissInvite(invite.id)
+        } label: {
+          Text("Dismiss")
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 12)
+            .frame(minHeight: 36)
+            .background(Capsule().fill(Color.white.opacity(0.16)))
+        }
+        .buttonStyle(.plain)
+      }
+    }
+    .foregroundStyle(.white)
+    .padding(12)
+    .frame(width: 280, alignment: .leading)
+    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(white: 0.1).opacity(0.95)))
+    .environment(\.colorScheme, .dark)
   }
 }

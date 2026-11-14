@@ -142,3 +142,24 @@ Contract: `common/routes/w2g/PROTOCOL.md`. Reference implementation: `common/rou
 Player hooks added (`PlayerController`): `onSyncAction(PlayerSyncAction)` (user play / pause / seek with seek distance, rate and an `automatic` flag for system pauses), `onSyncReady()`, `syncSnapshot`, `applyRemoteState(paused:time:seekThreshold:)` (0.25 s for exact v2 times, 1.5 s for v1 whole seconds). `onLocalStateChange` is kept but no longer wired. Client hooks added: `onApplyPlayer`, `onPerformRequest`, `localPlayback` (AppWiring). In the full screen player, lobby toasts (`onNotice`) are shown as player notices.
 
 Settings keys added to `SettingsValues` (same names as util.js): `w2gAutoSync` (default true), `w2gDisplayName` (default "").
+
+## v2.1 (presence, source, invite) and v2.2 (independent watching), 2026-11-14
+
+Pure rules in `W2GSync.swift`, aligned with `sync.js` v2.1 (`formatSource`, `parseMediaKey`, `formatEpisode`, `switchLabel`, `presenceOnStatus` / `presenceOnTick`, `describePresence`, `canInvite`, `acceptsInvite`, `inviteTarget`) plus the v2.2 rules (badge, auto-sync skip, host hand-off, election, `nowPlaying` episode label).
+
+| # | PROTOCOL section | Swift | Status |
+|---|---|---|---|
+| v2.1.1 | `status.source` "Extension · Server" (max 80) | `PlayerController.sourceName` (set by ShellPlayback from the installed extension's name, updated on episode switches) + `syncSource` → `W2GLocalPlayback.source` → `sendStatus` | Done |
+| v2.1.2 | Presence lines + 3 s notices: stopped / started / again / switched / source / buffering > 8 s / lost connection (10 s of No signal), 5 s debounce, never for ourselves | `presenceAfterStatus`, `presenceTick` (1 s), `announcePresence`; no "lost connection" right after the app resumes | Done |
+| v2.1.3 | `invite { to, media, episode, key, time, paused, by }`: "Invite to watch" on rows (idle / other episode / no signal 10 s / watching on their own, v2 members, host only in host mode, we play a media) | `invite(_:)`, `W2GMemberView.canInvite`, `W2GInviteButton` (lobby rows and cards, player panel) | Done |
+| v2.1.4 | Target: Join / Dismiss prompt (no timeout, one per sender) over the player, else app-wide; Join replays the media like a received `media` (even same key), then seeks to the host (same episode) or the inviter's expected time; system lines | `receivedInvite`, `acceptInvite`, `applyPendingInvite`, `W2GInvitePrompt`, `ShellWatchTogetherInvites` (in `ShellToastHost`) | Done |
+| v2.2.1 | `status.following`, `status.nowPlaying { mediaId, title, episode }` (title in the app's title language, "Movie" / "Episode 5" / "S2 E5"; null outside the player) | `sendStatus`, `receivedStatus`, `W2GNowPlaying` | Done |
+| v2.2.2 | "Watch on my own" toggle (player panel + lobby), remembered (`w2gWatchOnMyOwn`, same key as util.js) | `setFollowing(_:)`, `W2GPlayerPanel.independentToggle`, `W2GLobbyHeader` | Done |
+| v2.2.3 | Independent: incoming `media` / `index` / `player` / `countdown` not applied; no auto-sync, no snap-back, host mode does not lock; own `media` / `index` / `player` not sent; status, chat, reactions, pings, invites still sent | `following` guards in the client | Done (the lobby's `media` is still remembered for Rejoin; remote actions still get their chat line) |
+| v2.2.4 | Back on: same key → resync to the host at once; else "Rejoin {title · episode}" (starts the lobby media like a received `media`, then syncs) | `setFollowing(true)`, `rejoin()`, `rejoinLabel` | Done |
+| v2.2.5 | Host turning independent hands the role to the smallest following v2 peer first (stays host if none); election skips independent members unless nobody follows | `W2GSync.handOffTarget`, `migrationCandidates` | Done |
+| v2.2.6 | Rows show `title · episode` + source; badge "Watching on their own"; announcements "is watching on their own" / "is back in sync" / "is watching {title · episode}" | `W2GMemberRow`, `W2GMemberCard`, `syncBadge`, `describePresence` | Done |
+
+UI fixes from the PC test: outgoing lobby bubbles and every accent-filled button (Request…, Accept, Join) use `W2GAccentStyle` (the accent colour, the default `AccentColor` asset being white, with black or white text by luminance); outgoing lines of the player panel are white on a light highlight. With the player panel open, host requests and invites are shown at the top of the panel (`W2GPromptStack`), so they are never under it.
+
+Settings key added: `w2gWatchOnMyOwn` (default false, same name as util.js).

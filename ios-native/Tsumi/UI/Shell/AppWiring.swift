@@ -70,7 +70,14 @@ enum AppWiring {
       case .loading: state = .loading
       case .idle: state = .idle
       }
-      return W2GLocalPlayback(state: state, time: snapshot.time, rate: snapshot.rate, media: snapshot.media, episode: snapshot.episode)
+      return W2GLocalPlayback(
+        state: state,
+        time: snapshot.time,
+        rate: snapshot.rate,
+        media: snapshot.media,
+        episode: snapshot.episode,
+        source: snapshot.source
+      )
     }
     client.onRemoteIndex = { index in
       ShellPlayback.applyRemoteIndex(index)

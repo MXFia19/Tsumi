@@ -22,6 +22,7 @@ struct SettingsValues: Codable, Equatable {
   // Watch Together
   var w2gAutoSync = true             // follow the host when drifting more than 2 s (PROTOCOL.md "Auto-sync")
   var w2gDisplayName = ""            // name shown to the lobby when not logged in
+  var w2gWatchOnMyOwn = false        // "Watch on my own" (PROTOCOL.md v2.2), remembered for the next lobby
 
   // Interface
   var titleLang: TitleLanguage = .english
@@ -60,7 +61,7 @@ struct SettingsValues: Codable, Equatable {
   enum CodingKeys: String, CodingKey {
     case volume, playerAutoplay, playerPause, playerAutocomplete, playerAutocompleteThreshold, playerSeek, playerSkip
     case subtitleLanguage, audioLanguage, preferDubs
-    case w2gAutoSync, w2gDisplayName
+    case w2gAutoSync, w2gDisplayName, w2gWatchOnMyOwn
     case titleLang, bannerProvider, hideMyAnime, cardPreview, cardAudio, toggleList, uiScale, accentColor
     case adult, hentaiBanner, toasts, homeSections, customSections, westernSections
     case systemNotify, aniNotify, releasesNotify, releasesNotifyNotOnList, subAnnounce, dubAnnounce, hentaiAnnounce
@@ -75,7 +76,7 @@ struct SettingsValues: Codable, Equatable {
     let keys: [CodingKeys] = [
       .volume, .playerAutoplay, .playerPause, .playerAutocomplete, .playerAutocompleteThreshold, .playerSeek, .playerSkip,
       .subtitleLanguage, .audioLanguage, .preferDubs,
-      .w2gAutoSync, .w2gDisplayName,
+      .w2gAutoSync, .w2gDisplayName, .w2gWatchOnMyOwn,
       .titleLang, .bannerProvider, .hideMyAnime, .cardPreview, .cardAudio, .toggleList, .uiScale, .accentColor,
       .adult, .hentaiBanner, .toasts, .homeSections, .customSections, .westernSections,
       .systemNotify, .aniNotify, .releasesNotify, .releasesNotifyNotOnList, .subAnnounce, .dubAnnounce, .hentaiAnnounce,
@@ -102,6 +103,7 @@ extension SettingsValues {
     preferDubs = container.svcLossyBool(.preferDubs) ?? preferDubs
     w2gAutoSync = container.svcLossyBool(.w2gAutoSync) ?? w2gAutoSync
     w2gDisplayName = container.settingsValue(String.self, .w2gDisplayName) ?? w2gDisplayName
+    w2gWatchOnMyOwn = container.svcLossyBool(.w2gWatchOnMyOwn) ?? w2gWatchOnMyOwn
 
     titleLang = container.settingsValue(TitleLanguage.self, .titleLang) ?? titleLang
     bannerProvider = container.settingsValue(String.self, .bannerProvider) ?? bannerProvider

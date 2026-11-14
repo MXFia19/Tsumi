@@ -246,6 +246,8 @@ struct W2GLocalPlayback {
   var rate: Double
   var media: Media
   var episode: EpisodeRef
+  /// v2.1 `status.source`: "Extension · Server", "" when unknown.
+  var source: String
 }
 
 /// A lobby state for the local player: someone's action, a host snap-back, auto-sync, resync or countdown.
@@ -271,6 +273,12 @@ struct W2GMemberView: Identifiable, Equatable {
   var protocolVersion: Int?
   var client: String?
   var rtt: Double?
+  /// v2.2 what the member watches: "Title · Episode 5" ("" when unknown or not in the player).
+  var watching: String = ""
+  /// v2.1 `status.source`: "Extension · Server".
+  var source: String = ""
+  /// v2.1 "Invite to watch" is offered on this row.
+  var canInvite: Bool = false
 
   var id: String { userId }
 
@@ -329,6 +337,41 @@ struct W2GFloatingReaction: Identifiable, Equatable {
   /// Distance from the trailing edge, as a fraction of the width.
   var inset: Double
   var createdAt = Date()
+}
+
+/// v2.1 `invite` received: "Alice invites you to watch <title> · <episode>" with Join / Dismiss (no timeout).
+struct W2GInvite: Identifiable, Equatable {
+  let id = UUID()
+  /// userId of the sender (a new invite from the same sender replaces this one).
+  var from: String
+  /// `invite.by`.
+  var by: String
+  var name: String
+  var title: String
+  var episodeLabel: String
+  /// The media to play, like a received `media` event (sender's key kept verbatim).
+  var shared: W2GSharedMedia
+  /// The sender's position and state when it sent the invite.
+  var time: Double
+  var paused: Bool
+  /// ms, local clock.
+  var receivedAt: Double
+
+  var prompt: String { "\(name) invites you to watch \(title) \u{00B7} \(episodeLabel)" }
+
+  static func == (lhs: W2GInvite, rhs: W2GInvite) -> Bool { lhs.id == rhs.id }
+}
+
+/// An accepted invite waiting for the file to load, then seeking to the inviter's (or host's) expected time.
+struct W2GInviteJoin {
+  var key: String
+  var by: String
+  var time: Double
+  var paused: Bool
+  /// ms, local clock (when the invite was received).
+  var receivedAt: Double
+  /// ms, local clock (when Join was tapped); the join is dropped if the file never loads.
+  var acceptedAt: Double
 }
 
 // MARK: - Media payload (session.js pickMedia, w2g.js mediaKey, tmdb.js normalizeMedia)

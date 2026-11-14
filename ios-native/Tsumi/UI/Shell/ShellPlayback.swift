@@ -181,6 +181,7 @@ enum ShellPlayback {
     )
     let controller = PlayerController(session: session, episodeList: episodes)
     wire(controller, media: media, extensionKey: playback.extensionKey, source: source)
+    controller.sourceName = ShellPlayback.extensionName(playback.extensionKey)
     return controller
   }
 
@@ -235,6 +236,7 @@ enum ShellPlayback {
         )
         memory.source = resolved.source
         memory.extensionKey = resolved.source.extensionKey
+        controller?.sourceName = ShellPlayback.extensionName(resolved.source.extensionKey)
         let playback = resolved.playback
         return ShellPlayback.session(
           media: current,
@@ -309,6 +311,11 @@ enum ShellPlayback {
     controller.isWatchTogetherActive = {
       WatchTogetherClient.shared.isInLobby
     }
+  }
+
+  /// Display name of an installed extension / addon (Watch Together `status.source`), the key when unknown.
+  static func extensionName(_ key: String) -> String {
+    ExtensionManager.shared.installed.first { $0.key == key }?.displayName ?? key
   }
 
   /// Episode of the episode list matching `ref` (same matching as PlayerController.currentEpisodeIndex).

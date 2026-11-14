@@ -138,3 +138,90 @@ A local action shows "You paused" etc. only in the chat, not over the video. Joi
 9. Seeks and autoplay while an episode is loading are not broadcast. Once loaded, the player snaps to the host if both are on the same episode.
 10. Your own actions appear only in the chat ("You paused at 12:34"). Remote ones get the 3 s notice plus a chat line.
 11. v1 peers show "Old version" and are skipped by auto-sync.
+
+## v2.1 additions: presence, source and invite
+
+All of these are additive: older v2 clients ignore the new field and event.
+
+### `status.source`
+
+`status` gains an optional `source` field: a short human-readable string for what the sender is playing from. The format is the extension or addon name, then the server or stream label if known, joined with " · ", e.g. `"AnimePahe · Server 2"`. Leave it empty when unknown. It is informational only, and never compared for sync.
+
+### Presence announcements (no new event)
+
+Each client derives these from the `status` changes of every other member. Each one is a system chat line plus a 3 s notice over the video while in the player. The UI wording is localized as the rest of the app; the English text below is the reference.
+
+| from → to | announcement |
+|---|---|
+| `playing` / `paused` / `buffering` / `loading` → `idle` | "Alice stopped watching" |
+| `idle` → `loading` / `playing` / `paused` | "Alice is watching again" (or "Alice started watching" if it is the first status) |
+| `mediaKey` changes, while the new state is not `idle` | "Alice switched to {episode label}", e.g. "Episode 5" or "S2 E5" when a season is known, or "another title" when the media differs |
+| `source` changes, with the same `mediaKey` and both values non-empty | "Alice changed source: {source}" |
+| `buffering` lasts more than 8 s | "Alice is buffering…", once per buffering period |
+| `No signal` lasts 10 s (no status and no pong) | "Alice lost connection", once until a status arrives again |
+
+Rules:
+- Announcements are debounced: the same member and kind announces at most once every 5 s.
+- Your own changes are never announced.
+- A member's first `status` after joining announces nothing except "started watching". Joins and leaves keep their existing lines.
+
+### `invite` (new event)
+
+| type | payload | who sends | effect |
+|---|---|---|---|
+| `invite` | `{ to, media, episode, key, time, paused, by }` | anyone in `everyone` mode, the host only in `host` mode | `to` is the target `userId`. `media` / `episode` / `key` have the same shape as the `media` event. `time` / `paused` are the sender's current position. Broadcast to everyone; every client except `to` ignores it. |
+
+On the target:
+- The invite shows as a prompt that does not time out but can be dismissed: "Alice invites you to watch {title} · {episode label}" with "Join" and "Dismiss". It shows over the player if the target is in it, otherwise as an app-wide prompt or toast with a Join action.
+- A new invite from the same sender replaces the previous one.
+- Join plays that media and episode through the same path as a received `media` event, even when the key equals the one already shared. Once loaded, it seeks to the inviter's expected time (the inviter's `time` plus elapsed time if not paused), or to the host's expected time if the host is in the same episode.
+- A system line on the target: "Alice invited you to watch".
+- A system line on the sender only: "You invited Bob".
+
+On the sender:
+- Every member row (lobby page and player panel) shows an "Invite to watch" button when that member is `idle`, "Other episode", or has had no signal for 10 s, provided the sender is in the player with a media.
+- In `host` mode the button only shows for the host.
+
+## v2.2 additions: independent watching and "who watches what"
+
+These additions are backward compatible: a missing field means the v2.1 behaviour.
+
+### `status.following` and `status.nowPlaying`
+
+`status` gains two optional fields:
+- `following` (boolean, default `true` when absent): whether the sender follows the lobby's playback.
+- `nowPlaying` (`{ mediaId, title, episode }` or `null`): what the sender has open.
+  - `mediaId` is the `media.id` of the shared media shape.
+  - `title` is the display title in the sender's language.
+  - `episode` is a short episode label such as "Episode 5", "S2 E5" or "Movie".
+  - It is `null` when the sender is not in the player.
+
+### Independent mode (a per-lobby toggle, "Watch on my own")
+
+Both the player panel and the lobby page have the toggle. It is off by default, and each client remembers the last choice for the next lobby.
+
+While `following` is false, the client:
+- does not apply incoming `media`, `index`, `player` or `countdown` events;
+- is never auto-synced and never snapped back, and host mode doesn't restrict its controls;
+- does not broadcast its own `media`, `index` or `player` events, so it never drags the others;
+- keeps sending `status` (with `following: false` and `nowPlaying`), chat, reactions and pings;
+- may send `invite` to suggest what it is watching.
+
+When the toggle is turned back on:
+- If the local media key equals the lobby's shared `media.key`, resync to the host right away.
+- Otherwise, show a "Rejoin {title · episode}" action. It starts the lobby media through the same path as a received `media` event, then syncs. Nothing changes until it is used.
+
+If the host turns `following` off, the host role moves first, as a normal transfer. It goes to the smallest `userId` among the connected v2 peers whose last `status` has `following` not false. If there is no such peer, the client stays host.
+
+### What everyone sees
+
+- **Member rows** (lobby page and player panel) show what each member watches: `nowPlaying.title · nowPlaying.episode`, plus the `source` when known.
+- **Independent members** show the badge "Watching on their own" instead of a drift. They are skipped by auto-sync and by host election (unless nobody follows), and they still get the "Invite to watch" button.
+
+Presence announcements, in addition to v2.1, with the same debounce:
+
+| change | announcement |
+|---|---|
+| `following` true → false | "Alice is watching on their own" |
+| `following` false → true | "Alice is back in sync" |
+| `mediaKey` changes while `following` is false | "Alice is watching {title · episode}" (replaces "switched to") |

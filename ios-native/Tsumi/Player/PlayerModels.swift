@@ -177,6 +177,8 @@ struct PlayerSyncSnapshot {
   var rate: Double
   var media: Media
   var episode: EpisodeRef
+  /// "Extension · Server" (Watch Together v2.1 `status.source`), "" when unknown.
+  var source: String
 }
 
 /// Watch Together v2: a play / pause / seek the user made (`PlayerController.onSyncAction`).

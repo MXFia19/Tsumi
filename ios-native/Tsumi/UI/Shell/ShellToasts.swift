@@ -22,9 +22,32 @@ struct ShellToastHost: ViewModifier {
     _ = ServiceMessages.shared.messages
     return content.overlay(alignment: .top) {
       if layer != .player && ShellLayers.top == layer {
-        ShellToastStack()
+        VStack(spacing: 8) {
+          ShellToastStack()
+          // Watch Together invites outside the full screen player (the player shows its own).
+          ShellWatchTogetherInvites()
+        }
       }
     }
+  }
+}
+
+/// Watch Together invites received while not in the full screen player: "Alice invites you to watch …"
+/// with Join / Dismiss, app-wide (PROTOCOL.md v2.1 `invite`).
+@MainActor
+struct ShellWatchTogetherInvites: View {
+  var body: some View {
+    let client = WatchTogetherClient.shared
+    return VStack(spacing: 8) {
+      if client.isInLobby {
+        ForEach(client.invites) { invite in
+          W2GInvitePrompt(invite: invite, client: client)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+      }
+    }
+    .padding(.horizontal, 12)
+    .animation(.easeInOut(duration: 0.2), value: client.invites)
   }
 }
 

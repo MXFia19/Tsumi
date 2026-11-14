@@ -328,7 +328,7 @@ struct W2GLobbyHeader: View {
             .toggleStyle(.switch)
             .font(.subheadline)
             .fixedSize()
-        } else if client.isWatching {
+        } else if client.isWatching && client.following {
           Button {
             _ = client.resync()
           } label: {
@@ -338,6 +338,20 @@ struct W2GLobbyHeader: View {
           .buttonStyle(.bordered)
           .accessibilityHint("Jump to the host")
         }
+      }
+      // v2.2 "Watch on my own" and "Rejoin".
+      Toggle("Watch on my own", isOn: independentBinding)
+        .toggleStyle(.switch)
+        .font(.subheadline)
+      if let label = client.rejoinLabel {
+        Button {
+          client.rejoin()
+        } label: {
+          Label("Rejoin \(label)", systemImage: "arrow.uturn.backward.circle.fill")
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+        }
+        .buttonStyle(.bordered)
       }
       if !client.isLoggedIn {
         W2GDisplayNameField(client: client)
@@ -352,6 +366,14 @@ struct W2GLobbyHeader: View {
     return Binding(
       get: { client.mode == .host },
       set: { value in _ = client.setMode(value ? .host : .everyone) }
+    )
+  }
+
+  private var independentBinding: Binding<Bool> {
+    let client = self.client
+    return Binding(
+      get: { !client.following },
+      set: { value in client.setFollowing(!value) }
     )
   }
 
@@ -400,7 +422,8 @@ struct W2GMemberStrip: View {
                 member: member,
                 canManage: client.isHost,
                 onKick: { _ = client.kick(member.userId) },
-                onTransfer: { _ = client.transferHost(to: member.userId) }
+                onTransfer: { _ = client.transferHost(to: member.userId) },
+                onInvite: { _ = client.invite(member.userId) }
               )
             }
           }
@@ -432,7 +455,8 @@ struct W2GMemberList: View {
                 member: member,
                 canManage: client.isHost,
                 onKick: { _ = client.kick(member.userId) },
-                onTransfer: { _ = client.transferHost(to: member.userId) }
+                onTransfer: { _ = client.transferHost(to: member.userId) },
+                onInvite: { _ = client.invite(member.userId) }
               )
             }
           }
@@ -452,6 +476,7 @@ struct W2GMemberRow: View {
   var compact = false
   var onKick: () -> Void = {}
   var onTransfer: () -> Void = {}
+  var onInvite: () -> Void = {}
 
   var body: some View {
     HStack(spacing: 10) {
@@ -469,8 +494,24 @@ struct W2GMemberRow: View {
             .lineLimit(1)
         }
         W2GBadgeChip(badge: member.badge, rtt: member.rtt)
+        // v2.2: what the member watches, and where from (v2.1 source).
+        if !member.watching.isEmpty {
+          Text(member.watching)
+            .font(.caption)
+            .foregroundStyle(Color.secondary)
+            .lineLimit(1)
+        }
+        if !member.source.isEmpty {
+          Text(member.source)
+            .font(.caption2)
+            .foregroundStyle(Color.secondary.opacity(0.8))
+            .lineLimit(1)
+        }
       }
       Spacer(minLength: 4)
+      if member.canInvite {
+        W2GInviteButton(name: member.name, action: onInvite)
+      }
       if canManage && !member.isSelf {
         Menu {
           W2GMemberActions(name: member.name, canBeHost: member.canBeHost, onKick: onKick, onTransfer: onTransfer)
@@ -500,17 +541,23 @@ struct W2GMemberCard: View {
   var canManage = false
   var onKick: () -> Void = {}
   var onTransfer: () -> Void = {}
+  var onInvite: () -> Void = {}
 
   var body: some View {
-    if canManage && !member.isSelf {
-      Menu {
-        W2GMemberActions(name: member.name, canBeHost: member.canBeHost, onKick: onKick, onTransfer: onTransfer)
-      } label: {
+    VStack(spacing: 4) {
+      if canManage && !member.isSelf {
+        Menu {
+          W2GMemberActions(name: member.name, canBeHost: member.canBeHost, onKick: onKick, onTransfer: onTransfer)
+        } label: {
+          card
+        }
+        .accessibilityLabel("Manage \(member.name)")
+      } else {
         card
       }
-      .accessibilityLabel("Manage \(member.name)")
-    } else {
-      card
+      if member.canInvite {
+        W2GInviteButton(name: member.name, action: onInvite)
+      }
     }
   }
 
@@ -532,10 +579,37 @@ struct W2GMemberCard: View {
         .foregroundStyle(Color.primary)
         .lineLimit(1)
       W2GBadgeChip(badge: member.badge, rtt: member.rtt)
+      if !member.watching.isEmpty {
+        Text(member.watching)
+          .font(.caption2)
+          .foregroundStyle(Color.secondary)
+          .lineLimit(1)
+      }
     }
     .frame(width: 104)
     .padding(.vertical, 4)
     .contentShape(Rectangle())
+  }
+}
+
+/// v2.1 "Invite to watch" on a member row.
+@MainActor
+struct W2GInviteButton: View {
+  let name: String
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Label("Invite", systemImage: "play.circle.fill")
+        .font(.caption.weight(.semibold))
+        .lineLimit(1)
+        .padding(.horizontal, 10)
+        .frame(minHeight: 32)
+        .background(Capsule().fill(Color.primary.opacity(0.12)))
+        .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Invite \(name) to watch")
   }
 }
 
@@ -595,6 +669,7 @@ struct W2GBadgeChip: View {
     case .ahead, .behind: return .orange
     case .buffering, .loading: return .yellow
     case .other: return .purple
+    case .independent: return .teal
     case .playing: return .blue
     case .paused, .idle, .nosignal, .old: return .gray
     }
@@ -743,8 +818,8 @@ struct W2GMessageGroupView: View {
             .textSelection(.enabled)
             .padding(.vertical, 8)
             .padding(.horizontal, 12)
-            .foregroundStyle(incoming ? Color.primary : Color.white)
-            .background(incoming ? Color(.secondarySystemBackground) : Color.accentColor, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .foregroundStyle(incoming ? Color.primary : W2GAccentStyle.text)
+            .background(incoming ? Color(.secondarySystemBackground) : W2GAccentStyle.fill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
       }
       .frame(maxWidth: .infinity, alignment: incoming ? .leading : .trailing)

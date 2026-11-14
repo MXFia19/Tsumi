@@ -48,6 +48,8 @@ final class PlayerController {
   @ObservationIgnored var onIndexChange: ((Int) -> Void)?
   /// Watch Together session active: disables autoplay of the next episode (like `!state.value`).
   @ObservationIgnored var isWatchTogetherActive: (() -> Bool)?
+  /// Name of the extension / addon playing (Watch Together `status.source`); the app sets and updates it.
+  @ObservationIgnored var sourceName: String?
   /// Watch Together v2: a play / pause / seek the user made (not a file loading, not a lobby state being applied).
   @ObservationIgnored var onSyncAction: ((PlayerSyncAction) -> Void)?
   /// Watch Together v2: the file is ready (resume position and autoplay handled); the lobby may move it to the host.
@@ -1686,7 +1688,20 @@ final class PlayerController {
       state = .paused
     }
     let time = currentTime.isFinite ? max(currentTime, 0) : 0
-    return PlayerSyncSnapshot(state: state, time: time, rate: Double(playbackRate), media: session.media, episode: session.episode)
+    return PlayerSyncSnapshot(
+      state: state,
+      time: time,
+      rate: Double(playbackRate),
+      media: session.media,
+      episode: session.episode,
+      source: syncSource
+    )
+  }
+
+  /// "Extension · Server" (PROTOCOL.md v2.1 `status.source`), "" when nothing is known.
+  var syncSource: String {
+    let server: String? = session.servers.isEmpty ? nil : serverName(activeServerIndex)
+    return W2GSync.formatSource([sourceName, server])
   }
 
   /// w2gEmitter 'playerupdate': follow another participant (seek only on a meaningful difference).
