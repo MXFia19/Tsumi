@@ -28,9 +28,15 @@ jobs:
           cache: 'pnpm'
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      # Tsumi uses an Electron build with extra codecs (HEVC, AC3...). Its original
+      # download mirror is gone, so the zip is kept as an asset of a release of this repo.
+      - name: Download Electron with codecs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download electron-codecs-39.2.7 --pattern "electron-v39.2.7-win32-x64.zip" --dir electron-dist
       - name: Build installer (Windows x64)
         working-directory: electron
-        run: pnpm run build -- --win nsis --x64 --publish never
+        run: pnpm run build -- --win nsis --x64 --publish never "-c.electronDist=${{ github.workspace }}\electron-dist"
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
