@@ -31,8 +31,7 @@ export class W2GClient extends EventEmitter {
   static #signalingServers = [
     'wss://tracker.openwebtorrent.com',
     'wss://tracker.webtorrent.dev',
-    'wss://tracker.files.fm:7073/announce',
-    'wss://tracker.btorrent.xyz/'
+    'wss://tracker.files.fm:7073/announce'
   ]
 
   player = {

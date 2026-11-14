@@ -12,12 +12,6 @@ export default class Discord {
         large_image: 'icon',
         large_text: 'Tsumi — Media Streaming'
       },
-      buttons: [
-        {
-          label: 'Get Tsumi',
-          url: 'https://github.com/50n50/Tsumi/releases/latest'
-        }
-      ],
       instance: true,
       type: 3
     }
