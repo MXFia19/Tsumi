@@ -23,6 +23,8 @@
   import Helper from '@/modules/helper.js'
 
   import { w2gEmitter, state } from '@/routes/w2g/WatchTogetherPage.svelte'
+  import PlayerW2G from '@/routes/w2g/components/PlayerW2G.svelte'
+  import { LocalActionTracker } from '@/routes/w2g/components/sync.js'
   import ManagerModal from '@/modals/manager/ManagerModal.svelte'
   import Keybinds, { loadWithDefaults, condition } from 'svelte-keybinds'
   import { SUPPORTS } from '@/modules/support.js'
@@ -51,10 +53,19 @@
     }
   }
 
-  w2gEmitter.on('playerupdate', (detail) => {
-    currentTime = detail.time
-    paused = detail.paused
-  })
+  // ---- Watch Together (routes/w2g/PROTOCOL.md)
+  // Local play / pause / seek are reported once the burst of media events settled. The events
+  // caused by applying a lobby state are recognised by the tracker and never sent back.
+  const w2gTracker = new LocalActionTracker()
+  let w2gLoading = false
+  let w2gLoadToken = 0
+  let w2gLoadSteps = []
+  let w2gSettleTimer = null
+  /** mediaKey of the lobby title playing here, captured when the file starts */
+  let w2gKey = ''
+
+  w2gEmitter.on('playerupdate', applyW2GState)
+  w2gEmitter.on('perform', performW2GRequest)
   w2gEmitter.on('setindex', (detail) => {
     playFile(detail)
   })
@@ -64,9 +75,90 @@
     else handleCurrent(file)
   }
 
-  function updatew2g () {
-    saveAnimeProgress()
-    w2gEmitter.emit('player', { time: Math.floor(currentTime), paused })
+  /** Applies a lobby state: someone's action, host snap-back, auto-sync, resync, countdown. */
+  function applyW2GState ({ time, paused: lobbyPaused }) {
+    if (!video || !current || externalPlayback || w2gLoading || !isValidNumber(time)) return
+    w2gTracker.expect({ time, paused: lobbyPaused }, Date.now())
+    if (Math.abs((video.currentTime || 0) - time) > 0.25) seek(time - currentTime)
+    paused = !!lobbyPaused
+  }
+
+  /** The host accepted a request: do it as a local action, which is then broadcast. */
+  function performW2GRequest ({ kind, time }) {
+    if (!video || !current || externalPlayback) return
+    if (kind === 'pause') paused = true
+    else if (kind === 'play') paused = false
+    else if (kind === 'seek' && isValidNumber(time)) seek(time - currentTime)
+  }
+
+  /** @param {'play' | 'pause' | 'seeking' | 'seeked'} event */
+  function w2gMediaEvent (event) {
+    if (event !== 'seeking') saveAnimeProgress()
+    if (!video) return
+    w2gTracker.note(event, video.currentTime)
+    if (event === 'seeked') reportW2GStatus(true)
+    clearTimeout(w2gSettleTimer)
+    w2gSettleTimer = setTimeout(settleW2G, 300)
+  }
+
+  function settleW2G () {
+    w2gSettleTimer = null
+    if (!video) return
+    // Still dragging the seekbar or seeking: report the whole gesture once it is over.
+    if (wasPaused != null || video.seeking) {
+      w2gSettleTimer = setTimeout(settleW2G, 300)
+      return
+    }
+    const change = w2gTracker.settle({ time: video.currentTime, paused: video.paused }, Date.now())
+    // Loading a file (resume position, autoplay) is not a user action.
+    if (!change || w2gLoading || externalPlayback || !state.value) return
+    w2gEmitter.emit('player', { ...change, rate: video.playbackRate || 1 })
+  }
+
+  function w2gTimeupdate () {
+    if (!video) return
+    w2gTracker.observe({ time: video.currentTime, paused: video.paused, seeking: video.seeking })
+    state.value?.updateLocalTime(video.currentTime)
+  }
+
+  function startW2GLoading () {
+    w2gLoading = true
+    w2gLoadToken++
+    w2gLoadSteps = []
+    w2gKey = state.value?.media?.key || ''
+    w2gTracker.reset(null)
+  }
+
+  // autoPlay() and loadAnimeProgress() run on loadedmetadata; loading ends when both are done.
+  async function w2gLoadedMetadata () {
+    const token = w2gLoadToken
+    const steps = w2gLoadSteps
+    w2gLoadSteps = []
+    await Promise.allSettled(steps)
+    finishW2GLoading(token)
+  }
+
+  function finishW2GLoading (token = w2gLoadToken) {
+    if (!w2gLoading || token !== w2gLoadToken) return
+    if (video?.seeking || w2gSettleTimer) {
+      setTimeout(() => finishW2GLoading(token), 300)
+      return
+    }
+    w2gLoading = false
+    if (video) w2gTracker.reset({ time: video.currentTime, paused: video.paused })
+    state.value?.playerReady()
+  }
+
+  $: w2gStatus = !current || externalPlayback ? 'idle' : w2gLoading ? 'loading' : paused ? 'paused' : buffering ? 'buffering' : 'playing'
+  $: w2gMediaKey = w2gKey || $state?.media?.key || ''
+  $: reportW2GStatus(false, w2gStatus, w2gMediaKey, playbackRate, $state)
+  function reportW2GStatus (force, status = w2gStatus, key = w2gMediaKey, rate = playbackRate) {
+    state.value?.setLocalStatus({
+      state: status,
+      time: video?.currentTime || 0,
+      mediaKey: status === 'idle' ? '' : key,
+      rate: rate || 1
+    }, { force })
   }
 
   export let miniplayer = false
@@ -359,6 +451,7 @@
         subs = null
       }
       current = file
+      startW2GLoading()
       setCurrent(file)
     }
   }
@@ -1996,12 +2089,15 @@
       bind:muted
       bind:playbackRate
       on:error={checkError}
-      on:pause={updatew2g}
-      on:play={updatew2g}
-      on:seeked={updatew2g}
+      on:error={() => finishW2GLoading()}
+      on:pause={() => w2gMediaEvent('pause')}
+      on:play={() => w2gMediaEvent('play')}
+      on:seeking={() => w2gMediaEvent('seeking')}
+      on:seeked={() => w2gMediaEvent('seeked')}
       on:timeupdate={() => createThumbnail()}
       on:timeupdate={checkCompletion}
       on:timeupdate={checkSkippableChapters}
+      on:timeupdate={w2gTimeupdate}
       on:waiting={showBuffering}
       on:loadeddata={hideBuffering}
       on:pause={() => {
@@ -2013,11 +2109,12 @@
       on:ended={tryPlayNext}
       on:loadedmetadata={initThumbnails}
       on:loadedmetadata={findChapters}
-      on:loadedmetadata={autoPlay}
+      on:loadedmetadata={() => w2gLoadSteps.push(autoPlay())}
       on:loadedmetadata={checkAudio}
       on:loadedmetadata={checkSubtitle}
       on:loadedmetadata={clearLoadInterval}
-      on:loadedmetadata={loadAnimeProgress}
+      on:loadedmetadata={() => w2gLoadSteps.push(loadAnimeProgress())}
+      on:loadedmetadata={w2gLoadedMetadata}
       on:enterpictureinpicture={() => (pip = true)}
       on:leavepictureinpicture={() => {
         pip = false
@@ -2788,6 +2885,9 @@
         </span>
       </div>
     </div>
+    {#if $state && !miniplayer}
+      <PlayerW2G client={$state} {immersed} />
+    {/if}
   </div>
 </div>
 

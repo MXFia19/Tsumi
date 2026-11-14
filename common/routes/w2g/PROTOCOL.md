@@ -124,3 +124,17 @@ A local action shows "You paused" etc. only in the chat, not over the video. Joi
 - A v1 peer sends `player` without `by`. Use its `userId`.
 - A v1 peer never sends `status`, so show "No signal" (or "Old version") instead of a drift, and skip auto-sync against it. If the host is v1, auto-sync is off.
 - In `host` mode a v1 non-host may still broadcast `player`. It is ignored as described above, and the v1 peer is snapped back by the next host `player` event.
+
+## Clarifications (agreed while implementing both apps)
+
+1. "Resync everyone" sends `player` with `action: "sync"` (the host's time and paused state), not a countdown.
+2. `status` is sent every 3 s in every state, not only while playing. A member with no `status` for 10 s is "No signal", but a paused or idle peer that still answers pings counts as alive for 25 s.
+3. `countdown.startAt` is on the sender's clock, so receivers count down from (local receive time − rtt/2). `seconds` is rounded and clamped to 1–10 (default 3).
+4. `rate` is shared but not applied to the local player.
+5. Host migration: if the elected client (smallest id) is someone else, the host is provisional, and a `host` claim from anyone is accepted until one arrives. If two clients claim host, the smaller `userId` keeps it.
+6. The media key compared by the sync check is the sender's `media.key`, used verbatim.
+7. The host role cannot be transferred to a v1 peer (no `protocol: 2` in its `init`).
+8. Outside the player, other members' badges show "Playing" / "Paused" instead of a drift.
+9. Seeks and autoplay while an episode is loading are not broadcast. Once loaded, the player snaps to the host if both are on the same episode.
+10. Your own actions appear only in the chat ("You paused at 12:34"). Remote ones get the 3 s notice plus a chat line.
+11. v1 peers show "Old version" and are skipped by auto-sync.

@@ -156,6 +156,14 @@
   </div>
 </SettingCard>
 
+<h4 class='mb-10 font-weight-bold'>Watch Together Settings</h4>
+<SettingCard title='Auto-Sync' description='In a Watch Together lobby, jumps to the host’s position when your video drifts more than 2 seconds away while you both play the same episode. At most once every 10 seconds, and nobody else is told.'>
+  <div class='custom-switch'>
+    <input type='checkbox' id='player-w2g-autosync' bind:checked={settings.w2gAutoSync} />
+    <label for='player-w2g-autosync'>{settings.w2gAutoSync ? 'On' : 'Off'}</label>
+  </div>
+</SettingCard>
+
 <h4 class='mb-10 font-weight-bold'>External Player Settings</h4>
 <SettingCard title='Enable External Player' description='Tells Tsumi to open a custom user-picked external video player to play video, instead of using the built-in one.'>
   <div class='custom-switch'>

@@ -7,10 +7,25 @@ export default class Event {
   }
 }
 
+/** Wire event types, see ../PROTOCOL.md. */
 export const EventTypes = {
+  // v1
   SessionInitEvent: 'init',
   MediaEvent: 'media',
   MediaIndexEvent: 'index',
   PlayerStateEvent: 'player',
-  MessageEvent: 'message'
+  MessageEvent: 'message',
+  // v2
+  HostEvent: 'host',
+  StatusEvent: 'status',
+  PingEvent: 'ping',
+  PongEvent: 'pong',
+  RequestEvent: 'request',
+  RequestReplyEvent: 'requestReply',
+  KickEvent: 'kick',
+  ReactionEvent: 'reaction',
+  CountdownEvent: 'countdown'
 }
+
+/** Type of the chat lines created locally (joins, leaves, actions, requests). Never sent. */
+export const SYSTEM_MESSAGE = 'system'

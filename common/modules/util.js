@@ -601,6 +601,9 @@ export const defaults = {
   playerSeek: 2,
   playerSkip: false,
   playerChapterSkip: 'embedded',
+  // Watch Together: follow the host when drifting more than 2 s, and the name of an anonymous user.
+  w2gAutoSync: true,
+  w2gDisplayName: '',
   extensions: {},
   defaultExtension: null,
   starredExtension: null

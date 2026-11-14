@@ -1,5 +1,7 @@
 <script>
-  /** @type {import("d:/Webdevelopment/tsumi/common/modules/al").Viewer | {}} */
+  import { memberName } from '@/routes/w2g/components/sync.js'
+
+  /** @type {any} */
   export let user = {}
 
   /** @type {string[]} */
@@ -10,7 +12,7 @@
 
   /** @type {'incoming' | 'outgoing'} */
   export let type = 'incoming'
-  const incoming = type === 'incoming'
+  $: incoming = type === 'incoming'
 </script>
 
 <div class='message d-flex flex-row mt-15 overflow-y-auto' class:flex-row={incoming} class:flex-row-reverse={!incoming}>
@@ -18,13 +20,13 @@
   <div class='d-flex flex-column px-10 align-items-start flex-auto' class:align-items-start={incoming} class:align-items-end={!incoming}>
     <div class='pb-5 d-flex flex-row align-items-center px-5'>
       <div class='font-weight-bold font-size-18 line-height-normal'>
-        {user?.name || 'Anonymous'}
+        {memberName(user)}
       </div>
       <div class='text-muted pl-10 font-size-12 line-height-normal'>
         {time.toLocaleTimeString()}
       </div>
     </div>
-    {#each messages as message}
+    {#each messages as message, i (i)}
       <div class='bg-dark-light py-10 px-15 rounded-top rounded-right mb-5 select-all pre-wrap text-break-word' style='max-width: calc(100% - 10rem)'
         class:bg-dark-light={incoming} class:bg-accent={!incoming}
         class:rounded-right={incoming} class:rounded-left={!incoming}>

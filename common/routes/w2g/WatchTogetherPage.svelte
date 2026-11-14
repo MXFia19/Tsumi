@@ -5,6 +5,7 @@
   import { page } from '@/modules/navigation.js'
   import { IPC } from '@/modules/bridge.js'
   import { anilistClient } from '@/modules/anilist.js'
+  import { settings } from '@/modules/settings.js'
   import { toast } from 'svelte-sonner'
   import {
     w2gEmitter as sessionEmitter,
@@ -21,15 +22,19 @@
   function joinLobby (code) {
     debug('Joining lobby with code:', code)
     if (state.value) state.value.destroy()
-    const w2g = new W2GClient(code)
+    const w2g = new W2GClient(code, { displayName: settings.value.w2gDisplayName })
     state.value = w2g
     w2g.on('index', (i) => w2gEmitter.emit('setindex', i))
-    w2g.on('player', (playerState) =>
-      w2gEmitter.emit('playerupdate', {
-        time: playerState.time,
-        paused: playerState.paused
-      })
-    )
+    // { time, paused, action, by, rate }: applied silently when action is 'sync'.
+    w2g.on('player', (playerState) => w2gEmitter.emit('playerupdate', playerState))
+    // The host accepted a request: the player does it as a local action.
+    w2g.on('perform', (request) => w2gEmitter.emit('perform', request))
+    w2g.on('kicked', () => {
+      if (state.value !== w2g) return
+      w2g.destroy()
+      state.value = null
+      toast.error('Watch Together', { description: 'You were removed from the lobby' })
+    })
     // Someone started a title: start the same one here with our own extension.
     w2g.on('media', ({ media, episode }) => {
       const number = typeof episode === 'object' ? episode?.number : episode
