@@ -41,9 +41,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download electron-codecs-39.2.7 --pattern "electron-v39.2.7-win32-x64.zip" --dir electron-dist
+      - name: Build app (webpack)
+        working-directory: electron
+        env:
+          NODE_ENV: production
+        run: pnpm run web:build
+      # electron-builder is called directly: "pnpm run build -- <args>" would forward
+      # a literal "--" and electron-builder would ignore the options after it.
       - name: Build installer (Windows x64)
         working-directory: electron
-        run: pnpm run build -- --win nsis --x64 --publish never -c.npmRebuild=false "-c.electronDist=${{ github.workspace }}\electron-dist"
+        run: pnpm exec electron-builder --win nsis --x64 --publish never -c.npmRebuild=false "-c.electronDist=${{ github.workspace }}\electron-dist"
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
