@@ -50,7 +50,8 @@ jobs:
       # a literal "--" and electron-builder would ignore the options after it.
       - name: Build installer (Windows x64)
         working-directory: electron
-        run: pnpm exec electron-builder --win nsis --x64 --publish never -c.npmRebuild=false "-c.electronDist=${{ github.workspace }}\electron-dist"
+        shell: bash  # PowerShell splits "-c.npmRebuild=false" into "-c" ".npmRebuild=false"
+        run: pnpm exec electron-builder --win nsis --x64 --publish never --config.npmRebuild=false --config.electronDist=../electron-dist
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
