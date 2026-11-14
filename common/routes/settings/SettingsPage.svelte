@@ -18,7 +18,7 @@
     sunos: 'SunOS',
     win32: 'Windows'
   }
-  export let version = '1.3.0'
+  export let version = '1.3.1'
   IPC.on('version', (data) => {
     version = data
     debug(
