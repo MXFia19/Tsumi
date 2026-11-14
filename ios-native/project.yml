@@ -11,7 +11,11 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.3.1"
     CURRENT_PROJECT_VERSION: "1"
-packages: {}
+packages:
+  # Native WebRTC (binary xcframework of Google libwebrtc), used by Watch Together data channels.
+  WebRTC:
+    url: https://github.com/stasel/WebRTC
+    exactVersion: 156.0.0
 targets:
   Tsumi:
     type: application
@@ -28,4 +32,6 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_PREVIEWS: NO
         CODE_SIGNING_ALLOWED: NO
-    dependencies: []
+    dependencies:
+      - package: WebRTC
+        product: WebRTC

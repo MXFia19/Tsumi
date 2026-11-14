@@ -1,0 +1,1804 @@
+import AVFoundation
+import AVKit
+import Combine
+import CoreImage
+import Foundation
+import Observation
+import UIKit
+
+/// Native video player. Port of the playback logic of common/routes/player/PlayerPage.svelte
+/// (stream loading, servers, progress, autocomplete, chapters/skip, next episode, subtitles, Watch Together)
+/// on top of AVPlayer. Create it on the main actor, set the hooks, then present `PlayerView(controller:)`
+/// (or use `PlayerPresentation.shared.present(_:)`). Playback starts when the view appears.
+@MainActor
+@Observable
+final class PlayerController {
+  // MARK: - Hooks wired by the app
+
+  /// Loads another episode (next/previous, episode list, Watch Together index). Errors are shown as a notice.
+  @ObservationIgnored var loadEpisode: ((EpisodeRef) async throws -> PlaybackSession)?
+  /// Saved position when the session has no `startTime` (getAnimeProgress).
+  @ObservationIgnored var resumePosition: ((Media, EpisodeRef) -> Double?)?
+  /// Periodic position report: every 10 s while playing, on play/pause/seek, on close (setAnimeProgress).
+  @ObservationIgnored var onProgress: ((PlayerProgressSnapshot) -> Void)?
+  /// Called once per episode when `playerAutocompleteThreshold`% is watched and `playerAutocomplete` is on
+  /// (Helper.updateEntry: update the list progress).
+  @ObservationIgnored var onAutocomplete: ((Media, EpisodeRef) -> Void)?
+  /// Called when the episode plays to its end.
+  @ObservationIgnored var onPlaybackEnded: ((Media, EpisodeRef) -> Void)?
+  /// Called every time an episode starts loading (initial one included); Watch Together can share it.
+  @ObservationIgnored var onEpisodeStarted: ((PlaybackSession) -> Void)?
+  /// The user closed the player (or the PiP window while the player UI was dismissed).
+  @ObservationIgnored var onClose: (() -> Void)?
+  /// Picture in Picture started from the PiP button: the app may dismiss the player UI (miniplayer).
+  @ObservationIgnored var onMinimize: (() -> Void)?
+  /// "Restore" tapped in the PiP window while minimized: the app must present the player UI again.
+  @ObservationIgnored var onRestoreFromPictureInPicture: (() -> Void)?
+  /// "Now Playing [O]": shows the media details. The app should call `setExternalOverlay(presented:)`.
+  @ObservationIgnored var onOpenDetails: ((Media) -> Void)?
+  /// Watch Together: local play/pause/seek (w2gEmitter 'player', time floored to the second).
+  @ObservationIgnored var onLocalStateChange: (((paused: Bool, time: Double)) -> Void)?
+  /// Watch Together: the user changed episode. Index in `episodeList`, or the episode number without a list.
+  @ObservationIgnored var onIndexChange: ((Int) -> Void)?
+  /// Watch Together session active: disables autoplay of the next episode (like `!state.value`).
+  @ObservationIgnored var isWatchTogetherActive: (() -> Bool)?
+  /// Filler/recap lookup used for the skip prompt; defaults to Jikan. Set to nil to disable.
+  @ObservationIgnored var episodeFlagsLookup: ((Media, EpisodeRef) async -> PlayerEpisodeFlags?)? = { media, episode in
+    await PlayerEpisodeFlagsLookup.jikan(media: media, episode: episode)
+  }
+  /// Close the player when PlayerView disappears without being minimized to Picture in Picture.
+  @ObservationIgnored var closesWhenViewDisappears = true
+
+  // MARK: - Observable state
+
+  private(set) var session: PlaybackSession
+  private(set) var episodeList: [EpisodeInfo]
+  private(set) var phase: PlayerPhase = .loading
+  private(set) var isPlaying = false
+  private(set) var isBuffering = true
+  private(set) var hasEnded = false
+  private(set) var currentTime: Double = 0
+  private(set) var duration: Double = 0
+  private(set) var bufferedTime: Double = 0
+  private(set) var playbackRate: Float = 1
+  private(set) var isMuted = false
+  private(set) var isScrubbing = false
+  private(set) var scrubTime: Double = 0
+  private(set) var scrubPreview: UIImage?
+  private(set) var audioTracks: [PlayerTrackOption] = []
+  private(set) var selectedAudioTrack: Int?
+  private(set) var embeddedSubtitleTracks: [PlayerTrackOption] = []
+  private(set) var externalSubtitleTracks: [PlayerExternalSubtitleTrack] = []
+  private(set) var subtitleChoice: PlayerSubtitleChoice = .off
+  /// Seconds added to the video time for external subtitles (JASSUB timeOffset / "Subtitle Offset").
+  private(set) var subtitleDelay: Double = 0
+  private(set) var activeSubtitleCues: [PlayerSubtitleCue] = []
+  private(set) var chapters: [PlayerChapter] = []
+  private(set) var embeddedChapters: [PlayerChapter] = []
+  private(set) var chapterSource: PlayerChapterSource
+  /// Name of the skippable chapter being played ("Opening", "Ending"...), drives the "Skip ..." button.
+  private(set) var currentSkippable: String?
+  /// The autocomplete threshold was reached for this episode.
+  private(set) var completed = false
+  private(set) var isPictureInPictureActive = false
+  private(set) var isPictureInPicturePossible = false
+  /// "Toggle Video Cover" (fitWidth): aspect fill instead of aspect fit.
+  private(set) var videoFill = false
+  private(set) var notice: PlayerNotice?
+  /// "Filler" / "Recap" while the skip prompt is shown.
+  private(set) var fillerPrompt: String?
+  /// Episode being loaded through `loadEpisode`.
+  private(set) var loadingEpisode: EpisodeRef?
+  private(set) var stats: [PlayerStatLine]?
+
+  // MARK: - AVFoundation and internals
+
+  let player = AVPlayer()
+  let layerView = PlayerLayerUIView()
+  private let nowPlaying = PlayerNowPlaying()
+  private let pip = PlayerPiPCoordinator()
+
+  private enum PendingSeek {
+    /// Saved progress: resume 5 s earlier (loadAnimeProgress).
+    case restore(Double)
+    /// Server switch / reload: same position.
+    case exact(Double)
+  }
+
+  @ObservationIgnored private var timeObserver: Any?
+  @ObservationIgnored private var playerCancellables = Set<AnyCancellable>()
+  @ObservationIgnored private var itemCancellables = Set<AnyCancellable>()
+  @ObservationIgnored private var appCancellables = Set<AnyCancellable>()
+  @ObservationIgnored private var currentAsset: AVURLAsset?
+  @ObservationIgnored private var videoOutput: AVPlayerItemVideoOutput?
+  @ObservationIgnored private var imageGenerator: AVAssetImageGenerator?
+  @ObservationIgnored private var audioGroup: AVMediaSelectionGroup?
+  @ObservationIgnored private var audioOptions: [AVMediaSelectionOption] = []
+  @ObservationIgnored private var legibleGroup: AVMediaSelectionGroup?
+  @ObservationIgnored private var legibleOptions: [AVMediaSelectionOption] = []
+  @ObservationIgnored private var didStart = false
+  @ObservationIgnored private var isClosed = false
+  @ObservationIgnored private var isMinimized = false
+  @ObservationIgnored private var wantsMinimizeOnPiPStart = false
+  @ObservationIgnored private var pipStarting = false
+  @ObservationIgnored private var restoringFromPiP = false
+  @ObservationIgnored private var itemGeneration = 0
+  @ObservationIgnored private var episodeGeneration = 0
+  @ObservationIgnored private var everReady = false
+  @ObservationIgnored private var isFreshEpisodeLoad = true
+  @ObservationIgnored private var triedServers = Set<Int>()
+  @ObservationIgnored private var pendingSeek: PendingSeek?
+  @ObservationIgnored private var resumePlaybackAfterLoad = false
+  @ObservationIgnored private var flagsTask: Task<PlayerEpisodeFlags?, Never>?
+  @ObservationIgnored private var bufferingTask: Task<Void, Never>?
+  @ObservationIgnored private var noticeTask: Task<Void, Never>?
+  @ObservationIgnored private var previewTask: Task<Void, Never>?
+  @ObservationIgnored private var statsTask: Task<Void, Never>?
+  @ObservationIgnored private var lastProgressSave = Date.distantPast
+  @ObservationIgnored private var lastSyncedState: (paused: Bool, time: Double)?
+  @ObservationIgnored private var suppressSyncUntil = Date.distantPast
+  @ObservationIgnored private var pendingRemoteState: (paused: Bool, time: Double)?
+  @ObservationIgnored private var autoplayHandledByRemote = false
+  @ObservationIgnored private var userChoseSubtitle = false
+  @ObservationIgnored private var autoSkippedChapterStart: Double?
+  @ObservationIgnored private var nextExternalTrackID = 0
+  @ObservationIgnored private var seekInFlight = false
+  @ObservationIgnored private var chaseTarget: Double = 0
+  @ObservationIgnored private var chasePrecise = true
+  @ObservationIgnored private var seekCompletions: [() -> Void] = []
+  @ObservationIgnored private var pausedByBackground = false
+  @ObservationIgnored private var detachedForBackground = false
+  @ObservationIgnored private var playingBeforeResign = false
+  @ObservationIgnored private var interruptedWhilePlaying = false
+  @ObservationIgnored private var externalOverlayPresented = false
+  @ObservationIgnored private var pausedByOverlay = false
+  @ObservationIgnored private var playWhenOverlayCloses = false
+
+  /// Playback speeds offered in the speed menu ([ and ] change it by 0.1 like the Svelte keybinds).
+  static let speedOptions: [Float] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+  /// Watch Together: only seek to a remote time farther than this (times are floored to the second).
+  static let remoteSeekThreshold: Double = 1.5
+
+  init(session: PlaybackSession, episodeList: [EpisodeInfo] = []) {
+    self.session = session
+    self.episodeList = episodeList
+    self.chapterSource = PlayerPreferences.chapterSource
+    configurePlayer()
+  }
+
+  private func configurePlayer() {
+    player.automaticallyWaitsToMinimizeStalling = true
+    player.appliesMediaSelectionCriteriaAutomatically = false
+    player.allowsExternalPlayback = true
+    player.usesExternalPlaybackWhileExternalScreenIsActive = true
+    let storedVolume = AppSettings.shared.values.volume
+    player.volume = Float(min(max(storedVolume.isFinite ? storedVolume : 1, 0), 1))
+    layerView.playerLayer.player = player
+    layerView.playerLayer.videoGravity = .resizeAspect
+  }
+
+  // MARK: - Derived values
+
+  var activeServerIndex: Int { session.selectedServer }
+
+  /// "safeduration": the duration when known, else the current time.
+  var safeDuration: Double {
+    duration.isFinite && duration > 0 ? duration : max(currentTime, 0)
+  }
+
+  /// Time shown by the UI (scrub position while dragging).
+  var displayTime: Double { isScrubbing ? scrubTime : currentTime }
+
+  var failure: PlayerFailure? {
+    if case .failed(let value) = phase { return value }
+    return nil
+  }
+
+  var isReady: Bool { phase == .ready }
+  var isLoadingEpisode: Bool { loadingEpisode != nil }
+  var canTryNextServer: Bool { session.servers.count > 1 }
+  var canOpenDetails: Bool { onOpenDetails != nil }
+  var canLoadEpisodes: Bool { loadEpisode != nil }
+  var isPictureInPictureSupported: Bool { PlayerPiPCoordinator.isSupported }
+
+  var displayTitle: String {
+    session.media.title.display(AppSettings.shared.values.titleLang)
+  }
+
+  /// Episode title, with MediaHandler's "The Movie" fallback.
+  var episodeTitle: String? {
+    let media = session.media
+    if let title = PlayerText.cleanedTitle(session.episodeTitle) {
+      let lower = title.lowercased()
+      if media.episodes == 1 && (lower == "web" || lower.contains(" web") || lower.contains("web ") || lower.contains("movie")) {
+        return "The Movie"
+      }
+      return title
+    }
+    if media.isMovie && (media.episodes ?? 0) <= 1 { return "The Movie" }
+    return nil
+  }
+
+  /// Second line of the title block: "Episode 3 of 12 - Title" (PlayerPage.svelte top bar).
+  var episodeLine: String? {
+    let media = session.media
+    let episode = session.episode
+    let title = episodeTitle
+    let mentionsNumber = title.map { PlayerText.containsStandalone(number: episode.number, in: $0) } ?? false
+    var line = ""
+    if media.episodes != 1 && !media.isMovie && !mentionsNumber {
+      if let season = episode.season, let local = episode.localEpisode {
+        line = "Season \(season) · Episode \(local)"
+      } else {
+        line = "Episode \(episode.number)"
+        let maxEpisodes = PlayerEpisodeMath.maxEpisode(media)
+        if maxEpisodes > 1 {
+          line += " of \(maxEpisodes)"
+        } else if maxEpisodes == 0 && episodeList.count > 1 {
+          line += " of \(episodeList.count)"
+        }
+      }
+    }
+    if let title {
+      if !line.isEmpty { line += " - " }
+      line += title
+    }
+    return line.isEmpty ? nil : line
+  }
+
+  /// Seekbar accent: completed, or already counted in the list progress.
+  var isEpisodeWatched: Bool {
+    if completed { return true }
+    guard let progress = session.media.listEntry?.progress else { return false }
+    return progress >= session.episode.number
+  }
+
+  var currentEpisodeIndex: Int? {
+    let episode = session.episode
+    return episodeList.firstIndex { info in
+      if let season = episode.season, let local = episode.localEpisode,
+         let infoSeason = info.season, let infoLocal = info.localEpisode {
+        return season == infoSeason && local == infoLocal
+      }
+      return info.number == episode.number
+    }
+  }
+
+  func isCurrent(_ info: EpisodeInfo) -> Bool {
+    guard let index = currentEpisodeIndex, episodeList.indices.contains(index) else {
+      return info.number == session.episode.number
+    }
+    return episodeList[index].id == info.id
+  }
+
+  /// checkAvail (hasNext) using the media episode counts when no episode list is available.
+  private var mediaHasNext: Bool {
+    let media = session.media
+    if media.isMovie && (media.episodes ?? 1) <= 1 { return false }
+    let aired = (media.nextAiring?.episode ?? 0) - 1
+    let available = aired > 0 ? aired : PlayerEpisodeMath.maxEpisode(media)
+    if available > session.episode.number { return true }
+    return media.nextAiring == nil && media.episodes == nil
+  }
+
+  var nextEpisodeRef: EpisodeRef? {
+    if let index = currentEpisodeIndex {
+      return episodeList.indices.contains(index + 1) ? episodeList[index + 1].ref : nil
+    }
+    guard mediaHasNext else { return nil }
+    let episode = session.episode
+    return EpisodeRef(number: episode.number + 1, season: episode.season, localEpisode: episode.localEpisode.map { $0 + 1 })
+  }
+
+  var previousEpisodeRef: EpisodeRef? {
+    if let index = currentEpisodeIndex {
+      return index > 0 && episodeList.indices.contains(index - 1) ? episodeList[index - 1].ref : nil
+    }
+    let episode = session.episode
+    guard episode.number > 1 else { return nil }
+    var local: Int?
+    if let value = episode.localEpisode, value > 1 { local = value - 1 }
+    return EpisodeRef(number: episode.number - 1, season: local == nil ? nil : episode.season, localEpisode: local)
+  }
+
+  var hasNext: Bool { nextEpisodeRef != nil }
+  var hasLast: Bool { previousEpisodeRef != nil }
+
+  func serverName(_ index: Int) -> String {
+    guard session.servers.indices.contains(index) else { return "Server \(index + 1)" }
+    let title = session.servers[index].title.trimmingCharacters(in: .whitespaces)
+    return title.isEmpty ? "Server \(index + 1)" : title
+  }
+
+  var scrubberSegments: [PlayerScrubberSegment] {
+    let total = safeDuration
+    guard total > 0, chapters.count > 1 else { return [] }
+    return chapters.compactMap { chapter in
+      guard chapter.start < total else { return nil }
+      let start = max(0, chapter.start / total)
+      let end = min(1, chapter.end / total)
+      guard end > start else { return nil }
+      return PlayerScrubberSegment(start: start, end: end, skippable: PlayerChapterLogic.skippableName(chapter) != nil)
+    }
+  }
+
+  func chapterTitle(at time: Double) -> String? {
+    guard chapters.count > 1, let index = chapters.firstIndex(where: { time >= $0.start && time < $0.end }) else { return nil }
+    let names = PlayerChapterLogic.displayNames(chapters)
+    return names.indices.contains(index) ? names[index] : nil
+  }
+
+  func subtitleName(for choice: PlayerSubtitleChoice) -> String? {
+    switch choice {
+    case .off:
+      return nil
+    case .embedded(let index):
+      return embeddedSubtitleTracks.indices.contains(index) ? embeddedSubtitleTracks[index].name : nil
+    case .external(let id):
+      return externalSubtitleTracks.first { $0.id == id }?.name
+    }
+  }
+
+  // MARK: - Lifecycle
+
+  /// Starts playback once (called by PlayerView.onAppear).
+  func startIfNeeded() {
+    guard !didStart, !isClosed else { return }
+    didStart = true
+    PlayerAudioSession.activate()
+    installPlayerObservers()
+    installAppObservers()
+    installRemoteCommands()
+    configurePictureInPicture()
+    begin(session)
+  }
+
+  func viewDidAppear() {
+    isMinimized = false
+    startIfNeeded()
+  }
+
+  func viewDidDisappear() {
+    guard closesWhenViewDisappears, didStart, !isClosed, !isMinimized, !isPictureInPictureActive,
+          !pipStarting, !wantsMinimizeOnPiPStart else { return }
+    close()
+  }
+
+  /// Attaches the video layer to a container (PlayerVideoSurface).
+  func mountVideoView(in container: UIView) {
+    if layerView.superview !== container {
+      layerView.removeFromSuperview()
+      layerView.frame = container.bounds
+      layerView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      container.addSubview(layerView)
+    }
+    if !detachedForBackground && !isClosed {
+      layerView.playerLayer.player = player
+    }
+  }
+
+  /// closePlayer: stops playback, leaves Picture in Picture and reports the last position.
+  func close() {
+    guard !isClosed else { return }
+    if everReady { saveProgress(force: true) }
+    isClosed = true
+    if isPictureInPictureActive { pip.stop() }
+    tearDown()
+    onClose?()
+  }
+
+  private func tearDown() {
+    player.pause()
+    if let timeObserver {
+      player.removeTimeObserver(timeObserver)
+    }
+    timeObserver = nil
+    playerCancellables.removeAll()
+    itemCancellables.removeAll()
+    appCancellables.removeAll()
+    bufferingTask?.cancel()
+    noticeTask?.cancel()
+    previewTask?.cancel()
+    statsTask?.cancel()
+    flagsTask?.cancel()
+    statsTask = nil
+    player.replaceCurrentItem(with: nil)
+    layerView.playerLayer.player = nil
+    nowPlaying.clear()
+    pip.detach()
+    UIApplication.shared.isIdleTimerDisabled = false
+    PlayerAudioSession.deactivate()
+  }
+
+  /// pagePause: call with true when the app shows something over the player (media details), false after.
+  func setExternalOverlay(presented: Bool) {
+    if presented {
+      externalOverlayPresented = true
+      if isPlaying && !isPictureInPictureActive {
+        pausedByOverlay = true
+        pause()
+      }
+    } else {
+      externalOverlayPresented = false
+      if pausedByOverlay || playWhenOverlayCloses {
+        pausedByOverlay = false
+        playWhenOverlayCloses = false
+        play()
+      }
+    }
+  }
+
+  func setEpisodeList(_ list: [EpisodeInfo]) {
+    episodeList = list
+    refreshRemoteCommandAvailability()
+  }
+
+  func openDetails() {
+    onOpenDetails?(session.media)
+  }
+
+  // MARK: - Loading
+
+  private func begin(_ newSession: PlaybackSession) {
+    episodeGeneration += 1
+    session = newSession
+    completed = false
+    chapters = []
+    embeddedChapters = []
+    currentSkippable = nil
+    autoSkippedChapterStart = nil
+    fillerPrompt = nil
+    externalSubtitleTracks = []
+    embeddedSubtitleTracks = []
+    audioTracks = []
+    selectedAudioTrack = nil
+    subtitleChoice = .off
+    activeSubtitleCues = []
+    userChoseSubtitle = false
+    autoplayHandledByRemote = pendingRemoteState != nil
+    currentTime = 0
+    duration = 0
+    bufferedTime = 0
+    hasEnded = false
+    triedServers = []
+    isFreshEpisodeLoad = true
+    resumePlaybackAfterLoad = false
+    pendingSeek = nil
+    if let resume = newSession.startTime ?? resumePosition?(newSession.media, newSession.episode),
+       resume.isFinite, resume > 0 {
+      pendingSeek = .restore(resume)
+    }
+    startFlagsLookup(for: newSession)
+
+    if newSession.servers.isEmpty {
+      itemGeneration += 1
+      tearDownItem()
+      player.replaceCurrentItem(with: nil)
+      phase = .failed(.noServers)
+      setBuffering(false)
+    } else {
+      let index = newSession.servers.indices.contains(newSession.selectedServer) ? newSession.selectedServer : 0
+      loadServer(index)
+    }
+    if let subtitleURL = newSession.subtitleURL {
+      let headers = newSession.subtitleHeaders ?? newSession.currentServer?.headers ?? [:]
+      loadExternalSubtitle(from: subtitleURL, headers: headers, name: "Subtitles")
+    }
+    updateNowPlayingMetadata()
+    onEpisodeStarted?(newSession)
+  }
+
+  private func startFlagsLookup(for newSession: PlaybackSession) {
+    flagsTask?.cancel()
+    flagsTask = nil
+    if newSession.isFiller != nil || newSession.isRecap != nil {
+      let flags = PlayerEpisodeFlags(isFiller: newSession.isFiller ?? false, isRecap: newSession.isRecap ?? false)
+      flagsTask = Task<PlayerEpisodeFlags?, Never> { flags }
+      return
+    }
+    let listedAsFiller = episodeList.contains { $0.number == newSession.episode.number && $0.isFiller }
+    if listedAsFiller {
+      flagsTask = Task<PlayerEpisodeFlags?, Never> { PlayerEpisodeFlags(isFiller: true, isRecap: false) }
+      return
+    }
+    guard let lookup = episodeFlagsLookup else { return }
+    let media = newSession.media
+    let episode = newSession.episode
+    flagsTask = Task<PlayerEpisodeFlags?, Never> { await lookup(media, episode) }
+  }
+
+  private func loadServer(_ index: Int) {
+    guard session.servers.indices.contains(index) else { return }
+    itemGeneration += 1
+    let generation = itemGeneration
+    session.selectedServer = index
+    triedServers.insert(index)
+    tearDownItem()
+    phase = .loading
+    everReady = false
+    hasEnded = false
+    setBuffering(true, immediate: true)
+
+    let server = session.servers[index]
+    let asset = AVURLAsset(url: server.url, options: PlayerController.assetOptions(for: server.headers))
+    let item = AVPlayerItem(asset: asset)
+    let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
+      kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
+    ])
+    item.add(output)
+    currentAsset = asset
+    videoOutput = output
+    imageGenerator = PlayerController.isHLS(server.url) ? nil : PlayerController.makeImageGenerator(asset)
+    observe(item, generation: generation)
+    player.replaceCurrentItem(with: item)
+    player.defaultRate = playbackRate
+    updateNowPlayingPlayback()
+  }
+
+  private func tearDownItem() {
+    itemCancellables.removeAll()
+    previewTask?.cancel()
+    previewTask = nil
+    scrubPreview = nil
+    audioGroup = nil
+    audioOptions = []
+    legibleGroup = nil
+    legibleOptions = []
+    currentAsset = nil
+    videoOutput = nil
+    imageGenerator = nil
+    seekInFlight = false
+    seekCompletions = []
+    isScrubbing = false
+  }
+
+  /// Stream headers (Referer, Origin, User-Agent...) on every request of the asset: replaces the Electron
+  /// proxy of common/modules/streaming.js.
+  private static func assetOptions(for headers: [String: String]) -> [String: Any] {
+    var options: [String: Any] = [:]
+    guard !headers.isEmpty else { return options }
+    options["AVURLAssetHTTPHeaderFieldsKey"] = headers
+    if let agent = headers.first(where: { $0.key.caseInsensitiveCompare("User-Agent") == .orderedSame })?.value {
+      options[AVURLAssetHTTPUserAgentKey] = agent
+    }
+    return options
+  }
+
+  private static func isHLS(_ url: URL) -> Bool {
+    url.absoluteString.lowercased().contains(".m3u8")
+  }
+
+  private static func makeImageGenerator(_ asset: AVAsset) -> AVAssetImageGenerator {
+    let generator = AVAssetImageGenerator(asset: asset)
+    generator.appliesPreferredTrackTransform = true
+    generator.maximumSize = CGSize(width: 320, height: 180)
+    let tolerance = CMTime(seconds: 2, preferredTimescale: 600)
+    generator.requestedTimeToleranceBefore = tolerance
+    generator.requestedTimeToleranceAfter = tolerance
+    return generator
+  }
+
+  private func observe(_ item: AVPlayerItem, generation: Int) {
+    item.publisher(for: \.status)
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] status in
+        self?.handleItemStatus(status, generation: generation)
+      }
+      .store(in: &itemCancellables)
+    item.publisher(for: \.duration)
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] value in
+        self?.updateDuration(value, generation: generation)
+      }
+      .store(in: &itemCancellables)
+    item.publisher(for: \.loadedTimeRanges)
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] ranges in
+        self?.updateBuffered(ranges, generation: generation)
+      }
+      .store(in: &itemCancellables)
+    NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification, object: item)
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] _ in
+        self?.handleEnded(generation: generation)
+      }
+      .store(in: &itemCancellables)
+    NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification, object: item)
+      .map { $0.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError }
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] error in
+        self?.handleFailure(error, generation: generation)
+      }
+      .store(in: &itemCancellables)
+  }
+
+  private func installPlayerObservers() {
+    let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+    timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+      MainActor.assumeIsolated {
+        self?.handleTick(time)
+      }
+    }
+    player.publisher(for: \.timeControlStatus)
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] status in
+        self?.handleTimeControlStatus(status)
+      }
+      .store(in: &playerCancellables)
+  }
+
+  private func installAppObservers() {
+    let center = NotificationCenter.default
+    center.publisher(for: UIApplication.willResignActiveNotification)
+      .sink { [weak self] _ in
+        self?.handleWillResignActive()
+      }
+      .store(in: &appCancellables)
+    center.publisher(for: UIApplication.didEnterBackgroundNotification)
+      .sink { [weak self] _ in
+        self?.handleDidEnterBackground()
+      }
+      .store(in: &appCancellables)
+    center.publisher(for: UIApplication.willEnterForegroundNotification)
+      .sink { [weak self] _ in
+        self?.handleWillEnterForeground()
+      }
+      .store(in: &appCancellables)
+    center.publisher(for: AVAudioSession.interruptionNotification)
+      .map { note -> (type: UInt?, options: UInt?) in
+        (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+         note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
+      }
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] values in
+        self?.handleInterruption(type: values.type, options: values.options)
+      }
+      .store(in: &appCancellables)
+  }
+
+  private func configurePictureInPicture() {
+    pip.onPossibleChanged = { [weak self] possible in
+      self?.isPictureInPicturePossible = possible
+    }
+    pip.onWillStart = { [weak self] in
+      self?.pipStarting = true
+    }
+    pip.onDidStart = { [weak self] in
+      self?.pictureInPictureDidStart()
+    }
+    pip.onDidStop = { [weak self] in
+      self?.pictureInPictureDidStop()
+    }
+    pip.onFailed = { [weak self] message in
+      self?.pictureInPictureFailed(message)
+    }
+    pip.onRestore = { [weak self] in
+      self?.pictureInPictureRestore()
+    }
+    pip.attach(to: layerView.playerLayer, autoStart: PlayerPreferences.autoPictureInPicture)
+  }
+
+  // MARK: - Item events
+
+  private func handleItemStatus(_ status: AVPlayerItem.Status, generation: Int) {
+    guard generation == itemGeneration, !isClosed else { return }
+    switch status {
+    case .readyToPlay:
+      handleReady(generation: generation)
+    case .failed:
+      handleFailure(player.currentItem?.error as NSError?, generation: generation)
+    default:
+      break
+    }
+  }
+
+  private func handleReady(generation: Int) {
+    guard !everReady else { return }
+    everReady = true
+    phase = .ready
+    if let item = player.currentItem {
+      updateDuration(item.duration, generation: generation)
+    }
+    setBuffering(false)
+    Task { [weak self] in
+      await self?.loadMediaSelection(generation: generation)
+    }
+    let fresh = isFreshEpisodeLoad
+    isFreshEpisodeLoad = false
+    applyPendingSeek()
+    if fresh {
+      loadChapters()
+      startAutoPlay()
+    } else if resumePlaybackAfterLoad {
+      resumePlaybackAfterLoad = false
+      player.play()
+    }
+    if let remote = pendingRemoteState {
+      pendingRemoteState = nil
+      applyRemoteState(paused: remote.paused, time: remote.time)
+    }
+    updateNowPlayingPlayback()
+  }
+
+  private func applyPendingSeek() {
+    guard let pending = pendingSeek else { return }
+    pendingSeek = nil
+    let total = safeDuration
+    var target: Double
+    switch pending {
+    case .restore(let time):
+      // Load 5 seconds before. A position in the last 3% restarts the episode instead of ending it at once.
+      target = max(time - 5, 0)
+      if total > 0 && time >= total * 0.97 { target = 0 }
+    case .exact(let time):
+      target = time
+    }
+    guard target > 0 else { return }
+    performSeek(to: target) { [weak self] in
+      self?.emitLocalState()
+    }
+  }
+
+  /// autoPlay + promptFiller: plays unless the episode is a filler/recap (then asks first).
+  private func startAutoPlay() {
+    let generation = episodeGeneration
+    let task = flagsTask
+    Task { [weak self] in
+      let flags = await task?.value
+      guard let self, generation == self.episodeGeneration, !self.isClosed else { return }
+      if let label = flags?.promptLabel {
+        self.fillerPrompt = label
+        self.player.pause()
+        return
+      }
+      if self.autoplayHandledByRemote { return }
+      if self.externalOverlayPresented {
+        self.playWhenOverlayCloses = true
+        return
+      }
+      self.player.play()
+    }
+  }
+
+  private func handleFailure(_ error: NSError?, generation: Int) {
+    guard generation == itemGeneration, !isClosed else { return }
+    if failure != nil { return }
+    let reason = PlayerFailure.from(error)
+    if everReady { saveProgress(force: true) }
+    setBuffering(false)
+    if !everReady, let next = nextUntriedServer() {
+      showNotice("\(serverName(activeServerIndex)) failed", "Trying \(serverName(next))…", isError: true)
+      loadServer(next)
+      return
+    }
+    if everReady, currentTime > 0, pendingSeek == nil {
+      pendingSeek = .exact(currentTime)
+    }
+    phase = .failed(reason)
+  }
+
+  private func nextUntriedServer() -> Int? {
+    let count = session.servers.count
+    guard count > 1 else { return nil }
+    for offset in 1..<count {
+      let index = (activeServerIndex + offset) % count
+      if !triedServers.contains(index) { return index }
+    }
+    return nil
+  }
+
+  private func handleEnded(generation: Int) {
+    guard generation == itemGeneration, !isClosed else { return }
+    hasEnded = true
+    if duration.isFinite && duration > 0 { currentTime = duration }
+    checkCompletion()
+    saveProgress(force: true)
+    currentSkippable = nil
+    updateNowPlayingPlayback()
+    onPlaybackEnded?(session.media, session.episode)
+    let watchingTogether = isWatchTogetherActive?() ?? false
+    if AppSettings.shared.values.playerAutoplay && !watchingTogether && hasNext {
+      Task { [weak self] in
+        await self?.playNext()
+      }
+    }
+  }
+
+  private func updateDuration(_ value: CMTime, generation: Int) {
+    guard generation == itemGeneration else { return }
+    let seconds = value.seconds
+    let newValue = seconds.isFinite && seconds > 0 ? seconds : 0
+    guard newValue != duration else { return }
+    duration = newValue
+    updateNowPlayingPlayback()
+  }
+
+  private func updateBuffered(_ ranges: [NSValue], generation: Int) {
+    guard generation == itemGeneration else { return }
+    let position = currentTime
+    var containing: Double = 0
+    var furthest: Double = 0
+    for value in ranges {
+      let range = value.timeRangeValue
+      let start = range.start.seconds
+      let end = range.end.seconds
+      guard start.isFinite, end.isFinite else { continue }
+      furthest = max(furthest, end)
+      if position >= start - 0.5 && position <= end { containing = max(containing, end) }
+    }
+    bufferedTime = containing > 0 ? containing : furthest
+  }
+
+  private func handleTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
+    guard !isClosed else { return }
+    let playing = status != .paused
+    if playing != isPlaying {
+      isPlaying = playing
+      if playing {
+        hasEnded = false
+        fillerPrompt = nil
+      }
+      UIApplication.shared.isIdleTimerDisabled = playing
+      emitLocalState()
+      updateNowPlayingPlayback()
+    }
+    switch status {
+    case .waitingToPlayAtSpecifiedRate:
+      if phase == .ready { setBuffering(true) }
+    case .playing:
+      setBuffering(false)
+    case .paused:
+      if phase == .ready { setBuffering(false) }
+    @unknown default:
+      break
+    }
+  }
+
+  private func setBuffering(_ value: Bool, immediate: Bool = false) {
+    bufferingTask?.cancel()
+    bufferingTask = nil
+    guard value else {
+      if isBuffering { isBuffering = false }
+      return
+    }
+    if immediate || isBuffering {
+      isBuffering = true
+      return
+    }
+    // showBuffering: only show the spinner after 150 ms.
+    bufferingTask = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 150_000_000)
+      guard !Task.isCancelled else { return }
+      self?.isBuffering = true
+    }
+  }
+
+  private func handleTick(_ time: CMTime) {
+    guard !isClosed else { return }
+    let seconds = time.seconds
+    guard seconds.isFinite else { return }
+    if !isScrubbing && !seekInFlight {
+      currentTime = max(seconds, 0)
+    }
+    refreshSubtitleCues()
+    guard isPlaying, phase == .ready else { return }
+    checkSkippableChapters()
+    checkCompletion()
+    if Date().timeIntervalSince(lastProgressSave) >= 10 {
+      saveProgress()
+    }
+  }
+
+  // MARK: - App state
+
+  private func handleWillResignActive() {
+    playingBeforeResign = isPlaying
+  }
+
+  /// handleVisibility: pause when leaving the app if playerPause is on (unless PiP/AirPlay); otherwise keep
+  /// the audio playing by detaching the video layer (AVPlayer pauses video-attached players in background).
+  private func handleDidEnterBackground() {
+    guard didStart, !isClosed else { return }
+    if everReady { saveProgress(force: true) }
+    if isPictureInPictureActive || pipStarting || player.isExternalPlaybackActive { return }
+    let wasPlaying = isPlaying || playingBeforeResign
+    if AppSettings.shared.values.playerPause {
+      pausedByBackground = wasPlaying
+      if isPlaying { player.pause() }
+    } else {
+      layerView.playerLayer.player = nil
+      detachedForBackground = true
+      if wasPlaying { player.play() }
+    }
+  }
+
+  private func handleWillEnterForeground() {
+    guard didStart, !isClosed else { return }
+    if detachedForBackground {
+      detachedForBackground = false
+      layerView.playerLayer.player = player
+    }
+    if pausedByBackground {
+      pausedByBackground = false
+      player.play()
+    }
+  }
+
+  private func handleInterruption(type: UInt?, options: UInt?) {
+    guard let type, let interruption = AVAudioSession.InterruptionType(rawValue: type) else { return }
+    switch interruption {
+    case .began:
+      interruptedWhilePlaying = isPlaying || playingBeforeResign
+    case .ended:
+      let shouldResume = AVAudioSession.InterruptionOptions(rawValue: options ?? 0).contains(.shouldResume)
+      if shouldResume && interruptedWhilePlaying && !isClosed { player.play() }
+      interruptedWhilePlaying = false
+    @unknown default:
+      break
+    }
+  }
+
+  // MARK: - Playback controls
+
+  func play() {
+    guard !isClosed else { return }
+    fillerPrompt = nil
+    if hasEnded {
+      hasEnded = false
+      performSeek(to: 0) { [weak self] in
+        self?.player.play()
+      }
+      return
+    }
+    player.play()
+  }
+
+  func pause() {
+    player.pause()
+  }
+
+  func togglePlayPause() {
+    if isPlaying {
+      pause()
+    } else {
+      play()
+    }
+  }
+
+  func seek(to time: Double) {
+    guard everReady, !isClosed else { return }
+    performSeek(to: time) { [weak self] in
+      self?.emitLocalState()
+      self?.updateNowPlayingPlayback()
+    }
+  }
+
+  func seek(by delta: Double) {
+    seek(to: currentTime + delta)
+  }
+
+  /// forward / rewind: `playerSeek` seconds.
+  func forward() {
+    seek(by: AppSettings.shared.values.playerSeek)
+  }
+
+  func rewind() {
+    seek(by: -AppSettings.shared.values.playerSeek)
+  }
+
+  func beginScrubbing() {
+    guard everReady else { return }
+    isScrubbing = true
+    scrubTime = currentTime
+  }
+
+  func scrub(to time: Double) {
+    guard isScrubbing, time.isFinite else { return }
+    scrubTime = min(max(time, 0), safeDuration)
+    refreshSubtitleCues()
+    performSeek(to: scrubTime, precise: false)
+    requestPreview(at: scrubTime)
+  }
+
+  func endScrubbing(at time: Double) {
+    guard isScrubbing else { return }
+    let target = time.isFinite ? min(max(time, 0), safeDuration) : scrubTime
+    scrubTime = target
+    currentTime = target
+    previewTask?.cancel()
+    previewTask = nil
+    scrubPreview = nil
+    performSeek(to: target, precise: true) { [weak self] in
+      guard let self else { return }
+      self.isScrubbing = false
+      self.emitLocalState()
+      self.updateNowPlayingPlayback()
+      self.refreshSubtitleCues()
+    }
+  }
+
+  private func performSeek(to seconds: Double, precise: Bool = true, completion: (() -> Void)? = nil) {
+    guard seconds.isFinite else { return }
+    let upper = duration > 0 ? duration : max(seconds, 0)
+    let target = min(max(seconds, 0), upper)
+    chaseTarget = target
+    chasePrecise = precise
+    if let completion { seekCompletions.append(completion) }
+    if !isScrubbing { currentTime = target }
+    if target < upper - 0.5 { hasEnded = false }
+    if !seekInFlight { runChaseSeek() }
+  }
+
+  /// Seeks one at a time and jumps to the latest requested position (smooth scrubbing).
+  private func runChaseSeek() {
+    seekInFlight = true
+    let target = chaseTarget
+    let precise = chasePrecise
+    let tolerance = precise ? CMTime.zero : CMTime(seconds: 1, preferredTimescale: 600)
+    let time = CMTime(seconds: target, preferredTimescale: 600)
+    player.seek(to: time, toleranceBefore: tolerance, toleranceAfter: tolerance) { [weak self] _ in
+      Task { @MainActor [weak self] in
+        self?.chaseSeekFinished(target: target, precise: precise)
+      }
+    }
+  }
+
+  private func chaseSeekFinished(target: Double, precise: Bool) {
+    guard seekInFlight else { return }
+    if target != chaseTarget || precise != chasePrecise {
+      runChaseSeek()
+      return
+    }
+    seekInFlight = false
+    let completions = seekCompletions
+    seekCompletions = []
+    for completion in completions { completion() }
+  }
+
+  private func requestPreview(at time: Double) {
+    guard let generator = imageGenerator else { return }
+    previewTask?.cancel()
+    previewTask = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 120_000_000)
+      guard !Task.isCancelled else { return }
+      let cmTime = CMTime(seconds: time, preferredTimescale: 600)
+      guard let image = try? await generator.image(at: cmTime).image else { return }
+      guard !Task.isCancelled, let self, self.isScrubbing else { return }
+      self.scrubPreview = UIImage(cgImage: image)
+    }
+  }
+
+  func setRate(_ rate: Float) {
+    guard rate.isFinite else { return }
+    let clamped = min(max(rate, 0.1), 4)
+    playbackRate = clamped
+    player.defaultRate = clamped
+    if isPlaying { player.rate = clamped }
+    updateNowPlayingPlayback()
+  }
+
+  /// BracketLeft / BracketRight: playback rate -/+ 0.1.
+  func adjustRate(by delta: Float) {
+    setRate(((playbackRate + delta) * 10).rounded() / 10)
+  }
+
+  static func rateLabel(_ rate: Float) -> String {
+    rate == 1 ? "Normal" : String(format: "%gx", Double(rate))
+  }
+
+  func toggleMute() {
+    player.isMuted.toggle()
+    isMuted = player.isMuted
+    showNotice(isMuted ? "Muted" : "Unmuted")
+  }
+
+  /// ArrowUp / ArrowDown: app volume, persisted in the settings like the Svelte cache entry.
+  func adjustVolume(by delta: Double) {
+    let value = min(max(Double(player.volume) + delta, 0), 1)
+    player.volume = Float(value)
+    AppSettings.shared.values.volume = value
+    showNotice("Volume \(Int((value * 100).rounded()))%")
+  }
+
+  func setVideoFill(_ fill: Bool) {
+    videoFill = fill
+    layerView.playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
+  }
+
+  func toggleVideoFill() {
+    setVideoFill(!videoFill)
+  }
+
+  // MARK: - Servers
+
+  /// switchServer: loads another server and keeps the position.
+  func switchServer(to index: Int) {
+    guard session.servers.indices.contains(index), index != activeServerIndex || failure != nil else { return }
+    if everReady, currentTime > 0, pendingSeek == nil {
+      pendingSeek = .exact(currentTime)
+    }
+    resumePlaybackAfterLoad = !isFreshEpisodeLoad
+    loadServer(index)
+  }
+
+  func tryNextServer() {
+    let count = session.servers.count
+    guard count > 1 else { return }
+    switchServer(to: (activeServerIndex + 1) % count)
+  }
+
+  /// Reloads the current server (the Svelte toast "Dismiss this toast to reload the video").
+  func retry() {
+    if pendingSeek == nil, currentTime > 0 {
+      pendingSeek = .exact(currentTime)
+    }
+    resumePlaybackAfterLoad = !isFreshEpisodeLoad
+    loadServer(activeServerIndex)
+  }
+
+  // MARK: - Audio and subtitle tracks
+
+  private func loadMediaSelection(generation: Int) async {
+    guard let asset = currentAsset else { return }
+    let audible = try? await asset.loadMediaSelectionGroup(for: .audible)
+    let legible = try? await asset.loadMediaSelectionGroup(for: .legible)
+    guard generation == itemGeneration, !isClosed else { return }
+    audioGroup = audible
+    audioOptions = audible?.options ?? []
+    audioTracks = audioOptions.enumerated().map { index, option in
+      PlayerTrackOption(id: index, name: PlayerController.trackName(option, index: index), languageTag: PlayerController.languageTag(option))
+    }
+    legibleGroup = legible
+    legibleOptions = (legible?.options ?? []).filter { !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles) }
+    embeddedSubtitleTracks = legibleOptions.enumerated().map { index, option in
+      PlayerTrackOption(id: index, name: PlayerController.trackName(option, index: index), languageTag: PlayerController.languageTag(option))
+    }
+    selectPreferredAudio()
+    refreshSelectedAudio()
+    if userChoseSubtitle {
+      applySubtitleChoice(subtitleChoice)
+    } else {
+      applySubtitlePreference()
+    }
+  }
+
+  private static func trackName(_ option: AVMediaSelectionOption, index: Int) -> String {
+    let name = option.displayName.trimmingCharacters(in: .whitespaces)
+    return name.isEmpty ? "Track \(index + 1)" : name
+  }
+
+  private static func languageTag(_ option: AVMediaSelectionOption) -> String? {
+    option.extendedLanguageTag ?? option.locale?.identifier
+  }
+
+  /// checkAudio: preferred audio language, else Japanese, when there are several audio tracks.
+  private func selectPreferredAudio() {
+    guard let group = audioGroup, audioOptions.count > 1, let item = player.currentItem else { return }
+    let wanted = AppSettings.shared.values.audioLanguage
+    let preferred = audioOptions.first { PlayerLanguage.matches(tag: PlayerController.languageTag($0), wanted: wanted) }
+    let japanese = audioOptions.first { PlayerLanguage.matches(tag: PlayerController.languageTag($0), wanted: "jpn") }
+    if let pick = preferred ?? japanese {
+      item.select(pick, in: group)
+    }
+  }
+
+  private func refreshSelectedAudio() {
+    guard let group = audioGroup, let item = player.currentItem,
+          let selected = item.currentMediaSelection.selectedMediaOption(in: group) else {
+      selectedAudioTrack = nil
+      return
+    }
+    selectedAudioTrack = audioOptions.firstIndex(of: selected)
+  }
+
+  func selectAudio(_ id: Int) {
+    guard let group = audioGroup, audioOptions.indices.contains(id), let item = player.currentItem else { return }
+    item.select(audioOptions[id], in: group)
+    selectedAudioTrack = id
+  }
+
+  /// User choice from the subtitle menu (remembered per media like 'lastSubtitle').
+  func selectSubtitle(_ choice: PlayerSubtitleChoice) {
+    applySubtitleChoice(choice)
+    userChoseSubtitle = true
+    PlayerPreferences.setLastSubtitle(subtitleName(for: subtitleChoice) ?? "OFF", for: session.media.id)
+  }
+
+  private func applySubtitleChoice(_ choice: PlayerSubtitleChoice) {
+    var resolved = choice
+    if case .external(let id) = choice, !externalSubtitleTracks.contains(where: { $0.id == id }) {
+      resolved = .off
+    }
+    if let group = legibleGroup, let item = player.currentItem {
+      if case .embedded(let index) = choice, legibleOptions.indices.contains(index) {
+        item.select(legibleOptions[index], in: group)
+      } else {
+        if case .embedded = choice { resolved = .off }
+        item.select(nil, in: group)
+      }
+    } else if case .embedded = choice {
+      resolved = .off
+    }
+    subtitleChoice = resolved
+    refreshSubtitleCues()
+  }
+
+  /// Automatic subtitle choice: remembered track for this media (checkSubtitle), then the Svelte
+  /// handleTracks order (single track, preferred language, name match, English, first track).
+  private func applySubtitlePreference() {
+    guard !userChoseSubtitle else { return }
+    var candidates: [(choice: PlayerSubtitleChoice, name: String, tag: String?)] = []
+    for track in embeddedSubtitleTracks {
+      candidates.append((choice: .embedded(track.id), name: track.name, tag: track.languageTag))
+    }
+    for track in externalSubtitleTracks {
+      candidates.append((choice: .external(track.id), name: track.name, tag: nil))
+    }
+    guard !candidates.isEmpty else {
+      applySubtitleChoice(.off)
+      return
+    }
+    if let remembered = PlayerPreferences.lastSubtitle(for: session.media.id) {
+      if remembered == "OFF" {
+        applySubtitleChoice(.off)
+        return
+      }
+      let key = remembered.lowercased()
+      if let match = candidates.first(where: { $0.name.lowercased() == key })
+          ?? candidates.first(where: { $0.name.lowercased().contains(key) || key.contains($0.name.lowercased()) }) {
+        applySubtitleChoice(match.choice)
+        return
+      }
+    }
+    let wanted = AppSettings.shared.values.subtitleLanguage
+    if wanted.isEmpty {
+      // "None": only the subtitle file provided by the source is turned on (addSingleSubtitleFile).
+      if let external = candidates.first(where: { if case .external = $0.choice { return true } else { return false } }) {
+        applySubtitleChoice(external.choice)
+      } else {
+        applySubtitleChoice(.off)
+      }
+      return
+    }
+    if candidates.count == 1 {
+      applySubtitleChoice(candidates[0].choice)
+      return
+    }
+    let wantedLower = wanted.lowercased()
+    let byLanguage = candidates.first { candidate in
+      candidate.tag == nil ? wantedLower == "eng" : PlayerLanguage.matches(tag: candidate.tag, wanted: wanted)
+    }
+    let byName = candidates.first { $0.name.lowercased().contains(wantedLower) }
+    let english = candidates.first { PlayerLanguage.isEnglishOrUnknown($0.tag) }
+    applySubtitleChoice((byLanguage ?? byName ?? english ?? candidates[0]).choice)
+  }
+
+  /// Subtitle cycling (KeyC): next track, then OFF.
+  func cycleSubtitles() {
+    var all: [PlayerSubtitleChoice] = embeddedSubtitleTracks.map { PlayerSubtitleChoice.embedded($0.id) }
+    all += externalSubtitleTracks.map { PlayerSubtitleChoice.external($0.id) }
+    guard !all.isEmpty else { return }
+    let next: PlayerSubtitleChoice
+    if let index = all.firstIndex(of: subtitleChoice) {
+      next = index + 1 < all.count ? all[index + 1] : .off
+    } else {
+      next = all[0]
+    }
+    selectSubtitle(next)
+    showNotice("Subtitles", subtitleName(for: next) ?? "OFF")
+  }
+
+  func setSubtitleDelay(_ value: Double) {
+    guard value.isFinite else { return }
+    subtitleDelay = (min(max(value, -600), 600) * 10).rounded() / 10
+    refreshSubtitleCues()
+  }
+
+  /// loadExternalSubtitleUrl: downloads a subtitle file with the stream headers.
+  func loadExternalSubtitle(from url: URL, headers: [String: String] = [:], name: String = "Subtitles") {
+    let generation = episodeGeneration
+    let fileExtension = url.pathExtension
+    Task { [weak self] in
+      do {
+        let (data, _) = try await HTTP.data(url, headers: headers, timeout: 30)
+        let cues = await Task.detached(priority: .userInitiated) {
+          PlayerSubtitleParser.parse(data: data, fileExtension: fileExtension)
+        }.value
+        guard let self, generation == self.episodeGeneration else { return }
+        guard !cues.isEmpty else {
+          self.showNotice("Subtitles", "Failed to load \(name) as it is not a subtitle file.", isError: true)
+          return
+        }
+        self.addExternalTrack(name: name, cues: cues, select: false)
+      } catch {
+        guard let self, generation == self.episodeGeneration else { return }
+        self.showNotice("Subtitles", "Failed to fetch subtitles: \(error.localizedDescription)", isError: true)
+      }
+    }
+  }
+
+  /// "Add Subtitles": a file picked in Files (.srt, .vtt, .ass, .ssa, .sub, .txt).
+  func importSubtitleFile(at url: URL) {
+    let access = url.startAccessingSecurityScopedResource()
+    let data = try? Data(contentsOf: url)
+    if access { url.stopAccessingSecurityScopedResource() }
+    let name = url.deletingPathExtension().lastPathComponent
+    guard let data else {
+      showNotice("Subtitles", "Failed to read \(name).", isError: true)
+      return
+    }
+    parseAndAddSubtitles(data: data, fileExtension: url.pathExtension, name: name.isEmpty ? "Subtitles" : name)
+  }
+
+  /// Clipboard subtitles (the Svelte app accepts pasted ASS text and subtitle files).
+  func pasteSubtitles() {
+    guard let text = UIPasteboard.general.string, !text.isEmpty, let data = text.data(using: .utf8) else {
+      showNotice("Subtitles", "The clipboard doesn't contain subtitles.", isError: true)
+      return
+    }
+    parseAndAddSubtitles(data: data, fileExtension: "", name: "Clipboard")
+  }
+
+  private func parseAndAddSubtitles(data: Data, fileExtension: String, name: String) {
+    let generation = episodeGeneration
+    Task { [weak self] in
+      let cues = await Task.detached(priority: .userInitiated) {
+        PlayerSubtitleParser.parse(data: data, fileExtension: fileExtension)
+      }.value
+      guard let self, generation == self.episodeGeneration else { return }
+      guard !cues.isEmpty else {
+        self.showNotice("Subtitles", "Failed to load the file \(name) as it is not a subtitle file.", isError: true)
+        return
+      }
+      self.addExternalTrack(name: name, cues: cues, select: true)
+    }
+  }
+
+  private func addExternalTrack(name: String, cues: [PlayerSubtitleCue], select: Bool) {
+    nextExternalTrackID += 1
+    var uniqueName = name
+    var suffix = 2
+    while externalSubtitleTracks.contains(where: { $0.name == uniqueName }) || embeddedSubtitleTracks.contains(where: { $0.name == uniqueName }) {
+      uniqueName = "\(name) \(suffix)"
+      suffix += 1
+    }
+    let track = PlayerExternalSubtitleTrack(id: nextExternalTrackID, name: uniqueName, cues: cues)
+    externalSubtitleTracks.append(track)
+    if select {
+      selectSubtitle(.external(track.id))
+    } else {
+      applySubtitlePreference()
+    }
+  }
+
+  private func refreshSubtitleCues() {
+    guard case .external(let id) = subtitleChoice, let track = externalSubtitleTracks.first(where: { $0.id == id }) else {
+      if !activeSubtitleCues.isEmpty { activeSubtitleCues = [] }
+      return
+    }
+    let cues = track.activeCues(at: displayTime + subtitleDelay)
+    if cues.map(\.id) != activeSubtitleCues.map(\.id) {
+      activeSubtitleCues = cues
+    }
+  }
+
+  // MARK: - Chapters and skipping
+
+  /// findChapters: embedded chapters first, AniSkip when there are none or when it is the preferred source.
+  private func loadChapters() {
+    guard let asset = currentAsset else { return }
+    let generation = episodeGeneration
+    Task { [weak self] in
+      let embedded = await PlayerChapterLoader.embeddedChapters(of: asset)
+      guard let self, generation == self.episodeGeneration else { return }
+      self.embeddedChapters = embedded
+      if !embedded.isEmpty {
+        self.chapters = PlayerChapterLogic.sanitise(embedded, duration: self.safeDuration)
+      }
+      if self.chapters.isEmpty || self.chapterSource == .aniskip {
+        await self.findAniSkipChapters()
+      }
+    }
+  }
+
+  private func findAniSkipChapters() async {
+    let media = session.media
+    guard media.isAnime, let malId = media.malId else { return }
+    let total = safeDuration
+    guard total > 0 else { return }
+    let generation = episodeGeneration
+    let result = await PlayerAniSkip.chapters(malId: malId, episode: session.episode.number, duration: total)
+    guard generation == episodeGeneration, !isClosed, !result.isEmpty else { return }
+    chapters = PlayerChapterLogic.sanitise(result, duration: safeDuration)
+  }
+
+  /// "Chapter Source" menu (Embedded / Aniskip).
+  func setChapterSource(_ source: PlayerChapterSource) {
+    chapterSource = source
+    PlayerPreferences.chapterSource = source
+    currentSkippable = nil
+    switch source {
+    case .embedded:
+      chapters = PlayerChapterLogic.sanitise(embeddedChapters, duration: safeDuration)
+    case .aniskip:
+      Task { [weak self] in
+        await self?.findAniSkipChapters()
+      }
+    }
+  }
+
+  /// checkSkippableChapters + auto skip (`playerSkip`, "Auto-Skip Intro/Outro").
+  private func checkSkippableChapters() {
+    guard !isScrubbing, !seekInFlight,
+          let chapter = PlayerChapterLogic.chapter(at: currentTime, in: chapters) else { return }
+    let name = PlayerChapterLogic.skippableName(chapter)
+    if name != currentSkippable { currentSkippable = name }
+    if name != nil, AppSettings.shared.values.playerSkip, autoSkippedChapterStart != chapter.start {
+      autoSkippedChapterStart = chapter.start
+      skip()
+    }
+  }
+
+  /// skip(): end of the current skippable chapter (or next episode when it is the last one),
+  /// +85 s inside a long non-skippable chapter, 90 s near the start, the end near the end.
+  func skip() {
+    guard everReady else { return }
+    let time = currentTime
+    let total = safeDuration
+    var target: Double
+    if let chapter = PlayerChapterLogic.chapter(at: time, in: chapters) {
+      if PlayerChapterLogic.skippableName(chapter) == nil && chapter.length > 100 {
+        target = time + 85
+      } else {
+        if (total - chapter.end).rounded(.towardZero) == 0 && hasNext && AppSettings.shared.values.playerAutoplay {
+          currentSkippable = nil
+          Task { [weak self] in
+            await self?.playNext()
+          }
+          return
+        }
+        target = chapter.end
+        currentSkippable = nil
+      }
+    } else if time < 10 {
+      target = 90
+    } else if total - time < 90 {
+      target = total
+    } else {
+      target = time + 85
+    }
+    seek(to: target)
+  }
+
+  // MARK: - Progress and completion
+
+  /// checkCompletion / checkCompletionByTime.
+  private func checkCompletion() {
+    let settings = AppSettings.shared.values
+    guard !completed, settings.playerAutocomplete else { return }
+    let threshold = Double(settings.playerAutocompleteThreshold) / 100
+    let total = safeDuration
+    guard total > 0, currentTime > 0, currentTime >= total * threshold else { return }
+    let media = session.media
+    let episodeAired = (media.nextAiring?.episode ?? 0) >= session.episode.number
+    guard media.episodes != nil || episodeAired || media.isMovie else { return }
+    completed = true
+    onAutocomplete?(media, session.episode)
+  }
+
+  /// saveAnimeProgress: skipped while buffering/seeking unless forced.
+  private func saveProgress(force: Bool = false) {
+    if !force {
+      guard phase == .ready, !isBuffering, !seekInFlight, currentTime > 0.5 else { return }
+    }
+    let total = safeDuration
+    guard total > 0, currentTime.isFinite else { return }
+    lastProgressSave = Date()
+    onProgress?(PlayerProgressSnapshot(media: session.media, episode: session.episode, currentTime: currentTime, duration: total))
+  }
+
+  // MARK: - Episodes
+
+  /// playNext (KeyN, next button, autoplay).
+  func playNext() async {
+    guard let ref = nextEpisodeRef else { return }
+    await switchEpisode(to: ref, notifyIndex: true)
+  }
+
+  /// playLast (KeyB, previous button).
+  func playPrevious() async {
+    guard let ref = previousEpisodeRef else { return }
+    await switchEpisode(to: ref, notifyIndex: true)
+  }
+
+  /// Episode picked in the episode list.
+  func playEpisode(_ ref: EpisodeRef) async {
+    await switchEpisode(to: ref, notifyIndex: true)
+  }
+
+  /// Filler prompt answer: Yes skips to the next episode, No plays this one.
+  func answerFillerPrompt(skip: Bool) {
+    fillerPrompt = nil
+    if skip {
+      Task { [weak self] in
+        await self?.playNext()
+      }
+    } else {
+      play()
+    }
+  }
+
+  private func switchEpisode(to ref: EpisodeRef, notifyIndex: Bool) async {
+    guard !isClosed, loadingEpisode == nil else { return }
+    guard let loadEpisode else {
+      showNotice("Episode \(ref.number)", "Episode loading is not available here.", isError: true)
+      return
+    }
+    if everReady { saveProgress(force: true) }
+    let wasPlaying = isPlaying
+    player.pause()
+    loadingEpisode = ref
+    do {
+      let next = try await loadEpisode(ref)
+      loadingEpisode = nil
+      guard !isClosed else { return }
+      begin(next)
+      if notifyIndex {
+        onIndexChange?(currentEpisodeIndex ?? next.episode.number)
+      }
+    } catch {
+      loadingEpisode = nil
+      guard !isClosed else { return }
+      if !(error is CancellationError) {
+        showNotice("Failed to load Episode \(ref.number)", error.localizedDescription, isError: true)
+      }
+      if wasPlaying { player.play() }
+    }
+  }
+
+  // MARK: - Watch Together
+
+  private func emitLocalState() {
+    saveProgress()
+    guard Date() >= suppressSyncUntil, everReady else { return }
+    let state = (paused: !isPlaying, time: floor(currentTime))
+    if let last = lastSyncedState, last.paused == state.paused, last.time == state.time { return }
+    lastSyncedState = state
+    onLocalStateChange?(state)
+  }
+
+  /// w2gEmitter 'playerupdate': follow another participant (seek only on a meaningful difference).
+  func applyRemoteState(paused: Bool, time: Double) {
+    guard !isClosed, time.isFinite else { return }
+    lastSyncedState = (paused: paused, time: floor(time))
+    suppressSyncUntil = Date().addingTimeInterval(1)
+    autoplayHandledByRemote = true
+    guard phase == .ready else {
+      pendingRemoteState = (paused: paused, time: time)
+      return
+    }
+    fillerPrompt = nil
+    if abs(currentTime - time) > PlayerController.remoteSeekThreshold {
+      performSeek(to: time)
+    }
+    if paused {
+      if isPlaying { player.pause() }
+    } else if !isPlaying {
+      if hasEnded {
+        play()
+      } else {
+        player.play()
+      }
+    }
+  }
+
+  /// w2gEmitter 'setindex': another participant changed episode.
+  func applyRemoteIndex(_ index: Int) {
+    let ref: EpisodeRef
+    if !episodeList.isEmpty {
+      guard episodeList.indices.contains(index) else { return }
+      ref = episodeList[index].ref
+    } else {
+      ref = EpisodeRef(number: index, season: nil, localEpisode: nil)
+    }
+    guard ref.number != session.episode.number || ref.season != session.episode.season else { return }
+    Task { [weak self] in
+      await self?.switchEpisode(to: ref, notifyIndex: false)
+    }
+  }
+
+  // MARK: - Picture in Picture
+
+  /// togglePopout (KeyP, PiP button). With `onMinimize` set, the player UI is dismissed once PiP runs so
+  /// the rest of the app can be used (replaces the desktop miniplayer).
+  func togglePictureInPicture() {
+    if isPictureInPictureActive {
+      pip.stop()
+      return
+    }
+    startPictureInPicture(minimize: onMinimize != nil)
+  }
+
+  func minimize() {
+    startPictureInPicture(minimize: true)
+  }
+
+  private func startPictureInPicture(minimize: Bool) {
+    guard PlayerPiPCoordinator.isSupported else {
+      showNotice("Picture in Picture", "Picture in Picture is not supported on this device.", isError: true)
+      return
+    }
+    guard isPictureInPicturePossible else {
+      showNotice("Picture in Picture", "Picture in Picture isn't available for this video right now.", isError: true)
+      return
+    }
+    wantsMinimizeOnPiPStart = minimize && onMinimize != nil
+    pip.start()
+  }
+
+  private func pictureInPictureDidStart() {
+    pipStarting = false
+    isPictureInPictureActive = true
+    if wantsMinimizeOnPiPStart {
+      wantsMinimizeOnPiPStart = false
+      isMinimized = true
+      onMinimize?()
+    }
+  }
+
+  private func pictureInPictureDidStop() {
+    pipStarting = false
+    isPictureInPictureActive = false
+    let restoring = restoringFromPiP
+    restoringFromPiP = false
+    if isMinimized && !restoring && !isClosed {
+      // The PiP window was closed while the player UI was dismissed: same as closing the player.
+      close()
+    }
+  }
+
+  private func pictureInPictureFailed(_ message: String) {
+    pipStarting = false
+    wantsMinimizeOnPiPStart = false
+    showNotice("Picture in Picture", message, isError: true)
+  }
+
+  private func pictureInPictureRestore() {
+    restoringFromPiP = true
+    if isMinimized {
+      isMinimized = false
+      onRestoreFromPictureInPicture?()
+    }
+  }
+
+  // MARK: - Now Playing
+
+  private func installRemoteCommands() {
+    let commands = PlayerNowPlaying.Commands(
+      play: { [weak self] in self?.play() },
+      pause: { [weak self] in self?.pause() },
+      toggle: { [weak self] in self?.togglePlayPause() },
+      next: { [weak self] in
+        Task { await self?.playNext() }
+      },
+      previous: { [weak self] in
+        Task { await self?.playPrevious() }
+      },
+      skipForward: { [weak self] in self?.forward() },
+      skipBackward: { [weak self] in self?.rewind() },
+      seek: { [weak self] time in self?.seek(to: time) }
+    )
+    nowPlaying.enable(commands, skipInterval: AppSettings.shared.values.playerSeek)
+    refreshRemoteCommandAvailability()
+  }
+
+  private func refreshRemoteCommandAvailability() {
+    nowPlaying.setTrackCommands(next: hasNext, previous: hasLast)
+  }
+
+  private func updateNowPlayingMetadata() {
+    guard didStart, !isClosed else { return }
+    let images = session.media.images
+    nowPlaying.setMetadata(title: displayTitle, subtitle: episodeLine, artworkURL: images.coverLarge ?? images.cover ?? images.banner)
+    refreshRemoteCommandAvailability()
+    updateNowPlayingPlayback()
+  }
+
+  private func updateNowPlayingPlayback() {
+    guard didStart, !isClosed else { return }
+    nowPlaying.setPlayback(elapsed: currentTime, duration: safeDuration, rate: isPlaying ? Double(playbackRate) : 0)
+  }
+
+  // MARK: - Tools
+
+  /// KeyX "Save Screenshot to Clipboard" (video frame only, external subtitles are not burned in).
+  func takeScreenshot() {
+    guard let output = videoOutput, let item = player.currentItem else { return }
+    let time = item.currentTime()
+    guard let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) else {
+      showNotice("Screenshot", "No video frame is available yet.", isError: true)
+      return
+    }
+    let image = CIImage(cvPixelBuffer: buffer)
+    guard let cgImage = CIContext().createCGImage(image, from: image.extent) else {
+      showNotice("Screenshot", "The video frame could not be captured.", isError: true)
+      return
+    }
+    UIPasteboard.general.image = UIImage(cgImage: cgImage)
+    showNotice("Screenshot", "Saved screenshot to clipboard.")
+  }
+
+  /// KeyI "Toggle Stats".
+  func toggleStats() {
+    if statsTask != nil {
+      statsTask?.cancel()
+      statsTask = nil
+      stats = nil
+      return
+    }
+    stats = makeStats()
+    statsTask = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        guard !Task.isCancelled, let self else { return }
+        self.stats = self.makeStats()
+      }
+    }
+  }
+
+  private func makeStats() -> [PlayerStatLine] {
+    let item = player.currentItem
+    let event = item?.accessLog()?.events.last
+    let videoTrack = item?.tracks.first { $0.assetTrack?.mediaType == .video }
+    let fps = videoTrack.map { String(format: "%.3f", Double($0.currentVideoFrameRate)) } ?? "n/a"
+    let dropped = event.map { String($0.numberOfDroppedVideoFrames) } ?? "n/a"
+    let bitrate = event.map { $0.indicatedBitrate > 0 ? String(format: "%.0f kbps", $0.indicatedBitrate / 1000) : "n/a" } ?? "n/a"
+    let size = item?.presentationSize ?? .zero
+    let scale = layerView.traitCollection.displayScale
+    let bounds = layerView.bounds.size
+    let viewport = "\(Int((bounds.width * scale).rounded()))x\(Int((bounds.height * scale).rounded()))"
+    let resolution = "\(Int(size.width.rounded()))x\(Int(size.height.rounded()))"
+    let bufferHealth = max(0, bufferedTime - currentTime)
+    let server = session.currentServer
+    let name = server.map { "\($0.title) (\($0.url.lastPathComponent))" } ?? ""
+    return [
+      PlayerStatLine(label: "FPS", value: fps),
+      PlayerStatLine(label: "Dropped frames", value: dropped),
+      PlayerStatLine(label: "Viewport", value: viewport),
+      PlayerStatLine(label: "Resolution", value: resolution),
+      PlayerStatLine(label: "Bitrate", value: bitrate),
+      PlayerStatLine(label: "Buffer health", value: String(format: "%.0f s", bufferHealth)),
+      PlayerStatLine(label: "Playback speed", value: String(format: "x%.1f", Double(player.rate == 0 ? playbackRate : player.rate))),
+      PlayerStatLine(label: "Name", value: name)
+    ]
+  }
+
+  /// "External Player" (VLC / Infuse). Stream headers can't be forwarded.
+  func openInExternalPlayer(_ app: PlayerExternalApp) {
+    guard let server = session.currentServer, let url = app.url(for: server.url) else { return }
+    pause()
+    Task { [weak self] in
+      let opened = await UIApplication.shared.open(url, options: [:])
+      if !opened {
+        self?.showNotice("External Player", "\(app.name) is not installed.", isError: true)
+      }
+    }
+  }
+
+  func showNotice(_ title: String, _ message: String? = nil, isError: Bool = false) {
+    let newNotice = PlayerNotice(title: title, message: message, isError: isError)
+    notice = newNotice
+    noticeTask?.cancel()
+    noticeTask = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 4_000_000_000)
+      guard !Task.isCancelled, let self, self.notice?.id == newNotice.id else { return }
+      self.notice = nil
+    }
+  }
+
+  func dismissNotice() {
+    noticeTask?.cancel()
+    noticeTask = nil
+    notice = nil
+  }
+}
