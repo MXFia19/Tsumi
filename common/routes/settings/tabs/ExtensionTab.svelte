@@ -218,7 +218,7 @@
           {#if ext.manifest?.version}<span class='badge border-0 bg-light pl-10 pr-10 mt-10 font-scale-16'>{ext.manifest.version}</span>{/if}
           {#if ext.manifest?.streamType}<span class='badge border-0 bg-light pl-10 pr-10 ml-10 mt-10 font-scale-16'>{ext.manifest.streamType}</span>{/if}
           {#if ext.manifest?.quality}<span class='badge border-0 bg-light pl-10 pr-10 ml-10 mt-10 font-scale-16'>{ext.manifest.quality}</span>{/if}
-          {#if ext.manifest?.type}<span class='badge border-0 bg-light pl-10 pr-10 ml-10 mt-10 font-scale-16'>{ext.manifest.type}</span>{/if}
+          {#if ext.manifest?.type && ext.manifest.type !== 'stremio'}<span class='badge border-0 bg-light pl-10 pr-10 ml-10 mt-10 font-scale-16'>{ext.manifest.type}</span>{/if}
         </div>
       </div>
     {/each}

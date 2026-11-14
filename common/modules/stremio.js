@@ -40,7 +40,6 @@ function normalizeStremioManifest (manifest) {
     version: manifest.version || '0.0.0',
     description: manifest.description || '',
     streamType: 'Stremio',
-    type: 'stremio',
     stremioId: manifest.id
   }
 }

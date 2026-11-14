@@ -235,10 +235,12 @@ class ExtensionManager {
 
   async addExtension(manifestUrl) {
     try {
-      const { manifest, script } = await loadExtension(manifestUrl)
+      // Keep everything loadExtension returns (Stremio addons also carry type + stremio).
+      const loaded = await loadExtension(manifestUrl)
+      const { manifest } = loaded
       const key = `${manifest.sourceName}-${manifest.version}`
 
-      this.extensions.set(key, { manifest, script })
+      this.extensions.set(key, loaded)
 
       settings.set({
         ...settings.value,
