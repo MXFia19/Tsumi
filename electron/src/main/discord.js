@@ -1,6 +1,7 @@
 import { Client } from '@xhayper/discord-rpc'
 import { ipcMain } from 'electron'
 import { debounce } from '@/modules/util.js'
+import DiscordSocial, { APPLICATION_ID } from './discordSocial.js'
 
 export default class Discord {
   defaultStatus = {
@@ -17,7 +18,12 @@ export default class Discord {
     }
   }
 
-  discord = new Client({ transport: { type: 'ipc' }, clientId: '1472362790013505607' })
+  // Local RPC with the Discord app: only works while the Discord app is running.
+  discord = new Client({ transport: { type: 'ipc' }, clientId: APPLICATION_ID })
+  // Discord Social SDK: once the user linked their account, presence goes through it, even with the Discord app closed.
+  social = new DiscordSocial()
+  // An activity was set through the local RPC (cleared when presence moves to the SDK, so it isn't shown twice).
+  rpcActivity = false
 
   /** @type {string} */
   enableRPC = 'disabled'
@@ -34,6 +40,7 @@ export default class Discord {
     ipcMain.on('discord-rpc', (event, data) => {
       if (this.enableRPC !== data) {
         this.enableRPC = data
+        this.social.setEnabled(data !== 'disabled')
         if (data !== 'disabled') {
           if (!this.discord?.user) this.loginRPC()
           else this.debouncedDiscordRPC(this.enableRPC === 'full' ? this.cachedPresence : undefined)
@@ -44,6 +51,15 @@ export default class Discord {
     })
 
     ipcMain.on('discord-clear', () => this.debouncedDiscordRPC(undefined, true))
+
+    ipcMain.handle('discord-social:status', () => this.social.status())
+    ipcMain.on('discord-social:link', () => this.social.link())
+    ipcMain.on('discord-social:unlink', () => this.social.unlink())
+    this.social.on('status', (status, routeChanged) => {
+      if (!window.isDestroyed()) window.webContents.send('discord-social:status', status)
+      // Presence moved between the SDK and the Discord app: show it on the new path right away.
+      if (routeChanged && this.enableRPC !== 'disabled') this.setDiscordRPC(this.enableRPC === 'full' ? this.cachedPresence : undefined)
+    })
 
     this.discord.on('ready', async () => {
       this.setDiscordRPC(this.enableRPC === 'full' ? this.cachedPresence : undefined)
@@ -62,9 +78,19 @@ export default class Discord {
     this.discord.login().catch(() => setTimeout(() => this.loginRPC(), 5_000).unref?.())
   }
 
+  clearRPCActivity () {
+    this.rpcActivity = false
+    this.discord.user?.clearActivity(process.pid).catch(() => {})
+  }
+
   setDiscordRPC (data = this.defaultStatus, clearActivity = false) {
     if (clearActivity) {
-      if (this.discord?.user) this.discord.user.clearActivity(process.pid)
+      this.social.clearActivity()
+      if (this.discord?.user) this.clearRPCActivity()
+    } else if (this.social.connected && data?.activity && this.enableRPC !== 'disabled') {
+      this.social.setActivity(data.activity)
+      // Same application on both paths: don't leave the local RPC activity in the Discord app as well.
+      if (this.rpcActivity && this.discord?.user) this.clearRPCActivity()
     } else if (this.discord.user && data && this.enableRPC !== 'disabled') {
       /** @type {(value: any, limit: number) => any} */
       const toLimitedText = (value, limit) => typeof value === 'string' ? value.slice(0, limit) : value
@@ -105,9 +131,14 @@ export default class Discord {
         if (!activity.buttons.length) activity.buttons = undefined
       }
 
+      this.rpcActivity = true
       this.discord.request('SET_ACTIVITY', { pid: process.pid, activity }).catch((error) => {
         console.warn('Discord RPC SET_ACTIVITY failed:', error?.message || error)
       })
     }
+  }
+
+  destroy () {
+    this.social.shutdown()
   }
 }

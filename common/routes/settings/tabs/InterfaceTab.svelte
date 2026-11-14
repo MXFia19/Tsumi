@@ -10,11 +10,29 @@
   import { tmdbGenreList } from '@/modules/tmdb.js'
   import CustomDropdown from '@/components/CustomDropdown.svelte'
   import Helper from '@/modules/helper.js'
+  import { onDestroy } from 'svelte'
   function updateAngle () {
     IPC.emit('set:angle', settings.angle)
   }
   export let settings
   const listStatus = [['Watching', 'CURRENT'], ['Planning', 'PLANNING'], ['Paused', 'PAUSED'], ['Completed', 'COMPLETED'], ['Dropped', 'DROPPED'], ['Rewatching', 'REPEATING'], ['Not on List', 'NOTONLIST']]
+
+  // Discord account linked through the Discord Social SDK (Electron main process, see electron/src/main/discordSocial.js).
+  /** @type {{ available: boolean, state: string, name: string, error: string }} */
+  let discordAccount = { available: false, state: 'unavailable', name: '', error: '' }
+  /** @type {Record<string, string>} */
+  const discordAccountLabels = {
+    unlinked: 'Not linked',
+    linking: 'Linking…',
+    connecting: 'Connecting…',
+    linked: 'Linked, Rich Presence is disabled'
+  }
+  $: discordAccountText = discordAccount.state === 'connected' ? `Connected as ${discordAccount.name}` : (discordAccountLabels[discordAccount.state] || 'Not linked')
+  if (SUPPORTS.discord) {
+    IPC.invoke('discord-social:status').then((/** @type {any} */ status) => { if (status) discordAccount = status }).catch(() => {})
+    IPC.on('discord-social:status', (/** @type {any} */ status) => { discordAccount = status })
+    onDestroy(() => IPC.off('discord-social:status'))
+  }
 </script>
 
 {#if SUPPORTS.discord}
@@ -26,6 +44,21 @@
       <option value='disabled'>Disabled</option>
     </select>
   </SettingCard>
+  {#if discordAccount.available}
+    <SettingCard title='Discord Account' description='Link your Discord account to show your activity even when the Discord app is closed. Without a linked account, rich presence only works while the Discord app is running.'>
+      <div class='d-flex flex-column align-items-md-end w-200 mw-full'>
+        <div class='font-weight-semi-bold text-truncate mw-full mb-5' title={discordAccountText}>{discordAccountText}</div>
+        {#if discordAccount.state === 'unlinked'}
+          <button type='button' use:click={() => IPC.emit('discord-social:link')} class='btn btn-primary d-flex align-items-center justify-content-center'><span class='text-truncate'>Link</span></button>
+        {:else}
+          <button type='button' use:click={() => IPC.emit('discord-social:unlink')} class='btn btn-danger d-flex align-items-center justify-content-center'><span class='text-truncate'>{discordAccount.state === 'linking' ? 'Cancel' : 'Unlink'}</span></button>
+        {/if}
+        {#if discordAccount.error}
+          <div class='text-danger font-size-12 mt-5 pre-wrap text-md-right'>{discordAccount.error}</div>
+        {/if}
+      </div>
+    </SettingCard>
+  {/if}
   <SettingCard title='Second Discord Button' description={'The first button opens the title on AniList (or TMDB for shows and movies). During Watch Together, the second button is always "Join Watch Together".\nOutside Watch Together, choose what the second button opens.'}>
     <select class='form-control bg-dark w-100 mw-full text-truncate' bind:value={settings.rpcSecondButton}>
       <option value='mal' selected>MyAnimeList</option>

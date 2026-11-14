@@ -283,6 +283,7 @@ export default class App {
     this.mainWindow.hide()
     this.mainWindow.webContents?.closeDevTools?.()
     this.tray?.destroy()
+    this.discord.destroy()
     for (const timeout of this.timeouts) clearTimeout(timeout)
     this.timeouts.clear()
     clearTimeout(this.stateTimeout)

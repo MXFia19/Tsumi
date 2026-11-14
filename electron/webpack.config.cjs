@@ -41,7 +41,10 @@ module.exports = [
       filename: 'main.js'
     },
     externals: {
-      '@paymoapp/electron-shutdown-handler': 'require("@paymoapp/electron-shutdown-handler")'
+      '@paymoapp/electron-shutdown-handler': 'require("@paymoapp/electron-shutdown-handler")',
+      // FFI module for the Discord Social SDK, required at runtime. Its native part comes from @koromix/koffi-<platform>
+      // in development, and from resources/koffi in the packaged app (extraResources in package.json).
+      koffi: 'require("koffi")'
     },
     resolve: {
       aliasFields: [],

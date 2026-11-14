@@ -43,6 +43,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download electron-codecs-39.2.7 --pattern "electron-v39.2.7-win32-x64.zip" --dir electron-dist
+      # The Discord Social SDK (presence without the Discord app) is proprietary, so it is kept as an asset of a
+      # private release of this repo. The DLL is shipped next to the app (electron-builder extraResources).
+      - name: Download Discord Social SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download discord-social-sdk-1.10.19337 --pattern "discord-social-sdk-windows.zip" --dir discord-sdk-download
+          Expand-Archive discord-sdk-download/discord-social-sdk-windows.zip -DestinationPath discord-sdk-download/extracted
+          New-Item -ItemType Directory -Force electron/discord-social-sdk | Out-Null
+          Get-ChildItem discord-sdk-download/extracted -Recurse -Include discord_partner_sdk.dll, License-Notices.txt | Copy-Item -Destination electron/discord-social-sdk
+          if (-not (Test-Path electron/discord-social-sdk/discord_partner_sdk.dll)) { throw 'discord_partner_sdk.dll is missing from the release asset' }
       - name: Build app (webpack)
         working-directory: electron
         env:
@@ -54,6 +65,14 @@ jobs:
         working-directory: electron
         shell: bash  # PowerShell splits "-c.npmRebuild=false" into "-c" ".npmRebuild=false"
         run: pnpm exec electron-builder --win nsis --x64 --publish never --config.npmRebuild=false --config.electronDist=../electron-dist
+      # Without these two files the app silently falls back to the Discord app's local RPC.
+      # koffi.node is copied by extraResources: electron-builder leaves out koffi's platform package (@koromix/*).
+      - name: Check Discord Social SDK files in the app
+        working-directory: electron/dist/win-unpacked/resources
+        run: |
+          foreach ($file in 'discord-social-sdk/discord_partner_sdk.dll', 'koffi/win32_x64/koffi.node') {
+            if (-not (Test-Path $file)) { throw "$file is missing from the packaged app" }
+          }
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
