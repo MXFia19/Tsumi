@@ -22,6 +22,34 @@ jobs:
         run: xcodebuild -version
       - name: Install XcodeGen
         run: brew install xcodegen
+      # Discord Social SDK (rich presence). Proprietary, so never committed: its iOS part is an asset of a private
+      # release of this repository (discord_partner_sdk.xcframework, cdiscord.h, License-Notices.txt). The
+      # xcframework goes to Vendor/ (framework dependency of project.yml) and cdiscord.h next to
+      # Vendor/CDiscord/module.modulemap (the CDiscord Clang module imported by Swift).
+      - name: Download Discord Social SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          sdk="$RUNNER_TEMP/discord-sdk"
+          rm -rf "$sdk"
+          gh release download discord-social-sdk-1.10.19337 --repo "$GITHUB_REPOSITORY" --pattern "discord-social-sdk-ios.zip" --dir "$sdk"
+          unzip -q "$sdk/discord-social-sdk-ios.zip" -d "$sdk/unzipped"
+          xcframework=$(find "$sdk/unzipped" -type d -name discord_partner_sdk.xcframework -not -path '*/__MACOSX/*' -prune | head -n 1)
+          header=$(find "$sdk/unzipped" -type f -name cdiscord.h -not -path '*/__MACOSX/*' -not -path '*.xcframework/*' | head -n 1)
+          if [ -z "$header" ] && [ -n "$xcframework" ]; then
+            header=$(find "$xcframework" -type f -name cdiscord.h | head -n 1)
+          fi
+          if [ -z "$xcframework" ] || [ -z "$header" ]; then
+            echo "discord-social-sdk-ios.zip has no discord_partner_sdk.xcframework or cdiscord.h"
+            exit 1
+          fi
+          rm -rf Vendor/discord_partner_sdk.xcframework
+          cp -R "$xcframework" Vendor/discord_partner_sdk.xcframework
+          cp "$header" Vendor/CDiscord/cdiscord.h
+          notices=$(find "$sdk/unzipped" -type f -name License-Notices.txt -not -path '*/__MACOSX/*' | head -n 1)
+          if [ -n "$notices" ]; then cp "$notices" Vendor/License-Notices.txt; fi
+          ls Vendor Vendor/CDiscord Vendor/discord_partner_sdk.xcframework
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Build archive (unsigned)
@@ -39,6 +67,7 @@ jobs:
                      CODE_SIGNING_REQUIRED=NO \
                      CODE_SIGN_IDENTITY="" 2>&1 | tee build/xcodebuild.log | grep -E "error:|warning: unre|BUILD|ARCHIVE" || true
           test -d build/Tsumi.xcarchive/Products/Applications/Tsumi.app
+          test -d build/Tsumi.xcarchive/Products/Applications/Tsumi.app/Frameworks/discord_partner_sdk.framework
       - name: Show compile errors
         if: failure()
         run: grep -E "error:" build/xcodebuild.log | sort | uniq | head -150 || true

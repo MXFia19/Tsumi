@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 /// Persisted user settings, same keys and defaults as the Svelte app (common/modules/util.js `defaults`),
-/// minus desktop-only ones (Discord RPC, close action, external player path, DoH, miniplayer, angle).
+/// minus desktop-only ones (close action, external player path, DoH, miniplayer, angle).
 /// Decoding is tolerant like settings.js `{ ...defaults, ...storedSettings }`: a missing or unreadable key
 /// keeps its default, unknown keys are ignored and the Svelte array shapes of the sections are accepted
 /// (see the `init(from:)` extensions below).
@@ -51,6 +51,10 @@ struct SettingsValues: Codable, Equatable {
   var dubAnnounce = "none"
   var hentaiAnnounce = "none"        // all | following | none
 
+  // Discord (Settings > Discord, DiscordPresence)
+  var enableRPC = "full"             // full | limited (no title / episode) | disabled
+  var rpcSecondButton = "mal"        // mal | download: second presence button outside Watch Together
+
   // App
   var queryComplexity = "Complex"    // Complex | Simple (anilist.js queryComplexObjects)
 
@@ -65,6 +69,7 @@ struct SettingsValues: Codable, Equatable {
     case titleLang, bannerProvider, hideMyAnime, cardPreview, cardAudio, toggleList, uiScale, accentColor
     case adult, hentaiBanner, toasts, homeSections, customSections, westernSections
     case systemNotify, aniNotify, releasesNotify, releasesNotifyNotOnList, subAnnounce, dubAnnounce, hentaiAnnounce
+    case enableRPC, rpcSecondButton
     case queryComplexity, defaultExtension, starredExtension
   }
 
@@ -80,6 +85,7 @@ struct SettingsValues: Codable, Equatable {
       .titleLang, .bannerProvider, .hideMyAnime, .cardPreview, .cardAudio, .toggleList, .uiScale, .accentColor,
       .adult, .hentaiBanner, .toasts, .homeSections, .customSections, .westernSections,
       .systemNotify, .aniNotify, .releasesNotify, .releasesNotifyNotOnList, .subAnnounce, .dubAnnounce, .hentaiAnnounce,
+      .enableRPC, .rpcSecondButton,
       .queryComplexity, .defaultExtension, .starredExtension
     ]
     return keys.map { $0.stringValue }
@@ -136,6 +142,13 @@ extension SettingsValues {
     subAnnounce = container.settingsValue(String.self, .subAnnounce) ?? subAnnounce
     dubAnnounce = container.settingsValue(String.self, .dubAnnounce) ?? dubAnnounce
     hentaiAnnounce = container.settingsValue(String.self, .hentaiAnnounce) ?? hentaiAnnounce
+
+    if let mode = container.settingsValue(String.self, .enableRPC), ["full", "limited", "disabled"].contains(mode) {
+      enableRPC = mode
+    }
+    if let button = container.settingsValue(String.self, .rpcSecondButton), ["mal", "download"].contains(button) {
+      rpcSecondButton = button
+    }
 
     queryComplexity = container.settingsValue(String.self, .queryComplexity) ?? queryComplexity
 

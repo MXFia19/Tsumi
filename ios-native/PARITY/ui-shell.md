@@ -173,7 +173,7 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 
 | # | Svelte feature | Source | Swift | Status |
 |---|---|---|---|---|
-| 7.1 | Discord Rich Presence | IT 20-29 | — | n.a. (desktop) |
+| 7.1 | Discord Rich Presence (`enableRPC`, `rpcSecondButton`) | IT 20-29 | Settings > Discord (`ShellDiscordSettingsView`): the two pickers plus the Discord account (Link / Cancel / Reconnect / Unlink, status) | done (2026-11-15; the iOS presence needs a linked Discord account) |
 | 7.2 | Scale (UI scale slider + reset) | IT 33-42 | "Scale" picker (50-200 %) → `uiScale`, applied by `TsumiAppearance` as a Dynamic Type size on the root (100 % keeps the iOS text size) | done (discrete steps; only Dynamic Type text and controls scale) |
 | 7.3 | CSS Variables + Open Devtools | IT 43-48 | "Accent Color" (`ColorPicker`, Reset) → `accentColor`, applied as `.tint` on the root | partial (accent colour only; no free-form variables or devtools) |
 | 7.4 | Expandable Sidebar | IT 49-54 | — | n.a. (no sidebar) |

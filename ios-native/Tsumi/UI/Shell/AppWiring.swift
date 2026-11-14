@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import BackgroundTasks
 
-// Connects the blocks written separately (Services, Extensions, Player, Watch Together) once at launch.
+// Connects the blocks written separately (Services, Extensions, Player, Watch Together, Discord) once at launch.
 // Svelte equivalents: the module-level IPC / window event listeners of App.svelte, ExtensionModal.svelte
 // ('w2g-play'), WatchTogetherPage.svelte (lobby events), NotificationsModal.svelte (activation links),
 // stremio.js / tmdb.js (anilistToTmdb, tmdbToAnilist, getDetails) and anilist.js `title`.
@@ -20,6 +20,7 @@ enum AppWiring {
       ShellPlayback.start(playback)
     }
     configureWatchTogether()
+    configureDiscord()
     // Notification taps (activation tsumi://anime/<id>) go through the deep link router.
     AppNotificationsService.shared.onOpenURL = { url in
       ShellDeepLinks.handle(url)
@@ -94,6 +95,41 @@ enum AppWiring {
       ShellNavigation.showTab(.watchTogether)
     }
   }
+
+  /// Discord rich presence (PlayerPage.svelte setDiscordRPC inputs): what the player is doing, sampled once a
+  /// second by DiscordPresence (play / pause / seek / episode changes are seen there), and the lobby code.
+  private static func configureDiscord() {
+    let discord = DiscordPresence.shared
+    discord.nowPlaying = {
+      let presentation = PlayerPresentation.shared
+      guard let controller = presentation.controller else { return nil }
+      let snapshot = controller.syncSnapshot
+      let paused: Bool
+      switch snapshot.state {
+      case .idle:
+        return nil
+      case .playing, .buffering:
+        paused = false
+      case .paused, .loading:
+        paused = true
+      }
+      let media = MediaStore.shared.media(snapshot.media.id) ?? snapshot.media
+      let duration = controller.duration
+      return DiscordNowPlaying(
+        media: media,
+        episode: snapshot.episode.number,
+        title: AniListService.shared.title(media),
+        isPaused: paused,
+        isPresented: presentation.isPresented,
+        time: snapshot.time,
+        duration: duration.isFinite ? duration : 0,
+        rate: snapshot.rate
+      )
+    }
+    discord.watchTogetherCode = {
+      WatchTogetherClient.shared.code
+    }
+  }
 }
 
 /// ExtensionContext closures, built outside the main actor: the extension runtime calls them from
@@ -154,6 +190,8 @@ enum ShellLaunch {
 
   static func startFromView() async {
     start()
+    // Foreground launches only (not background refresh): reconnects a linked Discord account.
+    DiscordPresence.shared.start()
   }
 }
 
@@ -165,6 +203,8 @@ enum ShellLifecycle {
     case .active:
       // Reconnects the Watch Together trackers dropped while suspended.
       WatchTogetherClient.shared.appBecameActive()
+      // Same for the Discord connection (rich presence).
+      DiscordPresence.shared.appBecameActive()
     case .background:
       // Delivers the queued notifications before the app is suspended (15 s debounce otherwise).
       AppNotificationsService.shared.flush()

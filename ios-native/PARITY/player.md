@@ -117,7 +117,7 @@ L13 (2.28), L14 (2.29), L15 (7.21), L17 (4.16), L18 (4.17), the PiP restore devi
 | 3.12 | `handleRanged`: several episodes in one file → episode range | MH 67-94 | — | n.a. (extension streams are single episodes) |
 | 3.13 | `findPreferredPlaybackMedia`, `handleFiles`, `cleanFiles`, `sortFiles`, `remapByTitle`, `highestOccurrence` (torrent batch resolution) | MH 157-397 | — | n.a. (torrent/local file batches are not part of the iOS app) |
 | 3.14 | "Failed to identify the media" resolve prompt (`resolvePrompt`) | PP 1306-1314, 2098-2123 | — | n.a. (media always known for extension streams) |
-| 3.15 | Discord Rich Presence (`setDiscordRPC`) | PP 130-133, 1823-1928 | — | n.a. (desktop only) |
+| 3.15 | Discord Rich Presence (`setDiscordRPC`, `presenceButtons`) | PP 130-133, 1823-1928 | `DiscordPresence` (Discord Social SDK through the linked account): player sampled each second via `AppWiring.configureDiscord` (title, "Episode: N of M" / "The Movie", cover, progress timestamps while playing, party size, AniList / TMDB, Join Watch Together, MyAnimeList / Download buttons), browsing status when paused outside the full screen player, 5 s throttle | done (2026-11-15, not yet checked on a device) |
 
 ## 4. Episodes, autoplay and the episode list (PP + MM + FC)
 

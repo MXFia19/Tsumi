@@ -1,0 +1,8 @@
+// C API of the Discord Social SDK (cdiscord.h only), imported in Swift as `import CDiscord`.
+// The framework's own module (discord_partner_sdk) cannot be imported from Swift: its umbrella header also
+// pulls in discordpp.h, which is C++. The xcframework is linked and embedded for its symbols only.
+// cdiscord.h is not committed: CI copies it here from the SDK release asset (.github/workflows/ios-native.yml).
+module CDiscord {
+  header "cdiscord.h"
+  export *
+}

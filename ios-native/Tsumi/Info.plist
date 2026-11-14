@@ -31,6 +31,18 @@
 				<string>shiru</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>org.tsumi.app.discord</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>discord-1571278531135279258</string>
+			</array>
+		</dict>
+	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>discord</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>

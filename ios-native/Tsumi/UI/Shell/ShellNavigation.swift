@@ -202,6 +202,10 @@ enum ShellNavigation {
 @MainActor
 enum ShellDeepLinks {
   static func handle(_ url: URL) {
+    if DiscordPresence.isAuthCallback(url) {
+      // discord-<app id>:/authorize/callback: consumed by the Discord SDK (account linking).
+      return
+    }
     if WatchTogetherClient.isLobbyLink(url) {
       // w2g: link → IPC 'w2glink' (joins and shows the lobby through onShowLobby).
       _ = WatchTogetherClient.shared.handle(url: url)

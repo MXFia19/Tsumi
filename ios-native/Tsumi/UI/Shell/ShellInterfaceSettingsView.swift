@@ -3,8 +3,8 @@ import UserNotifications
 
 // Settings > Interface (common/routes/settings/tabs/InterfaceTab.svelte): interface options, notification
 // settings and home screen settings. UI Scale maps to a Dynamic Type size and the CSS variables are reduced to
-// an accent colour (App/TsumiApp.swift). Desktop only options (Discord rich presence, expandable sidebar,
-// ANGLE backend) have no iOS equivalent.
+// an accent colour (App/TsumiApp.swift). The Discord rich presence settings are in Settings > Discord
+// (ShellDiscordSettingsView); desktop only options (expandable sidebar, ANGLE backend) have no iOS equivalent.
 
 @MainActor
 struct ShellInterfaceSettingsView: View {

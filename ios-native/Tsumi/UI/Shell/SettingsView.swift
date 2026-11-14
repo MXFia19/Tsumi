@@ -1,14 +1,16 @@
 import SwiftUI
 import UIKit
 
-// Settings page (common/routes/settings/SettingsPage.svelte): Player, Interface, Extensions, Profiles (opens
-// the profiles modal), App. Shared building blocks: SettingCard.svelte, ClampedNumber.svelte, the settings
-// bindings and the default values of common/modules/settings.js (setDefaults / resetSettings).
+// Settings page (common/routes/settings/SettingsPage.svelte): Player, Interface, Discord (the rich presence
+// settings of the Interface tab, plus the Discord account), Extensions, Profiles (opens the profiles modal),
+// App. Shared building blocks: SettingCard.svelte, ClampedNumber.svelte, the settings bindings and the default
+// values of common/modules/settings.js (setDefaults / resetSettings).
 
 /// Screens of the Settings stack.
 enum ShellSettingsRoute: Hashable {
   case player
   case interface
+  case discord
   case extensions
   case app
   case animeSections
@@ -28,6 +30,9 @@ struct SettingsView: View {
         }
         NavigationLink(value: ShellSettingsRoute.interface) {
           Label("Interface", systemImage: "macwindow")
+        }
+        NavigationLink(value: ShellSettingsRoute.discord) {
+          Label("Discord", systemImage: "gamecontroller")
         }
         NavigationLink(value: ShellSettingsRoute.extensions) {
           Label("Extensions", systemImage: "puzzlepiece.extension")
@@ -67,6 +72,8 @@ struct ShellSettingsDestination: View {
       ShellPlayerSettingsView()
     case .interface:
       ShellInterfaceSettingsView()
+    case .discord:
+      ShellDiscordSettingsView()
     case .extensions:
       ShellExtensionsSettingsScreen()
     case .app:

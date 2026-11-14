@@ -26,3 +26,13 @@ Example2/
 example.js
 example.json
 
+# Discord Social SDK (proprietary): fetched by CI from a private release, never committed.
+ios-native/Vendor/discord_partner_sdk.xcframework/
+ios-native/Vendor/CDiscord/cdiscord.h
+ios-native/Vendor/cdiscord.h
+ios-native/Vendor/License-Notices.txt
+ios-native/Vendor/*.zip
+# Same SDK for the Electron app (Windows): extracted by CI into electron/discord-social-sdk/.
+electron/discord-social-sdk/
+discord-social-sdk-*.zip
+**/discord_partner_sdk.dll

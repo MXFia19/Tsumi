@@ -9,7 +9,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.3.3"
+    MARKETING_VERSION: "1.3.4"
     CURRENT_PROJECT_VERSION: "1"
 packages:
   # Native WebRTC (binary xcframework of Google libwebrtc), used by Watch Together data channels.
@@ -32,6 +32,15 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_PREVIEWS: NO
         CODE_SIGNING_ALLOWED: NO
+        # Discord Social SDK: its C API is imported with `import CDiscord`, our own Clang module
+        # (Vendor/CDiscord/module.modulemap). The framework's own module is never imported: its umbrella
+        # header also includes discordpp.h, which is C++.
+        SWIFT_INCLUDE_PATHS: "$(inherited) $(PROJECT_DIR)/Vendor/CDiscord"
     dependencies:
       - package: WebRTC
         product: WebRTC
+      # Discord Social SDK (rich presence), linked and embedded for its symbols only. Proprietary: not in the
+      # repository, CI unpacks it into Vendor/ before `xcodegen generate` (.github/workflows/ios-native.yml).
+      - framework: Vendor/discord_partner_sdk.xcframework
+        embed: true
+        codeSign: true
