@@ -27,8 +27,8 @@
       </div>
     </div>
     {#each messages as message, i (i)}
-      <div class='bg-dark-light py-10 px-15 rounded-top rounded-right mb-5 select-all pre-wrap text-break-word' style='max-width: calc(100% - 10rem)'
-        class:bg-dark-light={incoming} class:bg-accent={!incoming}
+      <div class='py-10 px-15 rounded-top mb-5 select-all pre-wrap text-break-word' style='max-width: calc(100% - 10rem)'
+        class:bg-dark-light={incoming} class:own={!incoming}
         class:rounded-right={incoming} class:rounded-left={!incoming}>
         {message}
       </div>
@@ -40,8 +40,13 @@
   .message {
     --base-border-radius: 1.3rem;
   }
-  .bg-accent {
-    background-color: var(--accent-color);
+  /* Own messages: tinted with the accent but dark enough for white text in any theme. A light accent
+     (white by default) used as is gave light text on white. Any accent mixed at 30% into the dark base
+     stays under ~10% luminance, so white text keeps a contrast of at least 7:1. */
+  .own {
+    background-color: hsla(var(--white-color-hsl), 0.2);
+    background-color: color-mix(in srgb, var(--accent-color) 30%, hsl(var(--dark-color-light-hsl)));
+    color: #fff;
   }
   .flex-auto {
     flex: auto;

@@ -21,10 +21,13 @@ class Episodes {
 
   rateLimitPromise = null
   concurrentRequests = new Map()
+  /** An API that timed out or could not be reached is skipped for a while, so the episode list never waits on it. */
+  downUntil = { jikan: 0, kitsu: 0 }
 
   constructor () {
     this.limiter.on('failed', async (error) => {
-      const info = (await error.json()) || error
+      if (typeof error?.json !== 'function') return // not an HTTP response (network error): don't retry
+      const info = (await error.json().catch(() => null)) || error
       if (await isOffline(info)) throw new Error('Failed making episode request, network is offline... not retrying.')
       if (info.status === 500) return 1
 
@@ -97,15 +100,21 @@ class Episodes {
     const cachedEntry = cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, status.value === 'offline')
     if (cachedEntry) return cachedEntry
     else if (status.value === 'offline') return
+    const api = jikan ? 'jikan' : 'kitsu'
+    if (Date.now() < this.downUntil[api]) return cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true) || null
     if (this.concurrentRequests.has(`${id}:${page}:${root}`)) return this.concurrentRequests.get(`${id}:${page}:${root}`)
     const requestPromise = this.limiter.wrap(async () => {
       await this.rateLimitPromise
+      if (Date.now() < this.downUntil[api]) return cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true) || null
       debug(`Fetching Episode ${episode} for ${id} with Page ${page}`)
       let res = {}
       try {
-        res = await fetch(jikan ? `https://api.jikan.moe/v4/anime/${id}${!root ? `/episodes?page=${page}` : ''}` : `https://kitsu.app/api/edge/anime/${id}/episodes`)
+        res = await fetch(jikan ? `https://api.jikan.moe/v4/anime/${id}${!root ? `/episodes?page=${page}` : ''}` : `https://kitsu.app/api/edge/anime/${id}/episodes`, { signal: AbortSignal.timeout(10_000) })
       } catch (e) {
-        if (!res || res.status !== 404) throw e
+        // Timeout or unreachable server: skip this API for 10 minutes instead of blocking the episode list.
+        this.downUntil[api] = Date.now() + 10 * 60 * 1000
+        debug(`${api} is unreachable, skipping it for 10 minutes`, e)
+        return cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true) || null
       }
       if (!res.ok && (res.status === 429 || res.status === 500)) {
         throw res
@@ -127,11 +136,9 @@ class Episodes {
       }
       return cache.cacheEntry(caches.EPISODES, `${id}:${page}:${root}`, {}, json, Date.now() + getRandomInt(1, 3) * 24 * 60 * 60 * 1000)
     })().catch((error) => {
-      if (status.value === 'offline') {
-        debug('Network offline, returning cached episode data if available', error)
-        const cachedEntry = cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true)
-        if (cachedEntry) return cachedEntry
-      } else throw new Error(error)
+      // Episode titles / filler flags are optional: fall back to stale data (or nothing) instead of failing the list.
+      debug('Episode request failed, returning cached episode data if available', error)
+      return cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true) || null
     }).finally(() => {
       this.concurrentRequests.delete(`${id}:${page}:${root}`)
     })

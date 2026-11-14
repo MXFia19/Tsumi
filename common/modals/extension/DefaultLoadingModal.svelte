@@ -60,6 +60,9 @@
     })
   }
 
+  // Name of the extension / addon the stream comes from (Watch Together shows it as the source).
+  let launchSource = ''
+
   function launchPlayer (
     streamData,
     episodeNum,
@@ -89,7 +92,8 @@
             episode_number: episodeNum
           }
         },
-        activeServerIndex: serverIndex
+        activeServerIndex: serverIndex,
+        sourceName: launchSource
       }
     ])
 
@@ -110,6 +114,7 @@
       .getEnabled()
       .find((e) => e.key === defaultKey)
 
+    launchSource = defaultExt?.manifest?.sourceName || defaultExt?.key || ''
     if (!defaultExt) {
       fail(
         'Default extension not found or disabled',

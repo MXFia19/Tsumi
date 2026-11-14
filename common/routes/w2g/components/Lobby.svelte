@@ -5,7 +5,8 @@
   import Helper from '@/modules/helper.js'
   import User from '@/routes/w2g/components/User.svelte'
   import Message from '@/routes/w2g/components/Message.svelte'
-  import { SendHorizontal, DoorOpen, UserPlus, Crown, Users, RefreshCw } from 'lucide-svelte'
+  import { anilistClient } from '@/modules/anilist.js'
+  import { SendHorizontal, DoorOpen, UserPlus, Crown, Users, RefreshCw, MonitorPlay } from 'lucide-svelte'
   export let invite
 
   /** @type {import('simple-store-svelte').Writable<import('./w2g.js').W2GClient | null>} */
@@ -31,6 +32,8 @@
   $: lobby = client?.lobby
   $: signals = client?.signals
   $: localStatus = client?.localStatus
+  $: following = client?.following
+  $: rejoinOffer = client?.rejoinOffer
 
   // The stores are passed so the list is rebuilt whenever one of them changes.
   function listMembers (client, now, ..._stores) {
@@ -40,6 +43,7 @@
   $: isHost = !!client && $lobby?.hostId != null && String($lobby.hostId) === client.selfId
   $: hostMode = $lobby?.hostId != null && $lobby?.mode === 'host'
   $: watching = !!$localStatus && $localStatus.state !== 'idle'
+  $: rejoinLabel = $rejoinOffer ? [anilistClient.title($rejoinOffer.media) || 'the lobby title', client.episodeLabel($rejoinOffer.episode)].filter(Boolean).join(' · ') : ''
 
   function saveDisplayName () {
     const value = displayName.trim().slice(0, 32)
@@ -126,13 +130,24 @@
             {hostMode ? 'Host controls playback' : 'Everyone controls playback'}
           </span>
           {#if isHost}
-            <div class='custom-switch mb-5' title='Only the host controls playback'>
+            <div class='custom-switch mb-5 mr-10' title='Only the host controls playback'>
               <input type='checkbox' id='w2g-host-mode' checked={$lobby?.mode === 'host'} on:change={({ target }) => client.setMode(target.checked ? 'host' : 'everyone')} />
               <label for='w2g-host-mode' class='font-size-14'>Host only</label>
             </div>
-          {:else if watching}
+          {:else if watching && $following}
             <button type='button' class='btn btn-sm d-flex align-items-center mb-5' title='Jump to the host' use:click={() => client.resync()}>
               <RefreshCw size='1.4rem' class='mr-5' /> Resync
+            </button>
+          {/if}
+        </div>
+        <div class='d-flex align-items-center flex-wrap pb-10'>
+          <div class='custom-switch mb-5 mr-10' title='Play, pause and seek without following the lobby, and without moving the others'>
+            <input type='checkbox' id='w2g-own' checked={!$following} on:change={({ target }) => client.setFollowing(!target.checked)} />
+            <label for='w2g-own' class='font-size-14'>Watch on my own</label>
+          </div>
+          {#if $rejoinOffer}
+            <button type='button' class='btn btn-sm btn-primary d-flex align-items-center mb-5 mw-full' title='Start the lobby episode, then sync' use:click={() => client.rejoin()}>
+              <MonitorPlay size='1.4rem' class='mr-5 flex-shrink-0' /><span class='text-truncate'>Rejoin {rejoinLabel}</span>
             </button>
           {/if}
         </div>
@@ -155,7 +170,7 @@
           {members.length} Member(s)
         </div>
         {#each members as member (member.userId)}
-          <User {member} canManage={isHost} onKick={(id) => client.kick(id)} onTransfer={(id) => client.transferHost(id)} />
+          <User {member} canManage={isHost} onKick={(id) => client.kick(id)} onTransfer={(id) => client.transferHost(id)} onInvite={(id) => client.invite(id)} />
         {/each}
       {/if}
     </div>

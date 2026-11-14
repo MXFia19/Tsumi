@@ -24,7 +24,7 @@
 
   import { w2gEmitter, state } from '@/routes/w2g/WatchTogetherPage.svelte'
   import PlayerW2G from '@/routes/w2g/components/PlayerW2G.svelte'
-  import { LocalActionTracker } from '@/routes/w2g/components/sync.js'
+  import { LocalActionTracker, formatSource } from '@/routes/w2g/components/sync.js'
   import ManagerModal from '@/modals/manager/ManagerModal.svelte'
   import Keybinds, { loadWithDefaults, condition } from 'svelte-keybinds'
   import { SUPPORTS } from '@/modules/support.js'
@@ -125,7 +125,8 @@
     w2gLoading = true
     w2gLoadToken++
     w2gLoadSteps = []
-    w2gKey = state.value?.media?.key || ''
+    // What we started last: the lobby media, or our own launch while watching on our own (v2.2).
+    w2gKey = state.value?.launchedKey || ''
     w2gTracker.reset(null)
   }
 
@@ -151,13 +152,30 @@
 
   $: w2gStatus = !current || externalPlayback ? 'idle' : w2gLoading ? 'loading' : paused ? 'paused' : buffering ? 'buffering' : 'playing'
   $: w2gMediaKey = w2gKey || $state?.media?.key || ''
-  $: reportW2GStatus(false, w2gStatus, w2gMediaKey, playbackRate, $state)
-  function reportW2GStatus (force, status = w2gStatus, key = w2gMediaKey, rate = playbackRate) {
+  // status.source: extension / addon, then the server ("AnimePahe · Server 2").
+  $: w2gSource = formatSource(current?.sourceName, streamServers[activeServerIndex]?.title || (streamServers.length > 1 ? `Server ${activeServerIndex + 1}` : ''))
+  // status.nowPlaying: the client turns `episode` into "Episode 5" / "S2 E5" / "Movie".
+  $: w2gNowPlaying = w2gNowPlayingOf(media, current)
+  function w2gNowPlayingOf (media, current) {
+    const fullMedia = media?.media || current?.media?.media
+    if (!fullMedia && !current) return null
+    return {
+      mediaId: fullMedia?.id ?? null,
+      title: (fullMedia && anilistClient.title(fullMedia)) || (current?.name ? AnimeResolver.cleanFileName(current.name) : ''),
+      episode: media?.episode ?? current?.media?.episode,
+      format: fullMedia?.format,
+      episodes: fullMedia?.episodes
+    }
+  }
+  $: reportW2GStatus(false, w2gStatus, w2gMediaKey, playbackRate, w2gSource, w2gNowPlaying, $state)
+  function reportW2GStatus (force, status = w2gStatus, key = w2gMediaKey, rate = playbackRate, source = w2gSource, nowPlaying = w2gNowPlaying) {
     state.value?.setLocalStatus({
       state: status,
       time: video?.currentTime || 0,
       mediaKey: status === 'idle' ? '' : key,
-      rate: rate || 1
+      rate: rate || 1,
+      source: status === 'idle' ? '' : source,
+      nowPlaying: status === 'idle' ? null : nowPlaying
     }, { force })
   }
 

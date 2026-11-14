@@ -203,10 +203,11 @@ export function inferAction (previous, next) {
 }
 
 /**
- * @typedef {{ state: string, time: number, mediaKey?: string, rate?: number }} Status
+ * @typedef {{ mediaId: string | number | null, title: string, episode: string }} NowPlaying
+ * @typedef {{ state: string, time: number, mediaKey?: string, rate?: number, source?: string, following?: boolean, nowPlaying?: NowPlaying | null }} Status
  * @typedef {{ status?: Status | null, receivedAt?: number, rtt?: number, protocol?: number, lastSeen?: number }} MemberSignal
  * @typedef {Status & { at: number }} LocalStatus our own status, `at` = when `time` was read
- * @typedef {{ kind: 'old' | 'nosignal' | 'idle' | 'loading' | 'buffering' | 'other' | 'sync' | 'ahead' | 'behind' | 'playing' | 'paused', text: string, drift?: number }} Badge
+ * @typedef {{ kind: 'old' | 'nosignal' | 'idle' | 'loading' | 'buffering' | 'other' | 'own' | 'sync' | 'ahead' | 'behind' | 'playing' | 'paused', text: string, drift?: number }} Badge
  */
 
 /**
@@ -242,6 +243,8 @@ export function syncBadge (member, local, now) {
   }
 
   if (status.state === 'idle') return { kind: 'idle', text: 'Not in the player' }
+  // v2.2: an independent member has no drift.
+  if (status.following === false) return { kind: 'own', text: 'Watching on their own' }
   if (status.state === 'loading') return { kind: 'loading', text: 'Loading' }
   if (status.state === 'buffering') return { kind: 'buffering', text: 'Buffering' }
 
@@ -271,6 +274,7 @@ export function autoSyncStep (memory, { enabled, isHost, hostStatus, hostReceive
   const lastSyncAt = isFiniteNumber(memory?.lastSyncAt) ? memory.lastSyncAt : -Infinity
   const idle = { streak: 0, lastSyncAt, seekTo: null }
   if (!enabled || isHost || !hostStatus || !local) return idle
+  if (hostStatus.following === false) return idle
   if (hostStatus.state !== 'playing' || local.state !== 'playing') return idle
   if ((hostStatus.mediaKey || '') !== (local.mediaKey || '')) return idle
 
@@ -306,6 +310,289 @@ export function hostReference ({ status, receivedAt, rtt, lastPlayer }, now) {
     return { time: lastPlayer.time + elapsed, paused: !!lastPlayer.paused, mediaKey: null }
   }
   return null
+}
+
+// ---------------------------------------------------------------- v2.1: source, presence, invite
+
+/** Same member and kind announces at most once every 5 s. */
+export const PRESENCE_DEBOUNCE_MS = 5_000
+/** "is buffering…" once a buffering period lasts more than 8 s. */
+export const BUFFERING_ANNOUNCE_MS = 8_000
+/** "lost connection" once "No signal" (no status, no pong) lasted 10 s: 10 s + 10 s without either. */
+export const LOST_ANNOUNCE_MS = NO_SIGNAL_MS + 10_000
+const WATCHING_STATES = ['loading', 'playing', 'paused']
+
+/**
+ * `status.source`: extension / addon name, then the server label, joined with " · ".
+ * @param {...unknown} parts
+ */
+export function formatSource (...parts) {
+  return parts.map(part => (typeof part === 'string' ? part.trim() : '')).filter(Boolean).join(' · ').slice(0, 80)
+}
+
+/**
+ * Splits a media key (w2g.js mediaKey: "mediaId:episode" or "mediaId:season:episode").
+ * @param {unknown} key
+ * @returns {{ mediaId: string, season: string | null, episode: string } | null}
+ */
+export function parseMediaKey (key) {
+  if (typeof key !== 'string' || !key) return null
+  const parts = key.split(':')
+  if (parts.length === 2) return { mediaId: parts[0], season: null, episode: parts[1] }
+  if (parts.length === 3) return { mediaId: parts[0], season: parts[1] || null, episode: parts[2] }
+  return null
+}
+
+const validPart = value => value != null && value !== '' && value !== 'undefined' && value !== 'null'
+
+/**
+ * "Episode 5", or "S2 E5" when a season is known. Null when there is no episode number.
+ * @param {{ season?: unknown, episode?: unknown }} parts
+ */
+export function formatEpisode ({ season, episode }) {
+  if (!validPart(episode)) return null
+  return validPart(season) ? `S${season} E${episode}` : `Episode ${episode}`
+}
+
+/**
+ * Label of the `episode` of a `media` / `invite` payload: a number, or { number, season?, localEpisode? }.
+ * @param {unknown} episode
+ */
+export function episodeLabelOf (episode) {
+  if (episode && typeof episode === 'object') {
+    const value = /** @type {any} */ (episode)
+    return formatEpisode({ season: value.season, episode: value.localEpisode ?? value.number })
+  }
+  return formatEpisode({ episode })
+}
+
+/**
+ * Label for "Alice switched to {label}": the episode of the new key, or "another title" when the media differs.
+ * @param {string} previousKey
+ * @param {string} nextKey
+ */
+export function switchLabel (previousKey, nextKey) {
+  const next = parseMediaKey(nextKey)
+  const previous = parseMediaKey(previousKey)
+  if (!next || (previous && previous.mediaId !== next.mediaId)) return 'another title'
+  return formatEpisode(next) ?? 'another title'
+}
+
+/**
+ * @typedef {{ kind: 'started' | 'again' | 'stopped' | 'switched' | 'source' | 'buffering' | 'lost' | 'own' | 'back' | 'watching', label?: string, source?: string }} Announcement
+ * @typedef {{ status: (Status & { source?: string }) | null, bufferingSince: number | null, bufferingAnnounced: boolean, lostAnnounced: boolean, lastAt: Record<string, number> }} Presence
+ */
+
+/** @returns {Presence} */
+export function createPresence () {
+  return { status: null, bufferingSince: null, bufferingAnnounced: false, lostAnnounced: false, lastAt: {} }
+}
+
+/**
+ * @param {Presence} presence
+ * @param {Announcement[]} found
+ * @param {number} now
+ * @returns {{ presence: Presence, announcements: Announcement[] }}
+ */
+function debounceAnnouncements (presence, found, now) {
+  const lastAt = { ...presence.lastAt }
+  const announcements = []
+  for (const announcement of found) {
+    if (now - (lastAt[announcement.kind] ?? -Infinity) < PRESENCE_DEBOUNCE_MS) continue
+    lastAt[announcement.kind] = now
+    announcements.push(announcement)
+  }
+  return { presence: { ...presence, lastAt }, announcements }
+}
+
+/**
+ * Presence announcements caused by a `status` received from another member (never for ourselves).
+ * @param {Presence | null | undefined} presence state of that member, null before its first status
+ * @param {Status & { source?: string }} status
+ * @param {number} now
+ * @returns {{ presence: Presence, announcements: Announcement[] }}
+ */
+export function presenceOnStatus (presence, status, now) {
+  const current = presence ?? createPresence()
+  const previous = current.status
+  /** @type {Announcement[]} */
+  const found = []
+  if (!previous) {
+    // The first status after joining only says "started watching".
+    if (WATCHING_STATES.includes(status.state)) found.push({ kind: 'started' })
+  } else {
+    if (status.state === 'idle' && previous.state !== 'idle') found.push({ kind: 'stopped' })
+    if (previous.state === 'idle' && WATCHING_STATES.includes(status.state)) found.push({ kind: 'again' })
+    const previousKey = previous.mediaKey || ''
+    const nextKey = status.mediaKey || ''
+    // v2.2: following on / off.
+    const wasFollowing = previous.following !== false
+    const following = status.following !== false
+    if (wasFollowing && !following) found.push({ kind: 'own' })
+    if (!wasFollowing && following) found.push({ kind: 'back' })
+    if (status.state !== 'idle' && previousKey && nextKey && previousKey !== nextKey) {
+      // An independent member "is watching {title · episode}" instead of "switched to".
+      if (following) found.push({ kind: 'switched', label: switchLabel(previousKey, nextKey) })
+      else found.push({ kind: 'watching', label: nowPlayingLabel(status.nowPlaying) || switchLabel(previousKey, nextKey) })
+    }
+    if (previousKey === nextKey && previous.source && status.source && previous.source !== status.source) {
+      found.push({ kind: 'source', source: status.source })
+    }
+  }
+  const buffering = status.state === 'buffering'
+  const continued = buffering && previous?.state === 'buffering' && current.bufferingSince !== null
+  const next = {
+    ...current,
+    status,
+    lostAnnounced: false,
+    bufferingSince: buffering ? (continued ? current.bufferingSince : now) : null,
+    bufferingAnnounced: continued ? current.bufferingAnnounced : false
+  }
+  return debounceAnnouncements(next, found, now)
+}
+
+/**
+ * Time-based announcements, checked about once a second: long buffering, lost connection.
+ * @param {Presence | null | undefined} presence
+ * @param {{ now: number, lastStatusAt?: number, lastPongAt?: number }} signal
+ * @returns {{ presence: Presence | null | undefined, announcements: Announcement[] }}
+ */
+export function presenceOnTick (presence, { now, lastStatusAt, lastPongAt }) {
+  if (!presence?.status) return { presence, announcements: [] }
+  /** @type {Announcement[]} */
+  const found = []
+  let next = presence
+  if (next.status.state === 'buffering' && next.bufferingSince !== null && !next.bufferingAnnounced && now - next.bufferingSince > BUFFERING_ANNOUNCE_MS) {
+    next = { ...next, bufferingAnnounced: true }
+    found.push({ kind: 'buffering' })
+  }
+  const lastSignal = Math.max(isFiniteNumber(lastStatusAt) ? lastStatusAt : -Infinity, isFiniteNumber(lastPongAt) ? lastPongAt : -Infinity)
+  if (!next.lostAnnounced && now - lastSignal >= LOST_ANNOUNCE_MS) {
+    next = { ...next, lostAnnounced: true }
+    found.push({ kind: 'lost' })
+  }
+  if (!found.length) return { presence: next, announcements: [] }
+  return debounceAnnouncements(next, found, now)
+}
+
+/**
+ * @param {string} name
+ * @param {Announcement} announcement
+ */
+export function describePresence (name, { kind, label, source }) {
+  switch (kind) {
+    case 'started': return `${name} started watching`
+    case 'again': return `${name} is watching again`
+    case 'stopped': return `${name} stopped watching`
+    case 'switched': return `${name} switched to ${label || 'another title'}`
+    case 'source': return `${name} changed source: ${source}`
+    case 'buffering': return `${name} is buffering…`
+    case 'lost': return `${name} lost connection`
+    case 'own': return `${name} is watching on their own`
+    case 'back': return `${name} is back in sync`
+    case 'watching': return `${name} is watching ${label || 'another title'}`
+    default: return null
+  }
+}
+
+/**
+ * Whether a member row shows "Invite to watch": the member is idle, on another episode or without
+ * signal for 10 s; we are in the player with a media; in `host` mode only the host invites.
+ * @param {{ selfWatching: boolean, hasMedia: boolean, effectiveMode: string, isHost: boolean, now: number,
+ *   member: { isSelf?: boolean, protocol?: number, badge?: Badge, status?: Status | null, receivedAt?: number, joinedAt?: number } }} input
+ */
+export function canInvite ({ selfWatching, hasMedia, effectiveMode, isHost, now, member }) {
+  if (!selfWatching || !hasMedia || member.isSelf || !(member.protocol >= 2)) return false
+  if (effectiveMode === 'host' && !isHost) return false
+  const kind = member.badge?.kind
+  // Independent members (v2.2) can be invited too.
+  if (member.status?.state === 'idle' || kind === 'idle' || kind === 'other' || kind === 'own') return true
+  if (kind !== 'nosignal') return false
+  const since = member.status ? member.receivedAt : member.joinedAt
+  return isFiniteNumber(since) && now - since >= NO_SIGNAL_MS
+}
+
+/**
+ * Whether an `invite` is for us and allowed: anyone in `everyone` mode, the host only in `host` mode.
+ * @param {{ to: unknown, selfId: string, senderId: string, hostId: string | null, effectiveMode: string }} input
+ */
+export function acceptsInvite ({ to, selfId, senderId, hostId, effectiveMode }) {
+  if (!sameId(to, selfId) || sameId(senderId, selfId)) return false
+  return effectiveMode !== 'host' || sameId(senderId, hostId)
+}
+
+/**
+ * Where to seek once a joined invite is loaded: the host's expected position if the host is on the
+ * same episode, else the inviter's time plus the elapsed time when it was playing.
+ * @param {{ invite: { key: string, time: number, paused: boolean, receivedAt: number }, host: { time: number, paused: boolean, mediaKey: string | null } | null, now: number }} input
+ * @returns {{ time: number, paused: boolean, from: 'host' | 'inviter' }}
+ */
+export function inviteTarget ({ invite, host, now }) {
+  if (host && host.mediaKey !== null && host.mediaKey === invite.key && isFiniteNumber(host.time)) {
+    return { time: host.time, paused: host.paused, from: 'host' }
+  }
+  const elapsed = invite.paused ? 0 : Math.max(0, now - invite.receivedAt) / 1000
+  return { time: Math.max(0, invite.time + elapsed), paused: !!invite.paused, from: 'inviter' }
+}
+
+// ---------------------------------------------------------------- v2.2: independent watching
+
+/**
+ * `status.nowPlaying`, cleaned: `{ mediaId, title, episode }` or null.
+ * @param {unknown} value
+ * @returns {NowPlaying | null}
+ */
+export function normalizeNowPlaying (value) {
+  if (!value || typeof value !== 'object') return null
+  const raw = /** @type {any} */ (value)
+  const text = item => (typeof item === 'string' ? item.trim().slice(0, 120) : '')
+  const mediaId = typeof raw.mediaId === 'string' || isFiniteNumber(raw.mediaId) ? raw.mediaId : null
+  return { mediaId, title: text(raw.title), episode: text(raw.episode) }
+}
+
+/** "Title · Episode 5" of a nowPlaying, empty when unknown. @param {NowPlaying | null | undefined} nowPlaying */
+export function nowPlayingLabel (nowPlaying) {
+  return [nowPlaying?.title, nowPlaying?.episode].filter(Boolean).join(' · ')
+}
+
+/**
+ * `nowPlaying.episode`: "Movie" for a single-episode movie, else "Episode 5" / "S2 E5".
+ * @param {{ episode: unknown, format?: string, episodes?: number }} input
+ */
+export function episodeLabelFor ({ episode, format, episodes }) {
+  if (format === 'MOVIE' && !(episodes > 1)) return 'Movie'
+  return episodeLabelOf(episode) ?? ''
+}
+
+/**
+ * Host hand-off when the host stops following: the smallest userId among the connected v2 peers
+ * whose last status does not say `following: false`. Null: nobody follows, the host stays.
+ * @param {Array<{ userId: string, protocol?: number, following?: boolean }>} peers
+ * @returns {string | null}
+ */
+export function pickFollowingHost (peers) {
+  return electHost(peers.filter(peer => peer.protocol >= 2 && peer.following !== false).map(peer => peer.userId))
+}
+
+/**
+ * Host migration (v2.2): independent members are skipped, unless nobody follows.
+ * @param {{ selfId: string, selfFollowing: boolean, peers: Array<{ userId: string, following?: boolean }> }} input
+ * @returns {string | null}
+ */
+export function electFollowingHost ({ selfId, selfFollowing, peers }) {
+  const following = [...(selfFollowing ? [selfId] : []), ...peers.filter(peer => peer.following !== false).map(peer => peer.userId)]
+  return electHost(following.length ? following : [selfId, ...peers.map(peer => peer.userId)])
+}
+
+/**
+ * What to do when "Watch on my own" is turned off: resync when we already play the lobby's
+ * episode, otherwise offer "Rejoin" (nothing changes until it is used).
+ * @param {{ localKey: string, lobbyKey: string | null | undefined }} input
+ * @returns {'resync' | 'rejoin' | 'none'}
+ */
+export function followBackAction ({ localKey, lobbyKey }) {
+  if (!lobbyKey) return 'none'
+  return localKey && localKey === lobbyKey ? 'resync' : 'rejoin'
 }
 
 /**

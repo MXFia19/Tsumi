@@ -604,6 +604,8 @@ export const defaults = {
   // Watch Together: follow the host when drifting more than 2 s, and the name of an anonymous user.
   w2gAutoSync: true,
   w2gDisplayName: '',
+  // "Watch on my own": last choice, reused for the next lobby.
+  w2gWatchOnMyOwn: false,
   extensions: {},
   defaultExtension: null,
   starredExtension: null

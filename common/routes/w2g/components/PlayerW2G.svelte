@@ -5,8 +5,9 @@
   import { click } from '@/modules/click.js'
   import { state } from '@/routes/w2g/components/session.js'
   import User from '@/routes/w2g/components/User.svelte'
+  import Prompts from '@/routes/w2g/components/Prompts.svelte'
   import { REACTIONS, BUBBLE_MS, NOTICE_MS, memberName, formatClock } from '@/routes/w2g/components/sync.js'
-  import { Users, X, SendHorizontal, Crown, RefreshCw, Timer, Hand, DoorOpen, Check } from 'lucide-svelte'
+  import { Users, X, SendHorizontal, Crown, RefreshCw, Timer, Hand, DoorOpen } from 'lucide-svelte'
 
   /** @type {import('./w2g.js').W2GClient} */
   export let client
@@ -49,6 +50,9 @@
   $: localStatus = client.localStatus
   $: messages = client.messages
   $: requests = client.requests
+  $: invites = client.invites
+  $: following = client.following
+  $: rejoinOffer = client.rejoinOffer
   $: countdown = client.countdown
 
   // The stores are passed so the values are recomputed whenever one of them changes.
@@ -61,8 +65,8 @@
   $: members = open ? listMembers(client, $clock, $peers, $lobby, $signals, $localStatus) : []
   $: isHost = $lobby.hostId != null && String($lobby.hostId) === client.selfId
   $: hostMode = $lobby.hostId != null && $lobby.mode === 'host'
-  $: locked = hostMode && !isHost
-  $: canCountdown = isHost || !hostMode
+  $: locked = hostMode && !isHost && $following
+  $: canCountdown = $following && (isHost || !hostMode)
   $: hostPaused = open && locked ? readHostPaused(client, $clock, $signals) : false
   $: watching = $localStatus.state !== 'idle'
   $: chat = open ? $messages.slice(-100) : []
@@ -80,7 +84,7 @@
     detach?.()
     detach = null
     if (!target) return
-    const handlers = { chat: onChat, notice: onNotice, info: onNotice, blocked: onBlocked, reaction: onReaction }
+    const handlers = { chat: onChat, notice: onNotice, info: onInfo, blocked: onBlocked, reaction: onReaction }
     for (const [event, handler] of Object.entries(handlers)) target.on(event, handler)
     detach = () => {
       for (const [event, handler] of Object.entries(handlers)) target.off(event, handler)
@@ -107,6 +111,12 @@
   }
 
   function onNotice ({ text }) {
+    // The open panel's chat already shows it.
+    if (open) return
+    notify(text)
+  }
+
+  function onInfo ({ text }) {
     notify(text)
   }
 
@@ -180,17 +190,6 @@
     if (state.value === client) state.value = null
   }
 
-  function requestText ({ name, kind, time }) {
-    if (kind === 'pause') return `${name} wants to pause`
-    if (kind === 'play') return `${name} wants to resume`
-    return `${name} wants to jump to ${formatClock(time)}`
-  }
-
-  /** Progress bar of a request prompt, set once so list updates don't restart it. */
-  function timerBar (node, expiresAt) {
-    node.style.animationDuration = `${Math.max(0, expiresAt - Date.now())}ms`
-  }
-
   onDestroy(() => {
     detach?.()
     clearInterval(countdownTimer)
@@ -213,26 +212,15 @@
   {/if}
 </button>
 
-<!-- Host: incoming requests -->
-{#if $requests.length}
-  <div class='w2g-requests d-flex flex-column align-items-end'>
-    {#each $requests as request (request.id)}
-      <div class='request bg-dark rounded p-10 mb-10 position-relative overflow-hidden' transition:fly={{ x: 30, duration: 150 }}>
-        <div class='font-size-14 pb-5'>{requestText(request)}</div>
-        <div class='d-flex'>
-          <button type='button' class='btn btn-sm btn-primary d-flex align-items-center' use:click={() => client.answerRequest(request.id, true)}>
-            <Check size='1.4rem' class='mr-5' /> Accept
-          </button>
-          <button type='button' class='btn btn-sm ml-10' use:click={() => client.answerRequest(request.id, false)}>Decline</button>
-        </div>
-        <div class='timer-bar' use:timerBar={request.expiresAt}></div>
-      </div>
-    {/each}
+<!-- Prompts (host requests, invites, rejoin): above everything while the panel is closed, at its top while open -->
+{#if !open && ($requests.length || $invites.length || $rejoinOffer)}
+  <div class='w2g-prompts d-flex flex-column align-items-end'>
+    <Prompts {client} requests={$requests} invites={$invites} rejoin={$rejoinOffer} />
   </div>
 {/if}
 
-<!-- Action notices -->
-{#if notices.length}
+<!-- Action notices, over the video while the panel is closed -->
+{#if !open && notices.length}
   <div class='w2g-notices d-flex flex-column align-items-center'>
     {#each notices as notice (notice.id)}
       <div class='notice d-flex align-items-center rounded font-size-16 mb-5' class:interactive={notice.action} transition:fade={{ duration: 150 }}>
@@ -282,14 +270,24 @@
       </button>
     </div>
 
+    {#if $requests.length || $invites.length || $rejoinOffer || notices.length}
+      <div class='panel-prompts px-15 pt-5 flex-shrink-0'>
+        <Prompts {client} requests={$requests} invites={$invites} rejoin={$rejoinOffer} {notices} dismissNotice={dismiss} />
+      </div>
+    {/if}
+
     <div class='panel-scroll d-flex flex-column flex-grow-1'>
       <div class='members px-15'>
         {#each members as member (member.userId)}
-          <User compact {member} canManage={isHost} onKick={(id) => client.kick(id)} onTransfer={(id) => client.transferHost(id)} />
+          <User compact {member} canManage={isHost} onKick={(id) => client.kick(id)} onTransfer={(id) => client.transferHost(id)} onInvite={(id) => client.invite(id)} />
         {/each}
       </div>
 
       <div class='d-flex flex-wrap align-items-center px-15 py-5 tools'>
+        <div class='custom-switch mr-10 my-5' title='Play, pause and seek without following the lobby, and without moving the others'>
+          <input type='checkbox' id='w2g-player-own' checked={!$following} on:change={({ target }) => client.setFollowing(!target.checked)} />
+          <label for='w2g-player-own' class='font-size-14'>Watch on my own</label>
+        </div>
         {#if isHost}
           <div class='custom-switch mr-10 my-5' title='Only the host controls playback'>
             <input type='checkbox' id='w2g-player-host-mode' checked={$lobby.mode === 'host'} on:change={({ target }) => client.setMode(target.checked ? 'host' : 'everyone')} />
@@ -306,11 +304,11 @@
             <Timer size='1.4rem' class='mr-5' /> Start together
           </button>
         {/if}
-        {#if isHost && watching}
+        {#if isHost && watching && $following}
           <button type='button' class='btn btn-sm d-flex align-items-center mr-5 my-5' title='Silently bring everyone to your position' use:click={() => client.resyncEveryone()}>
             <Crown size='1.4rem' class='mr-5' /> Resync everyone
           </button>
-        {:else if !isHost && watching}
+        {:else if !isHost && watching && $following}
           <button type='button' class='btn btn-sm d-flex align-items-center mr-5 my-5' title='Jump to the host' use:click={() => client.resync()}>
             <RefreshCw size='1.4rem' class='mr-5' /> Resync
           </button>
@@ -400,33 +398,21 @@
     color: hsl(var(--white-color-hsl));
   }
 
-  .w2g-requests {
+  /* Above the panel (55) and the controls: prompts must always be visible and clickable. */
+  .w2g-prompts {
     position: absolute;
     top: calc(max(1.5rem, var(--safe-area-top, 0px), env(safe-area-inset-top, 0px)) + 5.5rem);
     right: max(2rem, var(--safe-area-right, 0px), env(safe-area-inset-right, 0px));
-    z-index: 46;
+    z-index: 60;
+    width: 30rem;
     max-width: calc(100% - 4rem);
+    max-height: calc(100% - 8rem);
+    overflow-y: auto;
   }
-  .request {
-    width: 26rem;
-    max-width: 100%;
-    box-shadow: var(--dm-shadow);
-  }
-  .timer-bar {
-    position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 0.3rem;
-    width: 100%;
-    background: var(--accent-color);
-    transform-origin: left;
-    animation-name: shrink;
-    animation-timing-function: linear;
-    animation-fill-mode: forwards;
-  }
-  @keyframes shrink {
-    from { transform: scaleX(1); }
-    to { transform: scaleX(0); }
+  .panel-prompts {
+    max-height: 40%;
+    overflow-y: auto;
+    border-bottom: 1px solid hsla(var(--white-color-hsl), 0.08);
   }
 
   .w2g-notices {
@@ -434,12 +420,13 @@
     top: calc(max(1.5rem, var(--safe-area-top, 0px), env(safe-area-inset-top, 0px)) + 6rem);
     left: 50%;
     transform: translateX(-50%);
-    z-index: 46;
+    z-index: 60;
     max-width: calc(100% - 4rem);
     pointer-events: none;
   }
   .notice {
     padding: 0.7rem 1.4rem;
+    color: #fff;
     background: hsla(var(--black-color-hsl), 0.7);
     backdrop-filter: blur(6px);
     text-align: center;
@@ -458,6 +445,7 @@
   }
   .bubble {
     padding: 0.6rem 1.2rem;
+    color: #fff;
     background: hsla(var(--black-color-hsl), 0.65);
     backdrop-filter: blur(6px);
   }

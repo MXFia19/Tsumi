@@ -45,6 +45,21 @@
         new CustomEvent('w2g-play', { detail: { media, episode } })
       )
     })
+    // Invite to watch: the player shows its own prompt; elsewhere, an app-wide toast with Join.
+    const inviteToastId = (from) => `w2g-invite-${from}`
+    w2g.on('invite', (invitation) => {
+      if (page.value === page.PLAYER) return
+      const label = [anilistClient.title(invitation.media) || 'a title', w2g.episodeLabel(invitation.episode)].filter(Boolean).join(' · ')
+      // Same id: a new invite from the same sender replaces the previous toast.
+      toast('Watch Together', {
+        id: inviteToastId(invitation.from),
+        description: `${invitation.name} invites you to watch ${label}`,
+        duration: Infinity,
+        action: { label: 'Join', onClick: () => w2g.joinInvite(invitation.from) },
+        onDismiss: () => w2g.dismissInvite(invitation.from)
+      })
+    })
+    w2g.on('inviteRemoved', (from) => toast.dismiss(inviteToastId(from)))
 
     if (!code) invite()
   }

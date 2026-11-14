@@ -24,7 +24,9 @@ export const EventTypes = {
   RequestReplyEvent: 'requestReply',
   KickEvent: 'kick',
   ReactionEvent: 'reaction',
-  CountdownEvent: 'countdown'
+  CountdownEvent: 'countdown',
+  // v2.1
+  InviteEvent: 'invite'
 }
 
 /** Type of the chat lines created locally (joins, leaves, actions, requests). Never sent. */

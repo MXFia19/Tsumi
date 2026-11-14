@@ -2,8 +2,8 @@
   import { onDestroy } from 'svelte'
   import { click } from '@/modules/click.js'
   import { IPC } from '@/modules/bridge.js'
-  import { ExternalLink, Crown, UserX } from 'lucide-svelte'
-  import { memberName } from '@/routes/w2g/components/sync.js'
+  import { ExternalLink, Crown, UserX, MonitorPlay } from 'lucide-svelte'
+  import { memberName, nowPlayingLabel } from '@/routes/w2g/components/sync.js'
 
   /** @type {any} participant (v1 usage, without `member`) */
   export let user = {}
@@ -23,6 +23,11 @@
   /** @type {((userId: string) => void) | null} */
   export let onTransfer = null
 
+  /** @type {((userId: string) => void) | null} "Invite to watch", shown when member.canInvite */
+  export let onInvite = null
+
+  // What the member watches: "Title · Episode 5 · Extension · Server".
+  $: watching = member ? [nowPlayingLabel(member.nowPlaying), member.source].filter(Boolean).join(' · ') : ''
   $: shown = member?.user ?? user
   $: name = member ? member.name + (member.isSelf ? ' (you)' : '') : memberName(shown)
   $: avatar = shown?.avatar?.medium || shown?.picture || 'https://s4.anilist.co/file/anilistcdn/user/avatar/large/default.png'
@@ -58,12 +63,21 @@
       {/if}
       <span class='text-truncate'>{name}</span>
     </div>
+    {#if watching}
+      <div class='text-muted text-truncate line-height-normal watching' class:font-size-12={compact} class:font-size-14={!compact} title={watching}>{watching}</div>
+    {/if}
     {#if member?.badge}
       <div class='d-flex mt-5'>
         <span class='w2g-badge text-nowrap' data-kind={member.badge.kind} title={member.rtt != null ? `Ping ${Math.round(member.rtt)} ms` : ''}>{member.badge.text}</span>
       </div>
     {/if}
   </div>
+  {#if member?.canInvite && onInvite}
+    <button type='button' class='btn btn-sm d-flex align-items-center justify-content-center action flex-shrink-0 ml-5'
+      title='Invite to watch' aria-label='Invite {member.name} to watch' use:click={() => onInvite(member.userId)}>
+      <MonitorPlay size='1.6rem' />{#if !compact}<span class='ml-5 font-size-12 text-nowrap'>Invite to watch</span>{/if}
+    </button>
+  {/if}
   {#if canManage && member && !member.isSelf}
     <div class='d-flex align-items-center flex-shrink-0 ml-5'>
       <!-- A v1 client cannot act as host (mode, kick, requests). -->
@@ -128,5 +142,12 @@
   .w2g-badge[data-kind='old'] {
     background: hsla(var(--error-color-very-light-hsl), 0.35);
     color: hsla(var(--white-color-hsl), 0.85);
+  }
+  .w2g-badge[data-kind='own'] {
+    background: hsla(209, 80%, 60%, 0.2);
+    color: hsl(209, 90%, 75%);
+  }
+  .watching {
+    max-width: 100%;
   }
 </style>

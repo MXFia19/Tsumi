@@ -134,6 +134,7 @@
     const capturedMedia = search?.media
     const capturedEpisode = search?.episode
     const ext = extensionManager.extensions.get(result.extensionKey)
+    launchSource = ext?.manifest?.sourceName || result.extensionName || ''
 
     try {
       const rawEpisodes = await callExtensionFunction(
@@ -288,6 +289,9 @@
     }
   }
 
+  // Name of the extension / addon the stream comes from (Watch Together shows it as the source).
+  let launchSource = ''
+
   function launchPlayer (
     streamData,
     episodeNum,
@@ -317,7 +321,8 @@
             episode_number: episodeNum
           }
         },
-        activeServerIndex: serverIndex
+        activeServerIndex: serverIndex,
+        sourceName: launchSource
       }
     ])
 
