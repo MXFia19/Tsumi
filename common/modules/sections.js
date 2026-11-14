@@ -5,12 +5,9 @@ import { cache, caches } from '@/modules/cache.js'
 import { malDubs } from '@/modules/anime/animedubs.js'
 import { writable } from 'simple-store-svelte'
 import { settings } from '@/modules/settings.js'
-import { RSSManager } from '@/modules/rss.js'
 import { debounce } from '@/modules/util.js'
 import Helper from '@/modules/helper.js'
-import Debug from 'debug'
 import WPC from '@/modules/wpc.js'
-const debug = Debug('ui:sections')
 
 const lastSearched = cache.getEntry(caches.HISTORY, 'lastSearched')
 export const hasNextPage = writable(true)
@@ -176,15 +173,13 @@ export const sections = writable(createSections() || [])
 const updateStores = [
   { store: writable(structuredClone(settings.value.homeSections)), key: 'homeSections', wpc: true },
   { store: writable(structuredClone(settings.value.customSections)), key: 'customSections', wpc: true },
-  { store: writable(structuredClone(settings.value.westernSections || [])), key: 'westernSections', wpc: true },
-  { store: writable(structuredClone(settings.value.rssFeedsNew)), key: 'rssFeedsNew' }
+  { store: writable(structuredClone(settings.value.westernSections || [])), key: 'westernSections', wpc: true }
 ]
 const debounceUpdate = debounce((value) => {
   let updated = false
   for (const { store, key, wpc } of updateStores) {
     if (JSON.stringify(store.value) !== JSON.stringify(value[key])) {
       if (!updated) {
-        for (const section of sections.value) clearInterval(section.interval)
         sections.value = createSections()
         updated = true
       }
@@ -199,31 +194,7 @@ function createSections() {
   const sectionFormat = (title) => (settings.value.homeSections.find(([t]) => t === title)?.[2] || [])
   const createSection = (section, variables = {}, staticSort) => ({ ...section, ...(section.sort && staticSort ? { sort: 'N/A' } : {}), variables: { western: false, ...variables, sort: settings.value.homeSections.find(([t]) => !staticSort && t === section.title)?.[1] ?? section.sort, ...(Array.isArray(sectionFormat(section.title)) && sectionFormat(section.title).length > 0 ? { format: sectionFormat(section.title) } : {}) } })
   return [
-    // RSS feeds
-    ...settings.value.rssFeedsNew.filter(([title, url]) => url).map(([title, url]) => {
-      const section = {
-        title,
-        sort: 'N/A',
-        format: ['N/A'],
-        load: (page = 1, perPage = 12) => RSSManager.getMediaForRSS(page, perPage, url),
-        preview: writable(RSSManager.getMediaForRSS(1, 12, url)),
-        variables: { disableSearch: true },
-        isRSS: true
-      }
-
-      // update every 30 seconds
-      section.interval = setInterval(async () => {
-        try {
-          if (await RSSManager.getContentChanged(1, 12, url)) {
-            section.preview.value = RSSManager.getMediaForRSS(1, 12, url, true)
-          }
-        } catch (error) {
-          debug(`Failed to update RSS feed for ${url} at the scheduled interval, this is likely a temporary connection issue:`, JSON.stringify(error))
-        }
-      }, 30000)
-
-      return section
-    }),
+    // Latest aired episodes (AniList schedule for anime, TMDB for western shows)
     ...['Anime - Recent Dubs', 'Anime - Recent Subs', ...(settings.value.adult === 'hentai' ? ['Hentai Releases'] : []), 'Western - Recent TV Episodes'].map((title) => {
       const isWestern = title === 'Western - Recent TV Episodes'
       const type = title.includes('Subs') ? 'Sub' : title.includes('Dubs') ? 'Dub' : 'Hentai'

@@ -1,7 +1,6 @@
 <script context='module'>
   import { writable } from 'simple-store-svelte'
   import AnimeResolver from '@/modules/anime/animeresolver.js'
-  import { setHash, getId } from '@/modules/anime/animehash.js'
   import { videoRx, matchPhrase, isValidNumber } from '@/modules/util.js'
   import { tick } from 'svelte'
   import { toast } from 'svelte-sonner'
@@ -17,7 +16,7 @@
   const TYPE_EXCLUSIONS = ['ED', 'ENDING', 'NCED', 'NCOP', 'OP', 'OPENING', 'PREVIEW', 'PV', 'TRAILER']
 
   /**
-   * This works pretty well now but isn't the most well designed, primarily this could be improved to decrease load times and the number of anilist queries by storing verified media mapped to their torrent.
+   * This works pretty well now but isn't the most well designed, primarily this could be improved to decrease load times and the number of anilist queries by storing verified media mapped to their source.
    *
    * TODO: rewrite the MediaHandler, put less focus on "nowPlaying" and separately store verified (resolved) media.
    */
@@ -89,17 +88,6 @@
                       episodeRange: current.media.episodeRange,
                       parseObject: nowPlaying.value.parseObject,
                       failed: nowPlaying.failed,
-                  })
-                  setTimeout(() =>{
-                      setHash(current.infoHash, {
-                          fileHash: current.fileHash,
-                          mediaId: current.media.media.id,
-                          episodeRange: current.media.episodeRange,
-                          episode: current.media.episode || current.media.parseObject.episode_number,
-                          season: current.media.season || current.media.parseObject.anime_season,
-                          parseObject: current.media.parseObject,
-                          failed: current.media.failed || current.media.parseObject.failed
-                      })
                   })
               }
           }
@@ -276,28 +264,21 @@
     }
     let videoFiles = []
     const otherFiles = []
-    const torrentNames = []
     for (const file of files) {
       if (videoRx.test(file.name)) {
         videoFiles.push(file)
       } else {
         otherFiles.push(file)
       }
-      if (file.torrent_name) torrentNames.push(file.torrent_name)
     }
     videoFiles = cleanFiles(videoFiles)
 
-    // assign any resolved media to their video files that haven't failed to be resolved.
+    // resolve the media of the video files that don't already have one (files coming from extensions always do).
     let resolved = []
-    for (const file of videoFiles) {
-        const cached = getId(file.infoHash, { fileHash: file.fileHash })
-        if (cached && cached.mediaId && mediaCache.value[cached.mediaId]) file.media = { ...cached, failed: cached.failed || cached.parseObject?.failed, media: mediaCache.value[cached.mediaId] }
-    }
-
-    let uncachedMedia = videoFiles.filter(file => !file.media)
-    if (uncachedMedia?.length) {
+    const unresolvedMedia = videoFiles.filter(file => !file.media)
+    if (unresolvedMedia?.length) {
         try {
-            resolved = await AnimeResolver.resolveFileAnime(uncachedMedia.map(file => file.name))
+            resolved = await AnimeResolver.resolveFileAnime(unresolvedMedia.map(file => file.name))
         } catch (e) {
             debug(e)
         }
@@ -306,63 +287,11 @@
     if (resolved?.length) {
         videoFiles.forEach((file) => {
             const parseObject = resolved.find(({parseObject}) => AnimeResolver.cleanFileName(file.name).includes(parseObject.file_name))
-            if (parseObject && !parseObject.failed) {
-                file.media = parseObject
-                 setHash(file.infoHash, {
-                     fileHash: file.fileHash,
-                     mediaId: parseObject.media?.id,
-                     episode: parseObject.episode,
-                     season: parseObject.season,
-                     parseObject: parseObject.parseObject,
-                     failed: parseObject.failed
-                 })
-            }
+            if (parseObject && !parseObject.failed) file.media = parseObject
         })
     }
 
-    // Identify files that still need to be resolved, attempting again using the torrent name instead.
-    let failedToResolve = videoFiles.filter(file => !file.media)
-    if (failedToResolve.length) {
-      debug('Some media files failed to resolve using the file name, trying again using the torrent name...')
-      const torrentName = [...new Set(torrentNames)][0] // temporary, may need to handle multiple torrents in the future.
-      let resolvedByName = []
-      try {
-        resolvedByName = await AnimeResolver.resolveFileAnime(failedToResolve.map(file => `${torrentName} ${file.name}`))
-      } catch (e) { console.error(e) }
-      failedToResolve.forEach((file) => {
-        const parseObject = resolvedByName.find(({ parseObject }) => AnimeResolver.cleanFileName(`${torrentName} ${file.name}`).includes(parseObject.file_name))
-        if (Object.keys(parseObject ?? {}).length) {
-          const failedEntry = resolved.find(result => AnimeResolver.cleanFileName(result.parseObject.file_name) === AnimeResolver.cleanFileName(file.name))
-          const animeType = failedEntry?.parseObject?.anime_type
-          if (animeType) parseObject.parseObject.anime_type = animeType
-          const failedEpisode = failedEntry?.episode || failedEntry?.parseObject?.episode_number
-          const failedSeason = failedEntry?.season || failedEntry?.parseObject?.season_number
-          if (failedEpisode) {
-            parseObject.episode = failedEpisode
-            if (parseObject.parseObject) parseObject.parseObject.episode_number = failedEpisode
-          }
-          if (failedSeason) {
-            parseObject.season = failedSeason
-            if (parseObject.parseObject) parseObject.parseObject.season_number = failedSeason
-          }
-          if (parseObject?.failed) { // hacky fix to remove the episode number when it failed to resolved, when using the torrent name + file name the resolver has a bias toward detecting the video resolution as the episode number.
-            if (parseObject?.parseObject?.episode_number && (String(parseObject?.parseObject?.episode_number || '') === String(failedEntry?.parseObject?.video_resolution || '').replace('p', ''))) delete parseObject.parseObject.episode_number
-            if (parseObject?.episode && (String(parseObject?.episode || '') === String(failedEntry?.parseObject?.video_resolution || '').replace('p', ''))) delete parseObject.episode
-          }
-          file.media = parseObject
-          setHash(file.infoHash, {
-            fileHash: file.fileHash,
-            mediaId: parseObject.media?.id,
-            episode: parseObject.episode,
-            season: parseObject.season,
-            parseObject: parseObject.parseObject,
-            failed: parseObject.failed
-          })
-        }
-      })
-    }
-
-    failedToResolve = videoFiles.filter(file => !file.media)
+    const failedToResolve = videoFiles.filter(file => !file.media)
     if (failedToResolve.length) {
         resolved = await AnimeResolver.findAndCacheTitle(AnimeResolver.cleanFileName(videoFiles.map(file => file.name)), false)
         failedToResolve.forEach((file) => {
@@ -417,7 +346,7 @@
     processedFiles.set([...sortFiles(videoFiles, newPlaying)])
     await tick()
     const file = (newPlaying?.episode && (result.find(({ media }) => media.episode === newPlaying.episode) || result.find(({ media }) => media.episode === 1))) || result[0]
-    if (!file) throw new Error('No playable files were detected in this torrent. Choose another release.')
+    if (!file) throw new Error('No playable files were detected. Choose another source.')
     playFile(file || 0)
     await handleMedia(file?.media, newPlaying)
   }

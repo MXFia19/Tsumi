@@ -2,7 +2,6 @@ const noop = () => {}
 const noopAsyncVoid = async () => {}
 const noopAsyncBool = async () => false
 const androidDefaults = {
-  requestFileAccess: noopAsyncBool,
   launchExternal: noopAsyncVoid
 }
 const electronDefaults = {

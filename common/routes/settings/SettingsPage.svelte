@@ -2,8 +2,7 @@
   import { settings } from "@/modules/settings.js";
   import { SUPPORTS } from "@/modules/support.js";
   import { capitalize } from "@/modules/util.js";
-  import { toast } from "svelte-sonner";
-  import { IPC, ANDROID, VERSION } from "@/modules/bridge.js";
+  import { IPC, VERSION } from "@/modules/bridge.js";
   import Debug from "debug";
   const debug = Debug("ui:settings-view");
 
@@ -30,29 +29,6 @@
   IPC.emit("version");
   IPC.emit("discord-rpc", settings.value.enableRPC);
   if (SUPPORTS.angle) settings.value.angle = await IPC.invoke("get:angle");
-  if (SUPPORTS.isAndroid)
-    setTimeout(
-      () => requestFileAccess(settings.value.torrentPathNew),
-      2_500,
-    ).unref?.();
-  function requestFileAccess(path, cb) {
-    if (path && path !== "/tmp") {
-      const requestAccess = () => {
-        ANDROID.requestFileAccess().then((access) => {
-          if (!access?.granted) toastAccess(access.error);
-          else cb?.();
-        });
-      };
-      const toastAccess = (error) => {
-        toast.warning("Missing File Access", {
-          description: error,
-          duration: Infinity,
-          onDismiss: () => requestAccess(),
-        });
-      };
-      requestAccess();
-    }
-  }
 </script>
 
 <script>
@@ -101,21 +77,13 @@
       icon: LayoutDashboard,
     },
   };
-  function pathListener(data) {
-    if (SUPPORTS.isAndroid)
-      requestFileAccess(data, () => ($settings.torrentPathNew = data));
-    else $settings.torrentPathNew = data;
-  }
-
   function playerListener(data) {
     $settings.playerPath = data;
   }
 
   $: IPC.emit("discord-rpc", $settings.enableRPC);
-  IPC.on("path", pathListener);
   IPC.on("player", playerListener);
   onDestroy(() => {
-    IPC.off("path", pathListener);
     IPC.off("player", playerListener);
   });
 </script>

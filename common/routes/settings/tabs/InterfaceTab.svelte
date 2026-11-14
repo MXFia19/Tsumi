@@ -125,7 +125,7 @@
   </SettingCard>
 {/if}
 <h4 class='mb-10 font-weight-bold'>Notification Settings</h4>
-<SettingCard title='System Notifications' description={'Allows custom system notifications to be sent, with this disabled you will still get in-app notifications. If you enable system notifications and have MULTIPLE Notification Feeds specified, such as RSS, Releases, and Anilist you WILL be spammed with multiple notifications. Consider choosing a single feed based on your needs.'}>
+<SettingCard title='System Notifications' description={'Allows custom system notifications to be sent, with this disabled you will still get in-app notifications. If you enable system notifications and have MULTIPLE Notification Feeds specified, such as Releases and Anilist you WILL be spammed with multiple notifications. Consider choosing a single feed based on your needs.'}>
   <div class='custom-switch'>
     <input type='checkbox' id='system-notify' bind:checked={settings.systemNotify} />
     <label for='system-notify'>{settings.systemNotify ? 'On' : 'Off'}</label>
@@ -169,28 +169,10 @@
     <button type='button' disabled={listStatus.every(option => settings.releasesNotify.includes(option[1]))} use:click={() => { settings.releasesNotify = [...settings.releasesNotify, ''] }} class='btn btn-primary mb-10 mr-10 d-flex align-items-center justify-content-center'><span>Add Status</span></button>
   </div>
 </SettingCard>
-<SettingCard title='RSS Feed' description={'When each RSS feed updates with new entries, notifications will be sent depending on your list status. These notifications will combine with Anilist and Releases notifications for the in-app notification tray.'}>
-  <div>
-    {#each settings.rssNotify as status, i}
-      <div class='input-group mb-10 w-210 mw-full'>
-        <select id='rss-notify-{i}' class='w-100 form-control mw-full bg-dark text-truncate' bind:value={settings.rssNotify[i]} >
-          <option disabled value=''>Select a status</option>
-          {#each listStatus.filter(option => !settings.rssNotify.includes(option[1]) || status === option[1]) as option}
-            <option value='{option[1]}'>{option[0]}</option>
-          {/each}
-        </select>
-        <div class='input-group-append'>
-          <button type='button' use:click={() => { settings.rssNotify.splice(i, 1); settings.rssNotify = settings.rssNotify }} class='btn btn-danger btn-square input-group-append px-5 d-flex align-items-center'><Trash2 size='1.8rem' /></button>
-        </div>
-      </div>
-    {/each}
-    <button type='button' disabled={listStatus.every(option => settings.rssNotify.includes(option[1]))} use:click={() => { settings.rssNotify = [...settings.rssNotify, ''] }} class='btn btn-primary mb-10 d-flex align-items-center justify-content-center'><span>Add Status</span></button>
-  </div>
-</SettingCard>
 
 <h4 class='mb-10 font-weight-bold'>Home Screen Settings</h4>
 {#if Helper.isAuthorized()}
-  <SettingCard title='Hide My Anime' description={'The anime on your Watching, Rewatching, Completed, and Dropped list will automatically be hidden from the default sections, this excludes manually added RSS feeds and user specific feeds.'}>
+  <SettingCard title='Hide My Anime' description={'The anime on your Watching, Rewatching, Completed, and Dropped list will automatically be hidden from the default sections, this excludes user specific feeds.'}>
     <div class='custom-switch'>
       <input type='checkbox' id='hide-my-anime' bind:checked={settings.hideMyAnime} />
       <label for='hide-my-anime'>{settings.hideMyAnime ? 'On' : 'Off'}</label>
@@ -203,20 +185,6 @@
     <option value='anime'>Anime (AniList)</option>
     <option value='western'>Western (TMDB)</option>
   </select>
-</SettingCard>
-<SettingCard title='RSS Feeds' description={`RSS feeds to display on the home screen. This needs to be a CORS enabled URL to a RSS feed which cotains either an "infoHash" or "enclosure" tag. This only shows the releases on the home screen, it doesn't automatically download the content.\n\nSince the feeds only provide the name of the file, Tsumi might not always detect the anime correctly! Some presets for popular groups are already provided as an example, custom feeds require the FULL URL. Be aware that adding more than 5 RSS URLs could result in getting rate limited. These will always be resolved and handle notifications so not adding them as a home sections makes no difference.`}>
-  <div>
-    {#each settings.rssFeedsNew as _, i}
-      <div class='input-group mb-10 w-500 mw-full'>
-        <input type='text' class='form-control w-150 mw-full bg-dark text-truncate' placeholder='New Releases' autocomplete='off' bind:value={settings.rssFeedsNew[i][0]} />
-        <input id='rss-feed-{i}' type='text' list='rss-feed-list-{i}' class='w-400 form-control mw-full bg-dark text-truncate' placeholder={'https://feed.example.com/rss2?qx=1&q="[Name] "'} autocomplete='off' bind:value={settings.rssFeedsNew[i][1]} />
-        <div class='input-group-append'>
-          <button type='button' use:click={() => { settings.rssFeedsNew.splice(i, 1); settings.rssFeedsNew = settings.rssFeedsNew }} class='btn btn-danger btn-square input-group-append px-5 d-flex align-items-center'><Trash2 size='1.8rem' /></button>
-        </div>
-      </div>
-    {/each}
-    <button type='button' use:click={() => { settings.rssFeedsNew[settings.rssFeedsNew.length] = ['New Releases', null] }} class='btn btn-primary mb-10 d-flex align-items-center justify-content-center'><span>Add Feed</span></button>
-  </div>
 </SettingCard>
 <SettingCard title='Anime Sections' description={'Create custom anime sections that can be added to the home screen. These use AniList genres and tags.'}>
   <div>
@@ -292,7 +260,7 @@
     <button type='button' use:click={() => { if (!settings.westernSections) settings.westernSections = []; settings.westernSections[settings.westernSections.length] = ['New Section', [], 'Both'] }} class='btn btn-primary mb-10 d-flex align-items-center justify-content-center'><span>Add Section</span></button>
   </div>
 </SettingCard>
-<SettingCard title='Sections And Order' description="Sections and their order on the home screen, if you want more RSS feeds to show up here, create them first in the RSS feed list. Adding many multiple normal lists doesn't impact performance, but adding a lot of RSS feeds will impact app startup times. Drag/drop these sections to re-order them.">
+<SettingCard title='Sections And Order' description="Sections and their order on the home screen. Custom Anime and Western sections created above can be added here. Drag/drop these sections to re-order them.">
   <div class='position-relative'>
     <HomeSections bind:homeSections={settings.homeSections} />
   </div>

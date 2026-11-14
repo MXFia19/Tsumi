@@ -29,14 +29,8 @@ project(':capacitor-status-bar').projectDir = new File('../../node_modules/.pnpm
 include ':capawesome-team-capacitor-android-foreground-service'
 project(':capawesome-team-capacitor-android-foreground-service').projectDir = new File('../../node_modules/.pnpm/@capawesome-team+capacitor-_1b36705f3d12f39df6805feb8fcc1264/node_modules/@capawesome-team/capacitor-android-foreground-service/android')
 
-include ':capacitor-folder-picker'
-project(':capacitor-folder-picker').projectDir = new File('../../node_modules/.pnpm/capacitor-folder-picker@0.0.2_@capacitor+core@6.2.1/node_modules/capacitor-folder-picker/android')
-
 include ':capacitor-intent-uri'
 project(':capacitor-intent-uri').projectDir = new File('../../node_modules/.pnpm/capacitor-intent-uri@0.0.2_@capacitor+core@6.2.1/node_modules/capacitor-intent-uri/android')
-
-include ':capacitor-nodejs'
-project(':capacitor-nodejs').projectDir = new File('../../node_modules/.pnpm/capacitor-nodejs@https+++gi_99f5c139051d0d510ebeb039458173c1/node_modules/capacitor-nodejs/android')
 
 include ':capacitor-plugin-safe-area'
 project(':capacitor-plugin-safe-area').projectDir = new File('../../node_modules/.pnpm/capacitor-plugin-safe-area@_cf9009c7371b64bd377a56324615f215/node_modules/capacitor-plugin-safe-area/android')

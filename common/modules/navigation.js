@@ -17,7 +17,6 @@ const debug = Debug('ui:history')
  * @property {string} CATALOGS
  * @property {string} SETTINGS
  * @property {string} PLAYER
- * @property {string} EXTENSION_MANAGER
  * @property {string} WATCH_TOGETHER
  */
 
@@ -35,7 +34,6 @@ const debug = Debug('ui:history')
  * @property {Object} value Current modal state object
  * @property {string} MINIMIZE_PROMPT
  * @property {string} UPDATE_PROMPT
- * @property {string} FILE_EDITOR
  * @property {string} FILE_MANAGER
  * @property {string} NOTIFICATIONS
  * @property {string} PROFILE
@@ -65,7 +63,6 @@ export const page = (() => {
     CATALOGS: 'catalogs',
     SETTINGS: 'settings',
     PLAYER: 'player',
-    EXTENSION_MANAGER: 'extension_manager',
     WATCH_TOGETHER: 'watch_together'
   }
   return {
@@ -99,28 +96,21 @@ export const modal = (() => {
       id: 'minimize_prompt',
       priority: 1,
       get siblings() {
-        return [MODALS.UPDATE_PROMPT, MODALS.FILE_EDITOR, MODALS.FILE_MANAGER, MODALS.NOTIFICATIONS, MODALS.PROFILE, MODALS.EXTENSION_MENU, MODALS.TRAILER, MODALS.ANIME_DETAILS]
+        return [MODALS.UPDATE_PROMPT, MODALS.FILE_MANAGER, MODALS.NOTIFICATIONS, MODALS.PROFILE, MODALS.EXTENSION_MENU, MODALS.TRAILER, MODALS.ANIME_DETAILS]
       }
     },
     UPDATE_PROMPT: {
       id: 'update_prompt',
       priority: 2,
       get siblings() {
-        return [MODALS.MINIMIZE_PROMPT, MODALS.FILE_EDITOR, MODALS.FILE_MANAGER, MODALS.NOTIFICATIONS, MODALS.PROFILE, MODALS.EXTENSION_MENU, MODALS.TRAILER, MODALS.ANIME_DETAILS]
-      }
-    },
-    FILE_EDITOR: {
-      id: 'file_editor',
-      priority: 3,
-      get siblings() {
-        return [MODALS.FILE_MANAGER]
+        return [MODALS.MINIMIZE_PROMPT, MODALS.FILE_MANAGER, MODALS.NOTIFICATIONS, MODALS.PROFILE, MODALS.EXTENSION_MENU, MODALS.TRAILER, MODALS.ANIME_DETAILS]
       }
     },
     FILE_MANAGER: {
       id: 'file_manager',
       priority: 4,
       get siblings() {
-        return [MODALS.FILE_EDITOR]
+        return []
       }
     },
     NOTIFICATIONS: {

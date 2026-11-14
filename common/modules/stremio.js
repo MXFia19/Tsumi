@@ -375,7 +375,7 @@ async function extractStreamUrl (ext, href) {
   const all = res?.streams || []
   const playable = all.filter(stream => typeof stream.url === 'string' && /^https?:/i.test(stream.url))
   if (!playable.length) {
-    throw new Error(all.length ? 'This addon only returned torrent or external links, which Tsumi cannot play' : 'No streams found for this title')
+    throw new Error(all.length ? 'This addon only returned peer-to-peer or external links, which Tsumi cannot play' : 'No streams found for this title')
   }
   return {
     streams: playable.map((stream, i) => ({

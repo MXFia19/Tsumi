@@ -14,7 +14,7 @@
           <div class='font-size-22 text-center text-muted'>
             {#if JSON.stringify(errors)?.match(/found no results/i) || JSON.stringify(errors)?.match(/will be released on|hasn't released yet/i)}
               No results found.
-            {:else if (JSON.stringify(errors)?.match(/extension is not enabled/i) && !errors?.filter(error => !error?.message.match(/extension is not enabled/i))?.length) || JSON.stringify(errors)?.match(/no torrent sources/i)}
+            {:else if JSON.stringify(errors)?.match(/extension is not enabled/i) && !errors?.filter(error => !error?.message.match(/extension is not enabled/i))?.length}
               No Extensions Found
             {:else if errors?.length === 1 && Array.isArray(errors[0].message)}
               {errors[0].message[0]}
@@ -28,8 +28,6 @@
             Looks like there's nothing here.
           {:else if JSON.stringify(errors)?.match(/extension is not enabled/i) && !errors?.filter(error => !error?.message.match(/extension is not enabled/i))?.length}
             It looks like you haven't added any extension sources, manage your extensions in the settings.
-          {:else if JSON.stringify(errors)?.match(/found no results/i)}
-            You can manually specify a torrent by providing a link or file.
           {:else if errors?.length === 1 && Array.isArray(errors[0].message)}
            {#each errors[0].message.slice(1) as message}
              <div>{message}</div>

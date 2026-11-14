@@ -1,23 +1,20 @@
 <script context='module'>
     import { mediaCache } from '@/modules/cache.js'
     import { click, hoverExit, blurExit } from '@/modules/click.js'
-    import { SquarePen, SquareCheckBig, Play } from 'lucide-svelte'
+    import { SquareCheckBig, Play } from 'lucide-svelte'
     import { SUPPORTS } from '@/modules/support.js'
     import { createListener, isValidNumber } from '@/modules/util.js'
-    import { setHash } from '@/modules/anime/animehash.js'
     import { anilistClient } from '@/modules/anilist.js'
     import { modal } from '@/modules/navigation.js'
     import Helper from '@/modules/helper.js'
     import Debug from 'debug'
     const debug = Debug('ui:file-editor')
-    const { reactive, init } = createListener(['verify-btn', 'edit-btn', 'cnt-button', 'episode-input', 'f-safe-area'])
+    const { reactive, init } = createListener(['verify-btn', 'cnt-button', 'episode-input', 'f-safe-area'])
     init(true)
 </script>
 <script>
     export let file
-    export let files
     export let playing = false
-    export let fileEdit
     export let playFile
 
     $: repeating = $mediaCache[file?.media?.media?.id]?.mediaListEntry?.status === 'REPEATING'
@@ -51,19 +48,7 @@
                 file.media.episode = isValidNumber(number) ? number : null
                 episode = getEpisode()
             }
-            if (file.media?.episodeRange ? `${currentEpisodeRange.first}~${currentEpisodeRange.last}` !== episode : currentEpisode !== episode) {
-                file.locked = true
-                setHash(file.infoHash, {
-                    fileHash: file.fileHash,
-                    mediaId: file.media.media?.id,
-                    episodeRange: file.media.episodeRange,
-                    episode: file.media.episode || file.media.parseObject.episode_number,
-                    season: file.media.season || file.media.parseObject.anime_season,
-                    parseObject: file.media.parseObject,
-                    locked: true,
-                    failed: false
-                })
-            }
+            if (file.media?.episodeRange ? `${currentEpisodeRange.first}~${currentEpisodeRange.last}` !== episode : currentEpisode !== episode) file.locked = true
             debug(`Updated ${file.media?.media?.id} with Episode ${file.media.episode || file.media.parseObject.episode_number} and file:`, JSON.stringify(file))
             editTimer = setTimeout(() => window.dispatchEvent(new CustomEvent('fileEdit')), 1500)
         }, 200)
@@ -71,16 +56,6 @@
     function verifySeries() {
         file.locked = true
         file.media.failed = false
-        setHash(file.infoHash, {
-            fileHash: file.fileHash,
-            mediaId: file.media.media?.id,
-            episodeRange: file.media.episodeRange,
-            episode: file.media.episode || file.media.parseObject.episode_number,
-            season: file.media.season || file.media.parseObject.anime_season,
-            parseObject: file.media.parseObject,
-            locked: true,
-            failed: false
-        })
         debug(`Verified ${file.media?.media?.id} with Episode ${file.media.episode || file.media.parseObject.episode_number} and file:`, JSON.stringify(file))
         editTimer = setTimeout(() => window.dispatchEvent(new CustomEvent('fileEdit')), 1500)
     }
@@ -97,9 +72,8 @@
     <div class='file-content z-10 w-full'>
         <div class='d-flex'>
             <p class='file-title overflow-hidden font-weight-bold my-0 mt-10 mr-10 font-scale-18 {SUPPORTS.isAndroid ? `line-clamp-1` : `line-clamp-2`}'>{#if file?.media?.media}{anilistClient.title(file?.media.media)}{:else}{file?.media?.parseObject?.anime_title || file?.name || 'UNK'}{/if}</p>
-            <button type='button' tabindex='-1' class='position-absolute f-safe-area top-0 right-0 h-50 bg-transparent border-0 shadow-none not-reactive z-1 {file?.locked || file?.media?.locked || !episode?.length ? `w-50` : `w-90`}' use:click={() => {}}/>
-            <button type='button' class='ml-auto verify-btn btn btn-square d-none align-items-center justify-content-center mr-5 px-5 z-1' class:d-flex={!(file?.locked || file?.media?.locked || (!episode && file?.media?.media?.episodes > 1)) || (failed && (episode || file?.media?.media?.episodes <= 1))} title='Confirm this series as being correct' use:click={() => { prompt = false; verifySeries() } }><SquareCheckBig color='var(--tertiary-color)' size='1.7rem' strokeWidth='3'/></button>
-            <button type='button' class='ml-auto edit-btn btn btn-square d-flex align-items-center justify-content-center px-5 z-1' class:ml-auto={!(!(file?.locked || file?.media?.locked || (!episode && file?.media?.media?.episodes > 1)) || (failed && (episode || file?.media?.media?.episodes <= 1)))} title='Opens a prompt to select the correct series' use:click={() => { prompt = false; fileEdit(file, files, file?.media?.media ? anilistClient.title(file?.media.media) : file?.media?.parseObject?.anime_title || '') } }><SquarePen size='1.7rem' strokeWidth='3'/></button>
+            <button type='button' tabindex='-1' class='position-absolute f-safe-area top-0 right-0 h-50 bg-transparent border-0 shadow-none not-reactive z-1 w-50' use:click={() => {}}/>
+            <button type='button' class='ml-auto verify-btn btn btn-square d-none align-items-center justify-content-center px-5 z-1' class:d-flex={!(file?.locked || file?.media?.locked || (!episode && file?.media?.media?.episodes > 1)) || (failed && (episode || file?.media?.media?.episodes <= 1))} title='Confirm this series as being correct' use:click={() => { prompt = false; verifySeries() } }><SquareCheckBig color='var(--tertiary-color)' size='1.7rem' strokeWidth='3'/></button>
         </div>
         <p class='font-scale-12 my-5 mr-40 text-muted text-break-word overflow-hidden line-2'>{file?.name || 'UNK'}</p>
         <div class='d-flex align-items-center mt-5'>

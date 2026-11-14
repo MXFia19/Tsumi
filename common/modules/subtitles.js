@@ -115,12 +115,12 @@ export default class Subtitles {
       this.addSingleSubtitleFile(new File([detail.data], detail.name))
     }
 
-    // Note: Torrent client event listeners removed - subtitles loaded from streaming sources
+    // Subtitles come from the stream sources, or are pasted/dropped by the user
     clipboard.on('text', this.handleClipboardText)
     clipboard.on('files', this.handleClipboardFiles)
   }
 
-  // Client event handlers are now noops
+  // Default no-op handlers, shadowed by the instance handlers assigned in the constructor
   handleTracks() { }
   handleSubtitle() { }
   handleFile() { }

@@ -8,7 +8,5 @@ export const SUPPORTS = {
   discord: true,
   keybinds: true,
   isAndroid: false,
-  maxSeeding: 10,
-  externalPlayer: true,
-  permamentNAT: true
+  externalPlayer: true
 }

@@ -235,7 +235,7 @@
     media.isFavourite = anilistClient.favourite({ id: media.id });
   }
 
-  function handlePlay(id, episode, torrentOnly) {
+  function handlePlay(id, episode, direct) {
     const cachedMedia = mediaCache.value[id];
     if (!cachedMedia) return;
     const cachedEpisode = isValidNumber(episode)
@@ -246,20 +246,20 @@
       : cachedEpisode && cachedEpisode !== 0
         ? cachedEpisode + 1
         : cachedEpisode;
-    if (torrentOnly) {
+    if (direct) {
       if (desiredEpisode) return playAnime(cachedMedia, desiredEpisode);
       if (cachedMedia?.status === "NOT_YET_RELEASED" && !cachedMedia?.isTmdb) return;
       playMedia(cachedMedia);
     } else play(cachedMedia, desiredEpisode);
   }
 
-  IPC.on("play-anime", (id, episode, torrentOnly) => {
-    handlePlay(id, episode, torrentOnly);
+  IPC.on("play-anime", (id, episode, direct) => {
+    handlePlay(id, episode, direct);
   });
 
   window.addEventListener("play-anime", (event) => {
-    const { id, episode, torrentOnly } = event.detail;
-    handlePlay(id, episode, torrentOnly);
+    const { id, episode, direct } = event.detail;
+    handlePlay(id, episode, direct);
   });
 
   function sanitize(body) {

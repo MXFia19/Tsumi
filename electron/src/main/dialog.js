@@ -14,24 +14,6 @@ export default class Dialog {
         sender.send('player', path)
       }
     })
-    ipcMain.on('dialog', async ({ sender }) => {
-      const { filePaths, canceled } = await dialog.showOpenDialog({
-        title: 'Select download location',
-        properties: ['openDirectory']
-      })
-      if (canceled) return
-      if (filePaths.length) {
-        let path = filePaths[0]
-        if (!(path.endsWith('\\') || path.endsWith('/'))) {
-          if (path.indexOf('\\') !== -1) {
-            path += '\\'
-          } else if (path.indexOf('/') !== -1) {
-            path += '/'
-          }
-        }
-        sender.send('path', path)
-      }
-    })
     ipcMain.on('log-contents', async (sender, log) => {
       try {
         const { filePath, canceled } = await dialog.showSaveDialog({

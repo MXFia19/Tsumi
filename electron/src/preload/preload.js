@@ -28,17 +28,3 @@ contextBridge.exposeInMainWorld('electron', {
   getYouTube: () => ipcRenderer.invoke('electron:getYouTube'),
   getProxyPort: () => ipcRenderer.invoke('electron:getProxyPort'),
 })
-
-let _ports
-ipcRenderer.once('port', ({ ports }) => {
-  _ports = ports
-  contextBridge.exposeInMainWorld('port', {
-    onmessage: (cb) => {
-      _ports[0].onmessage = ({ type, data }) => cb({ type, data })
-    },
-    postMessage: (a, b) => {
-      _ports[0].postMessage(a, b)
-    }
-  })
-  ipcRenderer.on('port', ({ ports }) => _ports = ports)
-})

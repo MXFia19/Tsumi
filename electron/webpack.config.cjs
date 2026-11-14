@@ -1,5 +1,4 @@
 const { join, resolve } = require('path')
-const HtmlWebpackPlugin = require('html-webpack-plugin')
 
 const mode = process.env.NODE_ENV?.trim() || 'development'
 
@@ -8,34 +7,7 @@ const commonConfig = require('common/webpack.config.cjs')
 /** @type {import('webpack').WebpackOptionsNormalized[]} */
 module.exports = [
   {
-    devtool: 'source-map',
-    stats: { warnings: false },
-    entry: join(__dirname, 'src', 'background', 'background.js'),
-    output: {
-      path: join(__dirname, 'build'),
-      filename: 'background.js'
-    },
-    mode,
-    externals: {
-      'fs-native-extensions': 'commonjs2 fs-native-extensions',
-      'require-addon': 'commonjs2 require-addon'
-    },
-    resolve: {
-      aliasFields: [],
-      mainFields: ['module', 'main', 'node'],
-      alias: {
-        '@': resolve(__dirname, '..', 'common'),
-        '@client': resolve(__dirname, '..', 'client'),
-        'node-fetch': false,
-        ws: false,
-        wrtc: false,
-        debug: resolve(__dirname, '../common/modules/debug.js'),
-        'webpack/hot/emitter.js': resolve(__dirname, '../node_modules/.pnpm/webpack@5.104.1_webpack-cli@6.0.1/node_modules/webpack/hot/emitter.js'),
-        'webpack/hot/log.js': resolve(__dirname, '../node_modules/.pnpm/webpack@5.104.1_webpack-cli@6.0.1/node_modules/webpack/hot/log.js')
-      }
-    },
-    plugins: [new HtmlWebpackPlugin({ filename: 'background.html' })],
-    target: 'electron39.0-renderer',
+    ...commonConfig(__dirname),
     devServer: {
       devMiddleware: {
         writeToDisk: true
@@ -47,7 +19,6 @@ module.exports = [
       port: 5000
     }
   },
-  commonConfig(__dirname),
   {
     devtool: 'source-map',
     stats: { warnings: false },

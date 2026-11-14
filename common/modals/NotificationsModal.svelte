@@ -15,7 +15,7 @@
   export const notifications = writable(cache.getEntry(caches.NOTIFICATIONS, 'notifications') || [])
   export const hasUnreadNotifications = derived(notifications, _notifications => _notifications?.filter?.(notification => notification.read !== true)?.length)
 
-  const { reactive, init } = createListener(['torrent-button', 'read-button', 'continue-button', 'n-safe-area'])
+  const { reactive, init } = createListener(['read-button', 'continue-button', 'n-safe-area'])
   init(true)
 
   let debounceNotify = false
@@ -56,7 +56,7 @@
     for (const notification of notifications) {
       const key = `${notification.detail.id}-${notification.detail.episode}-${notification.detail.dub}`
       const existing = map.get(key)
-      if (!existing || (notification.detail.click_action === 'TORRENT' && existing.detail.click_action !== 'TORRENT')) map.set(key, notification)
+      if (!existing) map.set(key, notification)
     }
     return Array.from(map.values())
   }
@@ -94,8 +94,7 @@
         else return !(existing.id === notification.id && existing.episode === notification.episode && existing.delayed === true) // If the new notification is not delayed, remove any existing delayed notifications
       })
 
-      if ((filterDelayed.findIndex((existing) => existing.id === notification.id && ((existing.episode === notification.episode && ((existing.season || 0) === (notification.season || 0))) || (existing.format === 'MOVIE' && notification.format === 'MOVIE')) && (existing.dub === notification.dub) && (existing.click_action === 'TORRENT'))) !== -1) return filterDelayed // Don't add notifications for an episode if a torrent notification already exists (prevents duplicate notifications)
-      const filtered = filterDelayed.filter((existing) => (existing.id !== notification.id || existing.episode !== notification.episode || existing.dub !== notification.dub || existing.click_action === 'TORRENT'))
+      const filtered = filterDelayed.filter((existing) => (existing.id !== notification.id || existing.episode !== notification.episode || existing.dub !== notification.dub))
       const cachedMedia = cache.getMedia(notification?.id)
       if (isValidNumber(notification.episode) && (cachedMedia?.mediaListEntry?.status === 'COMPLETED' || ((cachedMedia?.mediaListEntry?.progress || -1) >= (!isValidNumber(notification.season) ? notification.episode : cachedMedia?.episodes)))) notification.read = true
       return sort([notification, ...filtered])
@@ -155,7 +154,7 @@
     if (view) {
       window.dispatchEvent(new CustomEvent('open-anime', { detail: { id: notification.id } }))
     } else {
-      window.dispatchEvent(new CustomEvent('play-anime', { detail: { id: notification.id, episode: notification.episode, torrentOnly: true } }))
+      window.dispatchEvent(new CustomEvent('play-anime', { detail: { id: notification.id, episode: notification.episode, direct: true } }))
     }
   }
 
@@ -250,7 +249,7 @@
                 <button type='button' tabindex='-1' class='position-absolute n-safe-area top-0 right-0 h-50 bg-transparent border-0 shadow-none not-reactive z-1 w-90' use:click={() => {}}/>
                 {#if isValidNumber(notification.episode)}
                   <button type='button' class='btn btn-square mr-5 z-1 d-flex align-items-center justify-content-center' use:click={() => {
-                    window.dispatchEvent(new CustomEvent('play-anime', { detail: { id: notification.id, episode: notification.episode, torrentOnly: true } }))
+                    window.dispatchEvent(new CustomEvent('play-anime', { detail: { id: notification.id, episode: notification.episode, direct: true } }))
                   }}>
                     <Play size='1.7rem' strokeWidth='3'/>
                   </button>

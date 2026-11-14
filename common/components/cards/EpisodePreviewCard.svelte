@@ -1,14 +1,12 @@
 <script context='module'>
   import SmartImage from '@/components/visual/SmartImage.svelte'
   import AudioLabel from '@/components/AudioLabel.svelte'
-  import TorrentButton from '@/components/ExtensionButton.svelte'
   import { CalendarDays, Play, Tv, RefreshCwOff } from 'lucide-svelte'
 </script>
 <script>
   import { statusColorMap, formatMap } from '@/modules/anime/anime.js'
   import { episodesList } from '@/modules/episodes.js'
   import { click } from '@/modules/click.js'
-  import { getHash } from '@/modules/anime/animehash.js'
   import { since, fadeIn, fadeOut, isValidNumber } from '@/modules/util.js'
   import { liveAnimeEpisodeProgress } from '@/modules/anime/animeprogress.js'
   import { anilistClient } from '@/modules/anilist.js'
@@ -30,8 +28,6 @@
   const progress = liveAnimeEpisodeProgress(media?.id, data?.episode, completed)
   let hide = true
   let animating = true
-
-  $: resolvedHash = media?.id && !data.failed && getHash(media.id, { episode: data?.episode, client: true, batchGuess: true }, false, true)
 </script>
 
 <div class='position-absolute w-400 mw-full mh-400 absolute-container top-0 m-auto bg-dark-light z-30 rounded overflow-hidden pointer d-flex flex-column fade-change' in:fadeIn out:fadeOut on:introend={() => animating = false} on:outrostart={() => animating = true} bind:this={element}>
@@ -51,12 +47,6 @@
     {#if data.failed}
       <div class='pl-10 pt-10 z-10 position-absolute top-0 left-0 text-danger icon-shadow' title='Failed to resolve media'>
         <RefreshCwOff size='3rem' />
-      </div>
-    {/if}
-    {#if data.hash || resolvedHash}
-      <div class='pr-5 pt-5 z-10 position-absolute top-0 right-0 text-danger icon-shadow'>
-        <button type='button' tabindex='-1' class='position-absolute episode-safe-area top-0 right-0 h-50 w-50 bg-transparent border-0 shadow-none not-reactive' use:click={() => {}}/>
-        <TorrentButton class='btn btn-square shadow-none bg-transparent bd-highlight h-40 w-40 z-1 position-relative' hash={[...(data.hash && data.hash !== resolvedHash ? [data.hash] : []), ...(resolvedHash ? [resolvedHash] : [])]} torrentID={data.link} search={{ media, episode: data.episode, episodeRange: episodeRange }} size={'3rem'} strokeWidth={'2.3'}/>
       </div>
     {/if}
     <Play class='mb-5 ml-5 pl-10 pb-10 z-10' fill='currentColor' size='3rem' />

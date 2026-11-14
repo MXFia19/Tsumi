@@ -3,7 +3,6 @@
   import { Search, X } from 'lucide-svelte'
   import { modal } from '@/modules/navigation.js'
   import SoftModal from '@/components/modals/SoftModal.svelte'
-  import EditorModal from '@/modals/manager/EditorModal.svelte'
   import FileCard from '@/modals/manager/components/FileCard.svelte'
 </script>
 <script>
@@ -21,12 +20,6 @@
     return files.filter(({ name, media }) => matchPhrase(searchText, name, 0.4, false, true) || (media?.media?.id && matchKeys(cache.getMedia(media?.media?.id), searchText, ['title.userPreferred', 'title.english', 'title.romaji', 'title.native', 'synonyms'], 0.4))) || []
   }
 
-  let fileEdit
-  window.addEventListener('fileEdit', (event) => {
-    if (!event.detail?.manager) return
-    modal.open(modal.FILE_MANAGER)
-  })
-
   function close() {
     modal.close(modal.FILE_MANAGER)
   }
@@ -40,7 +33,7 @@
     </div>
     <button type='button' class='btn btn-square ml-auto d-flex align-items-center justify-content-center rounded-2 flex-shrink-0' use:click={close}><X size='1.7rem' strokeWidth='3'/></button>
   </div>
-  <FileCard {playFile} bind:file={playing} bind:files playing={true} bind:fileEdit class='mr-30'/>
+  <FileCard {playFile} bind:file={playing} playing={true} class='mr-30'/>
   <div class='input-group mt-10 long-input' class:d-none={files?.length < 2}>
     <Search size='2.6rem' strokeWidth='2.5' class='position-absolute z-10 text-dark-light h-full pl-10 ml-20 pointer-events-none' />
     <input
@@ -54,11 +47,10 @@
   <div><div class='shadow-overlay' class:d-none={files?.length < 2}/></div>
   <div bind:this={container} class='overflow-y-auto mt-10'>
     {#each filterResults(files?.filter((file) => file !== playing), searchText) as file, index}
-      <FileCard {playFile} bind:file bind:files bind:fileEdit class='{index === 0 ? `mt-10` : ``}'/>
+      <FileCard {playFile} bind:file class='{index === 0 ? `mt-10` : ``}'/>
     {/each}
   </div>
 </SoftModal>
-<EditorModal bind:fileEdit />
 
 <style>
   .shadow-overlay {

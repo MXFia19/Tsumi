@@ -5,10 +5,13 @@
   import { Play, RefreshCwOff } from 'lucide-svelte'
   import { onDestroy, onMount } from 'svelte'
   import { writable } from 'simple-store-svelte'
-  import { playActive } from '@/components/ExtensionButton.svelte'
   import { createListener, since, isValidNumber } from '@/modules/util.js'
-  const { reactive, init } = createListener(['torrent-button', 'cont-button', 'episode-safe-area'])
+  const { reactive, init } = createListener(['cont-button'])
   init(true)
+
+  function playEpisode (media, episode) {
+    window.dispatchEvent(new CustomEvent('play-anime', { detail: { id: media?.id, episode } }))
+  }
 </script>
 <script>
   import { statusColorMap } from '@/modules/anime/anime.js'
@@ -49,7 +52,7 @@
   function setClickState() {
     const episode = isValidNumber(data.episode) ? data.episode : (media?.episodes === 1 && media?.episodes)
     if (!$prompt && !data.similarity && isValidNumber(episode) && !Array.isArray(episode) && (episode - 1) >= 1 && media?.mediaListEntry?.status !== 'COMPLETED' && (media?.mediaListEntry?.progress || -1) < (episode - 1)) prompt.set(true)
-    else isValidNumber(episode) ? (media ? playActive(data.hash, { media, episode: episode }, data.link, !data.link) : data.onclick()) : viewMedia()
+    else isValidNumber(episode) ? (media ? playEpisode(media, episode) : data.onclick()) : viewMedia()
     clicked.set(true)
     setTimeout(() => clicked.set(false)).unref?.()
   }

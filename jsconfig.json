@@ -15,7 +15,6 @@
       "@/*": ["./common/*"],
       "three": ["./types.d.ts"],
       "rxjs": ["./types.d.ts"],
-      "@client/*": ["./client/*"],
       "debug": ["./common/modules/debug.js"]
     },
     "types": ["@cloudflare/workers-types", "./types.d.ts"]

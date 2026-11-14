@@ -449,7 +449,7 @@ class AnimeSchedule {
                     detail: {
                         id: res.media?.id,
                         episode: res.episode,
-                        torrentOnly: true
+                        direct: true
                     }
                 }))
                 return true

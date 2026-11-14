@@ -812,6 +812,36 @@ function kitsuToAniEpisodes(data) {
   return episodes
 }
 
+/**
+ * Finds the episode metadata matching an AniList air date, falling back to the episode number when no date is given.
+ * @param {Date} alDate
+ * @param {any} episodes
+ * @param {number} episode
+ **/
+export function episodeByAirDate (alDate, episodes, episode) {
+  // TODO handle special cases where anilist reports that 3 episodes aired at the same time because of pre-releases
+  if (!+alDate) return episodes[Number(episode)] || episodes[1] // the source episode number to play is from an array created from AL ep count, so it can be missing
+  // 1 is key for episode 1, not index
+
+  // find the closest episodes by air date, multiple episodes can have the same air date distance
+  // inefficient but reliable
+  const closestEpisodes = Object.values(episodes).reduce((prev, curr) => {
+    if (!prev[0]) return [curr]
+    const prevDate = Math.abs(+new Date(prev[0]?.airdate) - +alDate)
+    const currDate = Math.abs(+new Date(curr.airdate) - +alDate)
+    if (prevDate === currDate) {
+      prev.push(curr)
+      return prev
+    }
+    if (currDate < prevDate) return [curr]
+    return prev
+  }, [])
+
+  return closestEpisodes.reduce((prev, curr) => {
+    return Math.abs(curr.episodeNumber - episode) < Math.abs(prev.episodeNumber - episode) ? curr : prev
+  })
+}
+
 export function getAiringInfo(airingAt) {
   if (!airingAt) return null
   if (airingAt.delayedIndefinitely) return { time: 'Suspended', episode: airingAt.episode }

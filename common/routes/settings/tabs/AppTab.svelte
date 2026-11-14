@@ -135,8 +135,8 @@
     <span class='text-truncate'>Reset Notifications</span>
   </ConfirmButton>
 </SettingCard>
-<SettingCard title='Reset History' description='Resets all history data that has been cached, this is not recommended unless you are experiencing issues. You will lose your local episode progress, subtitle choices, volume boost, and magnet links history.'>
-  <ConfirmButton click={() => cache.resetHistory()} class='btn btn-primary mt-5 d-flex align-items-center justify-content-center' primaryClass='px-30' confirmText='Confirm Reset' confirmClass='btn-danger-dim long-button' cancelClass='btn-secondary long-button' actionClass='d-inline-flex d-md-block' dataToggle='tooltip' dataPlacement='top' dataTitle='Resets Your Episode Progress, Subtitle Choices, Volume Boost, Magnet Link History, Manually Corrected Series, and More'>
+<SettingCard title='Reset History' description='Resets all history data that has been cached, this is not recommended unless you are experiencing issues. You will lose your local episode progress, subtitle choices, and volume boost.'>
+  <ConfirmButton click={() => cache.resetHistory()} class='btn btn-primary mt-5 d-flex align-items-center justify-content-center' primaryClass='px-30' confirmText='Confirm Reset' confirmClass='btn-danger-dim long-button' cancelClass='btn-secondary long-button' actionClass='d-inline-flex d-md-block' dataToggle='tooltip' dataPlacement='top' dataTitle='Resets Your Episode Progress, Subtitle Choices, Volume Boost, and More'>
     <span class='text-truncate'>Reset History</span>
   </ConfirmButton>
 </SettingCard>
@@ -154,6 +154,19 @@
     </ConfirmButton>
   </div>
 </SettingCard>
+
+{#if SUPPORTS.doh}
+  <h4 class='mb-10 font-weight-bold'>DNS Settings</h4>
+  <SettingCard title='Use DNS Over HTTPS' description='Enables DNS Over HTTPS, useful if your ISP blocks certain domains.'>
+    <div class='custom-switch'>
+      <input type='checkbox' id='app-dohtoggle' bind:checked={settings.enableDoH} />
+      <label for='app-dohtoggle'>{settings.enableDoH ? 'On' : 'Off'}</label>
+    </div>
+  </SettingCard>
+  <SettingCard title='DNS Over HTTPS URL' description='What URL to use for querying DNS Over HTTPS.'>
+    <input type='url' class='form-control bg-dark w-300 mw-full text-truncate' bind:value={settings.doHURL} placeholder={defaults.doHURL} />
+  </SettingCard>
+{/if}
 
 <h4 class='mb-10 font-weight-bold'>Debug Settings</h4>
 <SettingCard title='Logging Levels' description='Enable logging of specific parts of the app.{!SUPPORTS.isAndroid ? ` These logs are saved to ${VERSION.platform === `win32` ? `%appdata%` : `~/config`}/Tsumi/logs/main.log.` : ``}'>
@@ -183,9 +196,6 @@
   </div>
 </SettingCard>
 {#if !SUPPORTS.isAndroid}
-  <SettingCard title='Open Torrent Devtools' description="Open devtools for the detached torrent process, this allows to inspect code execution and memory. DO NOT PASTE ANY CODE IN THERE, YOU'RE LIKELY BEING SCAMMED IF SOMEONE TELLS YOU TO!">
-    <button type='button' use:click={() => IPC.emit('torrent-devtools')} class='btn btn-primary d-flex align-items-center justify-content-center'><span class='text-truncate'>Open Devtools</span></button>
-  </SettingCard>
   <SettingCard title='Open UI Devtools' description="Open devtools for the UI process, this allows to inspect media playback information, rendering performance and more. DO NOT PASTE ANY CODE IN THERE, YOU'RE LIKELY BEING SCAMMED IF SOMEONE TELLS YOU TO!">
     <button type='button' use:click={() => IPC.emit('ui-devtools')} class='btn btn-primary d-flex align-items-center justify-content-center'><span class='text-truncate'>Open Devtools</span></button>
   </SettingCard>

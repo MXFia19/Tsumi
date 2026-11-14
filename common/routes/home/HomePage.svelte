@@ -10,7 +10,6 @@
   import { settings } from "@/modules/settings.js";
   import { uniqueStore } from "@/modules/util.js";
   import equal from "fast-deep-equal/es6";
-  import { RSSManager } from "@/modules/rss.js";
   import Helper from "@/modules/helper.js";
   import WPC from "@/modules/wpc.js";
   import { writable } from "simple-store-svelte";
@@ -219,27 +218,6 @@
           `Failed to update ${section.title} feed, this is likely a temporary connection issue:`,
           error,
         );
-      }
-    }
-  });
-
-  window.addEventListener("fileEdit", async () => {
-    for (const section of manager.sections) {
-      if (section.isRSS && !section.isSchedule) {
-        const url = settings.value.rssFeedsNew.find(
-          ([feedTitle]) => feedTitle === section.title,
-        )?.[1];
-        if (url) {
-          const loaded = RSSManager.getMediaForRSS(1, 12, url, false, true);
-          if (
-            !section.preview.value ||
-            !equal(
-              await resolveData(loaded),
-              await resolveData(section.preview.value),
-            )
-          )
-            section.preview.value = loaded;
-        }
       }
     }
   });

@@ -188,7 +188,6 @@ pnpm run build
 - `electron/` - Desktop app (Windows, macOS, Linux)
 - `capacitor/` - Mobile app framework (Android)
 - `extensions/` - Example extensions and extension system
-- `client/` - Client library for torrenting (legacy)
 
 ## Contributing
 

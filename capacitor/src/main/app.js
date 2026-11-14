@@ -3,24 +3,20 @@ import { LocalNotifications } from '@capacitor/local-notifications'
 import { StatusBar, Style } from '@capacitor/status-bar'
 import { SafeArea } from 'capacitor-plugin-safe-area'
 import { Keyboard } from '@capacitor/keyboard'
-import { NodeJS } from 'capacitor-nodejs'
 
 import Debugger from './debugger.js'
 import Protocol from './protocol.js'
 import Updater from './updater.js'
 import Dialog from './dialog.js'
 
-import { cache, caches } from '@/modules/cache.js'
+import { cache } from '@/modules/cache.js'
 import { IPC } from '../preload/preload.js'
-import { loadingClient } from './util.js'
 
 export default class App {
   protocol = new Protocol()
   debugger = new Debugger()
   updater = new Updater('https://github.com/50n50/Tsumi/releases/latest/download/latest-android.yml', 'https://api.github.com/repos/50n50/Tsumi/releases/latest')
   dialog = new Dialog()
-
-  ready = NodeJS.whenReady()
 
   kbLastScrollY = null
   kbHideTimeout = null
@@ -61,33 +57,8 @@ export default class App {
     SafeArea.addListener('safeAreaChanged', this.updateSafeInsets)
     screen.orientation.addEventListener('change', this.updateSafeInsets)
 
-    IPC.on('portRequest', async () => {
-      window.port = {
-        onmessage: cb => {
-          NodeJS.addListener('ipc', ({ args }) => cb(args[0]))
-        },
-        postMessage: (data, b) => {
-          NodeJS.send({ eventName: 'ipc', args: [{ data }] })
-        }
-      }
-      await this.ready
-      await cache.isReady
-      this.handleNotify = true
-      NodeJS.send({ eventName: 'port-init', args: [] })
-      let stethoscope = true
-      NodeJS.addListener('webtorrent-heartbeat', () => {
-        if (stethoscope) {
-          stethoscope = false
-          NodeJS.send({ eventName: 'main-heartbeat', args: [{ ...cache.getEntry(caches.GENERAL, 'settings'), userID: cache.cacheID }] })
-          NodeJS.addListener('torrentRequest', () => {
-            NodeJS.send({ eventName: 'torrentPort', args: [] })
-            IPC.emit('port')
-          })
-          loadingClient.resolve()
-        }
-      })
-    })
-    IPC.on('webtorrent-reload', () => NodeJS.send({eventName: 'webtorrent-reload', args: []}))
+    // notification actions are only handled once the cache is ready
+    Promise.resolve(cache.isReady).then(() => { this.handleNotify = true })
 
     // HACK: recenter and focus active elements (causes keyboardWillShow to trigger)
     window.addEventListener('orientationchange', () => {

@@ -528,7 +528,7 @@ class Cache {
 
   /**
    * Transfers all cached data from the current cache to a new cache ID and then purges the old cache.
-   * Only keeps necessary info like settings, notifications, watch history, and previous magnet links excluding caches like queries and user lists as they can't be used.
+   * Only keeps necessary info like settings, notifications and watch history, excluding caches like queries and user lists as they can't be used.
    * @param {string} newCacheID - The ID of the new cache to which data should be transferred.
    * @returns {Promise<void>} Resolves when the data has been successfully transferred and the old cache purged.
    */
@@ -552,7 +552,7 @@ class Cache {
   }
 
   /**
-   * Resets all watch history and magnet links completely clearing the history cache.
+   * Resets all watch history completely clearing the history cache.
    * See {@link historyDefaults} for all values that will be reset.
    */
   async resetHistory() {

@@ -11,19 +11,6 @@ export let alToken = JSON.parse(localStorage.getItem('ALviewer')) || null
 /** @type {{viewer: import('./mal').Query<{Viewer: import('./mal').Viewer}>, token: string, refresh: string, refresh_in: number, reauth: boolean} | null} */
 export let malToken = JSON.parse(localStorage.getItem('MALviewer')) || null
 
-/**
- * Ensures that the webtorrent service is reloaded when the app is reloaded.
- * This is triggered by a `location.reload()` or force reload event.
- */
-const _onbeforeunload = window.onbeforeunload
-window.onbeforeunload = function (event) {
-  IPC.emit('webtorrent-reload')
-  if (typeof _onbeforeunload === 'function') {
-    const result = _onbeforeunload(event)
-    if (typeof result === 'string') return result
-  }
-}
-
 let storedSettings = cache.getEntry(caches.GENERAL, 'settings')
 let scopedDefaults
 try {
@@ -33,7 +20,6 @@ try {
 }
 
 function setDefaults() {
-  const dynamicRss = (storedSettings.rssFeedsNew || defaults.rssFeedsNew).map(([title]) => [title, ['N/A'], ['N/A']])
   const dynamicCustom = (storedSettings.customSections || defaults.customSections).map(([title]) => [title, 'TRENDING_DESC', ['TV', 'MOVIE']])
   const dynamicWestern = (storedSettings.westernSections || defaults.westernSections).map(([title]) => [title, 'N/A', ['TV', 'MOVIE']])
 
@@ -56,7 +42,6 @@ function setDefaults() {
 
   const baseTitles = new Set(baseLayout.map(s => s[0]))
   const extras = [
-    ...dynamicRss.filter(s => !baseTitles.has(s[0])),
     ...dynamicCustom.filter(s => !baseTitles.has(s[0])),
     ...dynamicWestern.filter(s => !baseTitles.has(s[0]))
   ]

@@ -565,11 +565,6 @@ export const defaults = {
   preferDubs: false,
   adult: 'none',
   hentaiBanner: false,
-  rssAutoplay: true,
-  rssAutofile: true,
-  rssQuality: '1080',
-  rssFeedsNew: [],
-  rssNotify: ['CURRENT', 'PLANNING'],
   systemNotify: true,
   aniNotify: 'all',
   releasesNotify: [],
@@ -579,24 +574,10 @@ export const defaults = {
   customSections: [['Anime - Romance', ['Romance'], [], [], []], ['Anime - Isekai Comedy', ['Comedy'], ['Isekai'], [], []]],
   westernSections: [['Western - Trending Now', [], 'Both'], ['Western - Crime Dramas', ['Crime', 'Drama'], 'TV Shows'], ['Western - Sci-Fi & Fantasy', ['Sci-Fi & Fantasy'], 'Both']],
   bannerProvider: 'mix',
-  torrentSpeed: 5,
-  torrentPersist: false,
-  torrentDHT: false,
-  torrentPeX: false,
-  torrentUTP: false,
-  torrentAutoScrape: true,
-  disableStartupTorrent: SUPPORTS.isAndroid,
-  torrentPort: 0,
-  torrentStreamedDownload: true,
-  torrentSort: 'seeders',
-  seedingLimit: !SUPPORTS.isAndroid ? 5 : 2,
-  dhtPort: 0,
   missingFont: true,
-  maxConns: 50,
   subtitleRenderHeight: SUPPORTS.isAndroid ? '720' : '0',
   subtitleLanguage: 'eng',
   audioLanguage: 'jpn',
-  torrentProvider: [],
   enableDoH: false,
   doHURL: 'https://cloudflare-dns.com/dns-query',
   disableSubtitleBlur: SUPPORTS.isAndroid,
@@ -611,36 +592,15 @@ export const defaults = {
   closeAction: 'Prompt',
   queryComplexity: 'Complex',
   expandingSidebar: false,
-  torrentPathNew: undefined,
 
   font: undefined,
   angle: 'default',
-  sourcesNew: {},
-  extensionsNew: {},
-  extensionSources: {},
   disableMiniplayer: false,
   enableExternal: false,
   playerPath: '',
   playerSeek: 2,
   playerSkip: false,
   playerChapterSkip: 'embedded',
-  configTrackers: false,
-  trackers: [
-    atob('d3NzOi8vdHJhY2tlci5vcGVud2VidG9ycmVudC5jb20='),
-    atob('d3NzOi8vdHJhY2tlci53ZWJ0b3JyZW50LmRldg=='),
-    atob('d3NzOi8vdHJhY2tlci5maWxlcy5mbTo3MDczL2Fubm91bmNl'),
-    atob('d3NzOi8vdHJhY2tlci5idG9ycmVudC54eXov'),
-    atob('dWRwOi8vb3Blbi5zdGVhbHRoLnNpOjgwL2Fubm91bmNl'),
-    atob('dWRwOi8vdHJhY2tlci5vcGVudHJhY2tyLm9yZzoxMzM3L2Fubm91bmNl'),
-    atob('dWRwOi8vZXhvZHVzLmRlc3luYy5jb206Njk2OS9hbm5vdW5jZQ=='),
-    atob('dWRwOi8vdHJhY2tlci5jb3BwZXJzdXJmZXIudGs6Njk2OS9hbm5vdW5jZQ=='),
-    atob('dWRwOi8vOS5yYXJiZy50bzoyNzEwL2Fubm91bmNl'),
-    atob('dWRwOi8vdHJhY2tlci50b3JyZW50LmV1Lm9yZzo0NTEvYW5ub3VuY2U='),
-    atob('aHR0cDovL29wZW4uYWNnbnh0cmFja2VyLmNvbTo4MC9hbm5vdW5jZQ=='),
-    atob('aHR0cDovL2FuaWRleC5tb2U6Njk2OS9hbm5vdW5jZQ=='),
-    atob('aHR0cDovL255YWEudHJhY2tlci53Zjo3Nzc3L2Fubm91bmNl'),
-    atob('aHR0cDovL3RyYWNrZXIuYW5pcmVuYS5jb206ODAvYW5ub3VuY2U=')
-  ],
   extensions: {},
   defaultExtension: null,
   starredExtension: null
@@ -654,10 +614,6 @@ export const defaults = {
  * @property {string} widthMiniplayer
  * @property {Array<any>} sync
  * @property {typeof defaults} settings
- * @property {any} [loadedTorrent]
- * @property {any} [stagingTorrents]
- * @property {any} [seedingTorrents]
- * @property {any} [completedTorrents]
  */
 export const generalDefaults = {
   theme: '',
@@ -665,30 +621,22 @@ export const generalDefaults = {
   posMiniplayer: 'bottom right',
   widthMiniplayer: '0px',
   sync: [],
-  settings: defaults,
-  loadedTorrent: undefined,
-  stagingTorrents: [],
-  seedingTorrents: [],
-  completedTorrents: []
+  settings: defaults
 }
 
 /**
  * @typedef {Object} HistoryDefaults
- * @property {any} [lastMagnet]
  * @property {any} [lastBoosted]
  * @property {any} [lastSubtitle]
  * @property {any} [lastSearched]
  * @property {any} [lastSchedule]
- * @property {any} [animeResolvedHash]
  * @property {any} [animeEpisodeProgress]
  */
 export const historyDefaults = {
-  lastMagnet: undefined,
   lastBoosted: undefined,
   lastSubtitle: undefined,
   lastSearched: undefined,
   lastSchedule: undefined,
-  animeResolvedHash: [],
   animeEpisodeProgress: []
 }
 
@@ -718,7 +666,6 @@ export const queryDefaults = {
 
 /**
  * @typedef {Object} NotifyDefaults
- * @property {Record<string, any>} lastRSS
  * @property {number} lastAni
  * @property {number} lastDub
  * @property {number} lastSub
@@ -730,7 +677,6 @@ export const queryDefaults = {
  * @property {any[]} notifications
  */
 export const notifyDefaults = {
-  lastRSS: {},
   lastAni: 0,
   lastDub: 0,
   lastSub: 0,
