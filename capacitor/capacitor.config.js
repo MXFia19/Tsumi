@@ -1,4 +1,7 @@
-const mode = process.env.NODE_ENV?.trim() || 'development'
+// The live-reload dev server is only used when explicitly asked for (NODE_ENV=development,
+// see the dev:* scripts). Defaulting to it made release builds load http://localhost:5001
+// instead of the bundled app, which shows a black screen on the phone.
+const mode = process.env.NODE_ENV?.trim() || 'production'
 
 const config = {
   appId: 'org.tsumi.app',

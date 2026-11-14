@@ -34,6 +34,8 @@ jobs:
         run: pnpm run build:web
       # The Xcode project is generated on each build instead of being committed.
       - name: Add iOS platform
+        env:
+          NODE_ENV: production  # read by capacitor.config.js: bundle the app instead of the dev server
         run: npx cap add ios
       - name: Configure the iOS app
         run: |
@@ -58,7 +60,14 @@ jobs:
           $PB -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST"
           $PB -c "Print" "$PLIST"
       - name: Sync Capacitor plugins
+        env:
+          NODE_ENV: production
         run: npx cap sync ios
+      - name: Check the app is bundled (no dev server)
+        run: |
+          if grep -q '"url"' ios/App/App/capacitor.config.json; then
+            echo 'capacitor.config.json still points to a server URL:'; cat ios/App/App/capacitor.config.json; exit 1
+          fi
       - name: Build archive (unsigned)
         run: |
           xcodebuild -workspace ios/App/App.xcworkspace \

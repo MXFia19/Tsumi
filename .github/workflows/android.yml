@@ -52,6 +52,8 @@ jobs:
         run: pnpm run build:app
 
       - name: Sync 
+        env:
+          NODE_ENV: production
         run: pnpm exec cap sync android
 
       - uses: actions/cache@v3
