@@ -39,6 +39,10 @@ jobs:
         run: |
           PLIST=ios/App/App/Info.plist
           PB=/usr/libexec/PlistBuddy
+          # same version number as the desktop app
+          VERSION=$(node -p "require('../electron/package.json').version")
+          $PB -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
+          $PB -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" "$PLIST"
           # tsumi:// links (Watch Together invites, AniList/MAL login); shiru:// for older links
           $PB -c "Add :CFBundleURLTypes array" "$PLIST" 2>/dev/null || true
           $PB -c "Add :CFBundleURLTypes:0 dict" "$PLIST"
