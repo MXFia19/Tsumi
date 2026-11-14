@@ -630,11 +630,18 @@ final class ServiceMessages {
 
   private init() {}
 
-  /// Posts a toast if the `toasts` setting allows it (All | Errors | None).
+  /// Posts a toast if the `toasts` setting allows it, with the same rules as the Svelte app:
+  /// All | "Warnings / Successes" | Errors | None (e.g. Scoring.svelte, helper.js, networking.js).
   func post(_ kind: Kind, _ title: String, _ detail: String = "") {
     let setting = AppSettings.shared.values.toasts
-    if setting.contains("None") { return }
-    if kind != .error && !setting.contains("All") { return }
+    let allowed: Bool
+    switch kind {
+    case .error: allowed = setting.contains("All") || setting.contains("Errors")
+    case .success: allowed = setting.contains("All") || setting.contains("Successes")
+    case .warning: allowed = setting.contains("All") || setting.contains("Warnings")
+    case .info: allowed = !setting.contains("None")
+    }
+    if !allowed { return }
     messages.append(Message(id: UUID(), kind: kind, title: title, detail: detail, date: Date()))
     if messages.count > 20 { messages.removeFirst(messages.count - 20) }
   }
