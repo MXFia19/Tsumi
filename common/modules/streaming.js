@@ -71,8 +71,10 @@ export async function loadStream(video, streamUrl, options = {}) {
 
   const port = await getProxyPortInternal()
 
-  if (!Hls) {
-    debug('HLS.js unavailable, using proxied native playback')
+  // hls.js needs Media Source Extensions, which iPhones do not have: Safari/WKWebView
+  // play HLS natively there.
+  if (!Hls || !Hls.isSupported?.()) {
+    debug('HLS.js unavailable or unsupported, using native playback')
     if (port) {
       video.src = getProxyUrl(streamUrl, options.headers || {}, port)
     } else {
