@@ -15,16 +15,19 @@ struct W2GUser: Hashable {
   var isAniList: Bool
   /// The JSON number id when the source sent a number (AniList/MAL ids), to re-encode as is.
   var numericId: Int?
+  /// v2 `init.displayName`: name typed by an anonymous user, shown instead of the id.
+  var typedName: String?
 
   static let defaultAvatar = URL(string: "https://s4.anilist.co/file/anilistcdn/user/avatar/large/default.png")
   static let defaultMALPicture = "https://cdn.myanimelist.net/images/kaomoji_mal_white.png"
 
-  init(id: String, name: String? = nil, avatar: URL? = nil, isAniList: Bool = false, numericId: Int? = nil) {
+  init(id: String, name: String? = nil, avatar: URL? = nil, isAniList: Bool = false, numericId: Int? = nil, typedName: String? = nil) {
     self.id = id
     self.name = name
     self.avatar = avatar
     self.isAniList = isAniList
     self.numericId = numericId
+    self.typedName = typedName
   }
 
   /// Anonymous participant (`{ id: generateRandomHexCode(16) }`).
@@ -65,6 +68,7 @@ struct W2GUser: Hashable {
     id = resolvedId
     numericId = number
     name = json["name"]?.stringValue
+    typedName = W2GSync.cleanDisplayName(json["displayName"]?.stringValue)
     let medium = json["avatar"]?["medium"]?.stringValue
     let large = json["avatar"]?["large"]?.stringValue
     let picture = json["picture"]?.stringValue
@@ -95,10 +99,9 @@ struct W2GUser: Hashable {
     return W2GJSON.dict(fields)
   }
 
-  /// `user?.name || 'Anonymous'`
+  /// sync.js memberName: AniList / MAL name, else the typed display name, else "Guest <id prefix>".
   var displayName: String {
-    if let name, !name.isEmpty { return name }
-    return "Anonymous"
+    W2GSync.memberName(name: name, typedName: typedName, id: id)
   }
 
   /// Profile link opened from the member list (User.svelte).
@@ -115,12 +118,23 @@ struct W2GMember: Identifiable, Hashable {
   var id: String
   var user: W2GUser
   var isSelf: Bool
+  /// `init.protocol` (1 for a v1 client that sends none); nil while the peer has not sent `init`.
+  var protocolVersion: Int? = nil
+  /// `init.client` ("tsumi-desktop", "tsumi-android", "tsumi-ios").
+  var client: String? = nil
+  /// The peer sent `init` (false for a connected peer listed after the introduction grace).
+  var introduced: Bool = true
+
+  /// PROTOCOL "Identity": the `init` id, else the transport id.
+  var userId: String { user.id }
 }
 
 struct W2GChatMessage: Identifiable, Hashable {
   enum Direction: String, Hashable {
     case incoming
     case outgoing
+    /// Local line (joins, leaves, actions, requests, reactions), never sent.
+    case system
   }
 
   let id: UUID
@@ -128,6 +142,8 @@ struct W2GChatMessage: Identifiable, Hashable {
   var user: W2GUser
   var direction: Direction
   var date: Date
+  /// Reaction of a system line ("Alice reacted 🔥").
+  var emoji: String?
 
   init(text: String, user: W2GUser, direction: Direction, date: Date = Date()) {
     id = UUID()
@@ -135,7 +151,20 @@ struct W2GChatMessage: Identifiable, Hashable {
     self.user = user
     self.direction = direction
     self.date = date
+    emoji = nil
   }
+
+  /// System chat line.
+  init(system text: String, emoji: String? = nil, date: Date = Date()) {
+    id = UUID()
+    self.text = text
+    user = W2GUser(id: "")
+    direction = .system
+    self.date = date
+    self.emoji = emoji
+  }
+
+  var isSystem: Bool { direction == .system }
 }
 
 /// Consecutive messages of one user (Lobby.svelte groupMessages).
@@ -146,11 +175,13 @@ struct W2GMessageGroup: Identifiable, Hashable {
   var direction: W2GChatMessage.Direction
   var date: Date
 
-  /// Last 50 messages, grouped while the sender does not change.
+  var isSystem: Bool { direction == .system }
+
+  /// Last 50 messages, grouped while the sender does not change; system lines stay on their own.
   static func group(_ messages: [W2GChatMessage]) -> [W2GMessageGroup] {
     var groups: [W2GMessageGroup] = []
     for message in messages.suffix(50) {
-      if let last = groups.last, last.user.id == message.user.id {
+      if let last = groups.last, !last.isSystem, !message.isSystem, last.user.id == message.user.id {
         groups[groups.count - 1].messages.append(message.text)
       } else {
         groups.append(W2GMessageGroup(id: message.id, user: message.user, messages: [message.text], direction: message.direction, date: message.date))
@@ -172,7 +203,10 @@ struct W2GPlayerState: Equatable {
 
 /// What the lobby is watching (`{ media, episode, key }` of the `media` event).
 struct W2GSharedMedia {
+  /// The key everyone compares (`status.mediaKey`): the sender's `key` for a received title.
   var key: String
+  /// Our own key for the same title, which another client may format differently.
+  var localKey: String
   var mediaJSON: W2GJSON
   var episodeJSON: W2GJSON
   /// The payload mapped onto the native model (nil only if the payload had no usable id).
@@ -201,6 +235,100 @@ struct W2GNotice: Identifiable, Equatable {
   let id = UUID()
   var title: String
   var message: String
+}
+
+// MARK: - v2 (PROTOCOL.md)
+
+/// What the local player is doing, read by the client for `status` (built by the app from the PlayerController).
+struct W2GLocalPlayback {
+  var state: W2GPlaybackState
+  var time: Double
+  var rate: Double
+  var media: Media
+  var episode: EpisodeRef
+}
+
+/// A lobby state for the local player: someone's action, a host snap-back, auto-sync, resync or countdown.
+struct W2GPlayerCommand {
+  var time: Double
+  var paused: Bool
+  var action: W2GAction
+  /// userId of the person who caused it.
+  var by: String
+  var rate: Double
+  /// The time is exact (v2 sender or local correction); v1 senders send whole seconds.
+  var isPrecise: Bool
+}
+
+/// A member row: host crown, sync badge, ping.
+struct W2GMemberView: Identifiable, Equatable {
+  var userId: String
+  var user: W2GUser
+  var name: String
+  var isSelf: Bool
+  var isHost: Bool
+  var badge: W2GBadge
+  var protocolVersion: Int?
+  var client: String?
+  var rtt: Double?
+
+  var id: String { userId }
+
+  /// Host transfer needs a v2 client (a v1 client could not change the mode, kick or answer requests).
+  var canBeHost: Bool { (protocolVersion ?? 1) >= W2GSync.protocolVersion }
+}
+
+/// A request waiting for the host's answer.
+struct W2GHostRequest: Identifiable, Equatable {
+  var id: String
+  var kind: W2GRequestKind
+  var time: Double?
+  var userId: String
+  var name: String
+  /// ms, local clock.
+  var expiresAt: Double
+
+  var prompt: String { W2GSync.requestPrompt(name: name, kind: kind, time: time) }
+}
+
+/// The 3-2-1 overlay: everyone is at `time`, paused, and plays when it ends.
+struct W2GCountdown: Equatable {
+  let id = UUID()
+  var time: Double
+  var seconds: Int
+  /// ms, local clock.
+  var endsAt: Double
+  var by: String
+}
+
+/// Chat message shown over the video while the panel is closed.
+struct W2GChatBubble: Identifiable, Equatable {
+  let id = UUID()
+  var name: String
+  var text: String
+}
+
+/// "Request pause" / "Request play" / "Request jump to 12:34" button of a notice.
+struct W2GNoticeRequest: Equatable {
+  var kind: W2GRequestKind
+  var time: Double?
+  var label: String
+}
+
+/// Short notice over the video ("Alice paused at 12:34", "Only the host controls playback").
+struct W2GOverlayNotice: Identifiable, Equatable {
+  let id = UUID()
+  var text: String
+  var request: W2GNoticeRequest?
+}
+
+/// Emoji rising over the video.
+struct W2GFloatingReaction: Identifiable, Equatable {
+  let id = UUID()
+  var emoji: String
+  /// Distance from the trailing edge, as a fraction of the width.
+  var inset: Double
+  var createdAt = Date()
 }
 
 // MARK: - Media payload (session.js pickMedia, w2g.js mediaKey, tmdb.js normalizeMedia)

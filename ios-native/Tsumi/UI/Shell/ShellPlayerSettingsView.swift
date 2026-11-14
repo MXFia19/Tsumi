@@ -21,6 +21,7 @@ struct ShellPlayerSettingsView: View {
       }
       ShellPlaybackSettingsSection()
       ShellPictureInPictureSection()
+      ShellWatchTogetherSettingsSection()
     }
     .navigationTitle("Player")
   }
@@ -137,6 +138,22 @@ struct ShellPictureInPictureSection: View {
     }
     .onChange(of: autoPictureInPicture) { _, value in
       PlayerPreferences.autoPictureInPicture = value
+    }
+  }
+}
+
+/// "Watch Together Settings" (PlayerTab.svelte `w2gAutoSync`, common/routes/w2g/PROTOCOL.md "Auto-sync").
+@MainActor
+struct ShellWatchTogetherSettingsSection: View {
+  var body: some View {
+    Section {
+      ShellSettingToggle(
+        title: "Auto-Sync",
+        description: "In a Watch Together lobby, jumps to the host’s position when your video drifts more than 2 seconds away while you both play the same episode. At most once every 10 seconds, and nobody else is told.",
+        isOn: ShellBind.value(\.w2gAutoSync)
+      )
+    } header: {
+      Text("Watch Together Settings")
     }
   }
 }

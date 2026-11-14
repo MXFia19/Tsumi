@@ -15,6 +15,8 @@ struct PlayerView: View {
   @State private var showKeybinds = false
   @State private var seekFeedback: PlayerSeekFeedback?
   @State private var feedbackTask: Task<Void, Never>?
+  /// Watch Together side panel (W2GPlayerPanel).
+  @State private var showWatchTogether = false
   @FocusState private var keyboardFocused: Bool
 
   init(controller: PlayerController) {
@@ -25,6 +27,7 @@ struct PlayerView: View {
     ZStack {
       videoLayers
       controlLayers
+      watchTogetherLayer
       promptLayers
       panelLayers
     }
@@ -60,6 +63,7 @@ struct PlayerView: View {
     .onDisappear {
       hideTask?.cancel()
       feedbackTask?.cancel()
+      WatchTogetherClient.shared.setPlayerPanelOpen(false)
       PlayerOrientation.unlock()
       controller.viewDidDisappear()
     }
@@ -74,12 +78,25 @@ struct PlayerView: View {
     .onChange(of: isCovered) { _, covered in
       if !covered { restoreKeyboardFocus() }
     }
+    .onChange(of: showWatchTogether) { _, open in
+      WatchTogetherClient.shared.setPlayerPanelOpen(open)
+      if open {
+        // The panel covers the trailing side: the controls come back when it closes.
+        hideTask?.cancel()
+        controlsVisible = false
+      } else {
+        revealControls()
+      }
+    }
+    .onChange(of: WatchTogetherClient.shared.isInLobby) { _, inLobby in
+      if !inLobby { showWatchTogether = false }
+    }
   }
 
   /// A sheet, dialog or panel is shown over the player: the hardware keyboard focus is given back to the
   /// player when the last one closes (episode list, Files importer, details, extension dialogs, panels).
   private var isCovered: Bool {
-    showEpisodes || showImporter || showSubtitleOffset || showKeybinds
+    showEpisodes || showImporter || showSubtitleOffset || showKeybinds || showWatchTogether
       || controller.isExternalOverlayPresented || PlaybackRequestCoordinator.shared.presentation != nil
   }
 
@@ -126,7 +143,8 @@ struct PlayerView: View {
       onShowEpisodes: { showEpisodes = true },
       onImportSubtitles: { showImporter = true },
       onShowSubtitleOffset: { showSubtitleOffset = true },
-      onShowKeybinds: { showKeybinds = true }
+      onShowKeybinds: { showKeybinds = true },
+      onShowWatchTogether: { showWatchTogether = true }
     )
     .opacity(controlsVisible ? 1 : 0)
     .allowsHitTesting(controlsVisible)
@@ -134,6 +152,15 @@ struct PlayerView: View {
     // Hidden with the controls, like `.immersed .skip` in PlayerPage.svelte.
     if let name = controller.currentSkippable, controlsVisible {
       skipButton(name)
+    }
+  }
+
+  /// Watch Together (only while in a lobby): notices, chat bubbles, reactions, countdown, host requests, panel.
+  @ViewBuilder
+  private var watchTogetherLayer: some View {
+    let client = WatchTogetherClient.shared
+    if client.isInLobby {
+      W2GPlayerLayer(client: client, panelOpen: $showWatchTogether, controlsVisible: controlsVisible)
     }
   }
 
@@ -282,6 +309,11 @@ struct PlayerView: View {
   // MARK: - Controls visibility (immerse)
 
   private func toggleControls() {
+    // A tap on the video closes the Watch Together panel first.
+    if showWatchTogether {
+      showWatchTogether = false
+      return
+    }
     controlsVisible.toggle()
     if controlsVisible {
       scheduleHide()
@@ -302,7 +334,7 @@ struct PlayerView: View {
     hideTask = Task { @MainActor in
       try? await Task.sleep(nanoseconds: 3_000_000_000)
       guard !Task.isCancelled else { return }
-      if controller.isPlaying && !controller.isScrubbing && !showSubtitleOffset && !showKeybinds {
+      if controller.isPlaying && !controller.isScrubbing && !showSubtitleOffset && !showKeybinds && !showWatchTogether {
         controlsVisible = false
       }
     }
@@ -319,6 +351,14 @@ struct PlayerView: View {
   }
 
   private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+    // The Watch Together panel has a text field: its keys are not player shortcuts.
+    if showWatchTogether {
+      if press.key == .escape {
+        showWatchTogether = false
+        return .handled
+      }
+      return .ignored
+    }
     if press.phase == .repeat && !PlayerView.repeats(press) {
       // Swallowed so a held Space or letter does not toggle again and again.
       return .handled

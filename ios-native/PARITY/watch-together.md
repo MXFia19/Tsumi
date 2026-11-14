@@ -9,10 +9,12 @@ Swift files (all in `ios-native/Tsumi/WatchTogether/`):
 | `W2GJSON.swift` | JSON value with JS-string semantics (UTF-16 code units), `JSON.stringify`-compatible writer, parser, hex/random helpers, main-thread hop helpers |
 | `W2GPeerLink.swift` | One WebRTC connection (simple-peer equivalent, trickle off) + delegate proxy |
 | `W2GTracker.swift` | WebTorrent WebSocket tracker client (signaling) |
-| `W2GSwarm.swift` | P2PT equivalent: info hash, peer id, links per peer, message framing/chunking |
-| `W2GModels.swift` | `W2GUser`, `W2GMember`, `W2GChatMessage`, `W2GMessageGroup`, `W2GPlayerState`, `W2GSharedMedia`, `W2GNotice`, `W2GMediaPayload` (media/episode/key mapping) |
-| `WatchTogetherClient.swift` | `@MainActor @Observable` lobby client (W2GClient + session.js + page module logic), `shared` singleton, deep links |
-| `WatchTogetherView.swift` | SwiftUI screen (page, lobby, messages, members) |
+| `W2GSwarm.swift` | P2PT equivalent: info hash, peer id, links per peer, message framing/chunking, `block(_:)` (kick) |
+| `W2GModels.swift` | `W2GUser`, `W2GMember`, `W2GChatMessage`, `W2GMessageGroup`, `W2GPlayerState`, `W2GSharedMedia`, `W2GNotice`, `W2GMediaPayload` (media/episode/key mapping), v2 view/value types (`W2GMemberView`, `W2GHostRequest`, `W2GCountdown`, overlay items, `W2GPlayerCommand`, `W2GLocalPlayback`) |
+| `W2GSync.swift` | v2 pure logic, port of `sync.js`: constants, normalization, host election, expected time / drift, badges, auto-sync step, host reference, notice and request texts (no UI) |
+| `WatchTogetherClient.swift` | `@MainActor @Observable` lobby client (W2GClient + session.js + page module logic), `shared` singleton, deep links, v2 protocol |
+| `WatchTogetherView.swift` | SwiftUI screen (page, lobby, messages with system lines, members with crown / badge / host actions, mode, display name) |
+| `W2GPlayerOverlay.swift` | v2 player UI (PlayerW2G.svelte): button + unread badge, side panel, bubbles, notices, reactions, countdown, host request prompts |
 
 Package: `stasel/WebRTC` `exactVersion: 156.0.0` (binary xcframework of Google libwebrtc M156, product `WebRTC`), declared in `ios-native/project.yml`.
 
@@ -109,3 +111,34 @@ All hooks are set in `UI/Shell/AppWiring.swift` (`configureWatchTogether`, lines
 - Player (`UI/Shell/ShellPlayback.swift`): `onEpisodeStarted` → `shareMedia(media:episode:)` (skipped for an episode a peer asked for), `onLocalStateChange` → `playerStateChanged(paused:time:)`, `onIndexChange` → `mediaIndexChanged(_:)`, `isWatchTogetherActive` → `isInLobby`.
 - Deep links (`UI/Shell/ShellNavigation.swift` `ShellDeepLinks`): `tsumi://w2g/…` → `handle(url:)`, routed `watchTogether` links → `join(link:)`; `scenePhase == .active` → `appBecameActive()` (`ShellLifecycle`).
 - `Info.plist` has `NSLocalNetworkUsageDescription`.
+
+## v2 (PROTOCOL.md, 2026-11-14)
+
+Contract: `common/routes/w2g/PROTOCOL.md`. Reference implementation: `common/routes/w2g/components/{sync.js, w2g.js, PlayerW2G.svelte, Lobby.svelte, User.svelte}`. The rules, thresholds and texts of `sync.js` are ported one to one in `W2GSync.swift` (same badge texts, same `describeAction` / `describeRequest` sentences, same `Guest xxxx` names), so both apps show the same thing and elect the same host.
+
+| # | PROTOCOL section | Swift | Status |
+|---|---|---|---|
+| v2.1 | `init` + `displayName` (anonymous, max 32), `client: "tsumi-ios"`, `protocol: 2`; v1 peers (no `protocol`) recorded as 1 | `WatchTogetherClient.initPayload`, `receivedInit`, `W2GUser.typedName` | Done |
+| v2.2 | Anonymous id kept for the app session | `w2gAnonymousId` | Done |
+| v2.3 | `host { hostId, mode }`: creator is host; joiner has none until `host`; accepted only from the current host or while none is known; sent to each new peer right after `init` | `receivedHost`, `peerConnected`, `setLobby` | Done (+ provisional host after migration and rival-claim resolution like w2g.js) |
+| v2.4 | Migration on host `peerclose`: smallest userId (JS string order) among self + introduced peers; self broadcasts `host` | `migrateHost`, `W2GSync.electHost` / `jsLess` | Done |
+| v2.5 | Transfer, mode toggle, kick (close channel, ban userId, ignore its `init`) | `transferHost(to:)` (refused for v1 peers), `setMode(_:)`, `kick(_:)`, `ban`, `W2GSwarm.block` | Done |
+| v2.6 | `player` + `by` / `action` / `rate`; v1: sender as `by`, action inferred, no-op seeks not announced; host mode ignores non-host `player` | `receivedPlayer`, `localPlayerAction`, `playerPayload` | Done (`rate` is passed along, not applied) |
+| v2.7 | Host mode, non-host local action: not broadcast, snap back to expected(host), "Only the host controls playback" + Request pause / play / jump | `localPlayerAction` → `applyLocally` + `showBlocked`; system pauses (background, interruption) are not snapped back | Done |
+| v2.8 | `status` every 3 s and on every state change (play, pause, seek done, buffering, media change, rate) | 0.25 s sampler of `PlayerController.syncSnapshot` + 3 s heartbeat in every state (like w2g.js) | Done |
+| v2.9 | `ping` / `pong` every 10 s, RTT per userId | `pingAll`, `receivedPong` | Done |
+| v2.10 | Expected time, drift, badges (In sync / ±N s / Buffering / Loading / Not in the player / Other episode / No signal / Old version), paused or idle members alive 25 s through pings | `W2GSync.expectedTime`, `syncBadge`, `selfBadge`, `memberViews(now:)` | Done |
+| v2.11 | Auto-sync (setting, default on): drift > 2 s for two host heartbeats, both playing the same mediaKey, ≤ once / 10 s, silent; v1 host → off | `checkAutoSync`, `W2GSync.autoSyncStep`; setting `w2gAutoSync` (Settings > Player > Watch Together Settings) | Done |
+| v2.12 | Loading a file is not a user action; once loaded, a non-host follows the host on the same episode | `PlayerController` (resume seek / autoplay / reload not reported), `onSyncReady` → `playerReady()` | Done |
+| v2.13 | Resync (non-host) / Resync everyone (host, `player` `sync`) / Start together (`countdown`, 3 s, receiver counts from reception − rtt/2) | `resync()`, `resyncEveryone()`, `startTogether()`, `runCountdown` | Done |
+| v2.14 | `request` / `requestReply`, host prompt Accept / Decline, 15 s timeout = declined, accepted request done as a local action | `request(_:time:)`, `receivedRequest`, `answerRequest`, `onPerformRequest` | Done |
+| v2.15 | `reaction`, only the 8 emoji (bare ❤ accepted as ❤️) | `react(_:)`, `W2GSync.normalizeReaction` | Done |
+| v2.16 | System lines: joins, leaves, actions ("You paused at 12:34" only in chat for own actions), requests, host/mode changes, reactions, kicks | `system(_:)`, `W2GChatMessage(system:)` | Done |
+| v2.17 | `media.key` kept verbatim (sender's string) for `status.mediaKey` | `receivedMedia`, `mediaKey(for:episode:)`, `W2GSharedMedia.localKey` | Done |
+| v2.18 | Player UI: button + unread badge, panel (members, chat, field, reactions, Request, host tools, Resync), bubbles 5 s, notices 3 s, floating reactions, countdown, request prompts | `W2GPlayerOverlay.swift`, `PlayerView.watchTogetherLayer`, `PlayerControlsOverlay.onShowWatchTogether` | Done (side panel; the controls hide while it is open; player shortcuts are off while it is open; hidden in the miniplayer) |
+| v2.19 | Lobby page: member list with crown, badges, host actions; mode indicator; display name when not logged in; system lines | `W2GLobbyHeader`, `W2GMemberList` / `W2GMemberStrip`, `W2GDisplayNameField` (setting `w2gDisplayName`), `W2GMessageGroupView` | Done (+ host request prompts on the lobby screen) |
+| v2.20 | Unknown events and fields ignored | `received` default | Done |
+
+Player hooks added (`PlayerController`): `onSyncAction(PlayerSyncAction)` (user play / pause / seek with seek distance, rate and an `automatic` flag for system pauses), `onSyncReady()`, `syncSnapshot`, `applyRemoteState(paused:time:seekThreshold:)` (0.25 s for exact v2 times, 1.5 s for v1 whole seconds). `onLocalStateChange` is kept but no longer wired. Client hooks added: `onApplyPlayer`, `onPerformRequest`, `localPlayback` (AppWiring). In the full screen player, lobby toasts (`onNotice`) are shown as player notices.
+
+Settings keys added to `SettingsValues` (same names as util.js): `w2gAutoSync` (default true), `w2gDisplayName` (default "").

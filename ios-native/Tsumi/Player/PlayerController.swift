@@ -48,6 +48,10 @@ final class PlayerController {
   @ObservationIgnored var onIndexChange: ((Int) -> Void)?
   /// Watch Together session active: disables autoplay of the next episode (like `!state.value`).
   @ObservationIgnored var isWatchTogetherActive: (() -> Bool)?
+  /// Watch Together v2: a play / pause / seek the user made (not a file loading, not a lobby state being applied).
+  @ObservationIgnored var onSyncAction: ((PlayerSyncAction) -> Void)?
+  /// Watch Together v2: the file is ready (resume position and autoplay handled); the lobby may move it to the host.
+  @ObservationIgnored var onSyncReady: (() -> Void)?
   /// Filler/recap lookup used for the skip prompt; defaults to Jikan. Set to nil to disable.
   @ObservationIgnored var episodeFlagsLookup: ((Media, EpisodeRef) async -> PlayerEpisodeFlags?)? = { media, episode in
     await PlayerEpisodeFlagsLookup.jikan(media: media, episode: episode)
@@ -159,6 +163,8 @@ final class PlayerController {
   @ObservationIgnored private var chasePrecise = true
   @ObservationIgnored private var seekCompletions: [() -> Void] = []
   @ObservationIgnored private var pausedByBackground = false
+  /// Position when the seekbar drag started (Watch Together seek distance).
+  @ObservationIgnored private var scrubOrigin: Double?
   @ObservationIgnored private var detachedForBackground = false
   @ObservationIgnored private var playingBeforeResign = false
   @ObservationIgnored private var interruptedWhilePlaying = false
@@ -172,6 +178,10 @@ final class PlayerController {
   static let speedOptions: [Float] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
   /// Watch Together: only seek to a remote time farther than this (times are floored to the second).
   static let remoteSeekThreshold: Double = 1.5
+  /// Watch Together v2: same for exact times (v2 `player` events, host snap-back, auto-sync, countdown).
+  static let syncSeekThreshold: Double = 0.25
+  /// Watch Together v2: a local seek shorter than this is a player fix-up, not a user action.
+  static let syncSeekMinimum: Double = 0.5
   /// HLS thumbnails: one frame per bucket of this many seconds, at most `thumbnailLimit` frames (~20 MB).
   private static let thumbnailInterval: Double = 6
   private static let thumbnailLimit = 240
@@ -749,11 +759,15 @@ final class PlayerController {
       startAutoPlay()
     } else if resumePlaybackAfterLoad {
       resumePlaybackAfterLoad = false
+      // Reloading the stream is not a user action for Watch Together.
+      suppressSyncUntil = max(suppressSyncUntil, Date().addingTimeInterval(1))
       player.play()
     }
     if let remote = pendingRemoteState {
       pendingRemoteState = nil
       applyRemoteState(paused: remote.paused, time: remote.time)
+    } else {
+      onSyncReady?()
     }
     updateNowPlayingPlayback()
   }
@@ -773,7 +787,8 @@ final class PlayerController {
     }
     guard target > 0 else { return }
     performSeek(to: target) { [weak self] in
-      self?.emitLocalState()
+      // Loading a file (resume position) is not a user action for Watch Together.
+      self?.emitLocalState(announce: false)
     }
   }
 
@@ -784,12 +799,15 @@ final class PlayerController {
     Task { [weak self] in
       let flags = await task?.value
       guard let self, generation == self.episodeGeneration, !self.isClosed else { return }
+      // A Watch Together state was applied: the lobby decides (no filler prompt pausing the others).
+      if self.autoplayHandledByRemote { return }
       if let label = flags?.promptLabel {
         self.fillerPrompt = label
         self.player.pause()
         return
       }
-      if self.autoplayHandledByRemote { return }
+      // Autoplay is not a user action for Watch Together.
+      self.suppressSyncUntil = max(self.suppressSyncUntil, Date().addingTimeInterval(1))
       self.player.play()
     }
   }
@@ -1016,8 +1034,9 @@ final class PlayerController {
 
   func seek(to time: Double) {
     guard everReady, !isClosed else { return }
+    let origin = currentTime
     performSeek(to: time) { [weak self] in
-      self?.emitLocalState()
+      self?.emitLocalState(seekFrom: origin)
       self?.updateNowPlayingPlayback()
       self?.runTimeChecks()
     }
@@ -1038,6 +1057,7 @@ final class PlayerController {
 
   func beginScrubbing() {
     guard everReady else { return }
+    if !isScrubbing { scrubOrigin = currentTime }
     isScrubbing = true
     scrubTime = currentTime
   }
@@ -1058,10 +1078,12 @@ final class PlayerController {
     previewTask?.cancel()
     previewTask = nil
     scrubPreview = nil
+    let origin = scrubOrigin ?? target
+    scrubOrigin = nil
     performSeek(to: target, precise: true) { [weak self] in
       guard let self else { return }
       self.isScrubbing = false
-      self.emitLocalState()
+      self.emitLocalState(seekFrom: origin)
       self.updateNowPlayingPlayback()
       self.refreshSubtitleCues()
       self.runTimeChecks()
@@ -1616,17 +1638,65 @@ final class PlayerController {
 
   // MARK: - Watch Together
 
-  private func emitLocalState() {
+  /// Reports a local play / pause / seek. `seekFrom`: position before a seek the user made (seek distance);
+  /// `announce: false` only records the state (file loading). States applied from the lobby are not reported
+  /// (`suppressSyncUntil`).
+  private func emitLocalState(seekFrom: Double? = nil, announce: Bool = true) {
     saveProgress()
-    guard Date() >= suppressSyncUntil, everReady else { return }
+    guard everReady else { return }
     let state = (paused: !isPlaying, time: floor(currentTime))
-    if let last = lastSyncedState, last.paused == state.paused, last.time == state.time { return }
+    let previous = lastSyncedState
+    if let last = previous, last.paused == state.paused, last.time == state.time { return }
     lastSyncedState = state
+    guard announce, Date() >= suppressSyncUntil else { return }
     onLocalStateChange?(state)
+    guard let onSyncAction else { return }
+    let kind: PlayerSyncAction.Kind
+    var delta: Double?
+    if let seekFrom, abs(currentTime - seekFrom) > PlayerController.syncSeekMinimum {
+      kind = .seek
+      delta = currentTime - seekFrom
+    } else if previous == nil || previous?.paused != state.paused {
+      kind = state.paused ? .pause : .play
+    } else {
+      return
+    }
+    // Paused by the system (app sent to the background with "Pause On Lost Focus", audio interruption).
+    let automatic = state.paused && (pausedByBackground || interruptedWhilePlaying)
+    onSyncAction(PlayerSyncAction(
+      kind: kind,
+      time: currentTime,
+      paused: state.paused,
+      delta: delta,
+      rate: Double(playbackRate),
+      automatic: automatic
+    ))
+  }
+
+  /// Watch Together v2 `status` of this player (state, position, rate, what is playing).
+  var syncSnapshot: PlayerSyncSnapshot {
+    let state: PlayerSyncSnapshot.State
+    if isClosed {
+      state = .idle
+    } else if loadingEpisode != nil || phase == .loading {
+      state = .loading
+    } else if isPlaying {
+      state = isBuffering ? .buffering : .playing
+    } else {
+      state = .paused
+    }
+    let time = currentTime.isFinite ? max(currentTime, 0) : 0
+    return PlayerSyncSnapshot(state: state, time: time, rate: Double(playbackRate), media: session.media, episode: session.episode)
   }
 
   /// w2gEmitter 'playerupdate': follow another participant (seek only on a meaningful difference).
   func applyRemoteState(paused: Bool, time: Double) {
+    applyRemoteState(paused: paused, time: time, seekThreshold: PlayerController.remoteSeekThreshold)
+  }
+
+  /// Applies a lobby state (Watch Together v2: someone's action, host snap-back, auto-sync, resync, countdown).
+  /// Seeks only when the position differs by more than `seekThreshold`; never reported back as a local action.
+  func applyRemoteState(paused: Bool, time: Double, seekThreshold: Double) {
     guard !isClosed, time.isFinite else { return }
     lastSyncedState = (paused: paused, time: floor(time))
     suppressSyncUntil = Date().addingTimeInterval(1)
@@ -1636,7 +1706,7 @@ final class PlayerController {
       return
     }
     fillerPrompt = nil
-    if abs(currentTime - time) > PlayerController.remoteSeekThreshold {
+    if abs(currentTime - time) > max(seekThreshold, 0) {
       performSeek(to: time)
     }
     if paused {

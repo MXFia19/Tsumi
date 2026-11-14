@@ -280,9 +280,28 @@ enum ShellPlayback {
     controller.onOpenDetails = { media in
       ShellNavigation.openDetails(MediaStore.shared.media(media.id) ?? media)
     }
-    // Watch Together (w2gEmitter 'player' / 'index', no autoplay during a session).
-    controller.onLocalStateChange = { state in
-      WatchTogetherClient.shared.playerStateChanged(paused: state.paused, time: state.time)
+    // Watch Together (w2gEmitter 'player' / 'index', no autoplay during a session). v2: the action, its seek
+    // distance and rate go with it (PROTOCOL.md `player.by/action/rate`); the lobby snaps a non-host back in
+    // `host` mode instead of broadcasting. `onLocalStateChange` (v1) is left unset so nothing is sent twice.
+    controller.onSyncAction = { action in
+      let kind: W2GAction
+      switch action.kind {
+      case .play: kind = .play
+      case .pause: kind = .pause
+      case .seek: kind = .seek
+      }
+      WatchTogetherClient.shared.localPlayerAction(
+        kind,
+        time: action.time,
+        paused: action.paused,
+        delta: action.delta,
+        rate: action.rate,
+        automatic: action.automatic
+      )
+    }
+    // The file finished loading: a non-host follows the host (PROTOCOL.md "Auto-sync").
+    controller.onSyncReady = {
+      WatchTogetherClient.shared.playerReady()
     }
     controller.onIndexChange = { index in
       WatchTogetherClient.shared.mediaIndexChanged(index)

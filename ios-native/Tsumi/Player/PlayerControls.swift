@@ -11,6 +11,8 @@ struct PlayerControlsOverlay: View {
   let onImportSubtitles: () -> Void
   let onShowSubtitleOffset: () -> Void
   let onShowKeybinds: () -> Void
+  /// Opens the Watch Together panel; the button only shows while in a lobby.
+  var onShowWatchTogether: (() -> Void)? = nil
 
   var body: some View {
     ZStack {
@@ -60,6 +62,12 @@ struct PlayerControlsOverlay: View {
         }
       }
       Spacer(minLength: 8)
+      if let onShowWatchTogether, WatchTogetherClient.shared.isInLobby {
+        W2GPlayerButton(unread: WatchTogetherClient.shared.unreadCount) {
+          onInteraction()
+          onShowWatchTogether()
+        }
+      }
       if controller.canOpenDetails {
         iconButton("eye", label: "Now Playing") { controller.openDetails() }
       }

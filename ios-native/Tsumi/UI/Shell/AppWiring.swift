@@ -36,13 +36,51 @@ enum AppWiring {
     client.onRemoteMedia = { media, episode in
       ShellPlayback.playRemote(media, episode: episode)
     }
+    // v1 fallback, only used when onApplyPlayer is not set.
     client.onRemotePlayer = { paused, time in
       PlayerPresentation.shared.controller?.applyRemoteState(paused: paused, time: time)
+    }
+    // v2 lobby states (someone's action, host snap-back, auto-sync, resync, countdown): applied without being
+    // reported back. Exact times (v2) seek past 0.25 s; v1 whole-second times past 1.5 s.
+    client.onApplyPlayer = { command in
+      let threshold = command.isPrecise ? PlayerController.syncSeekThreshold : PlayerController.remoteSeekThreshold
+      PlayerPresentation.shared.controller?.applyRemoteState(paused: command.paused, time: command.time, seekThreshold: threshold)
+    }
+    // The host accepted a request: do it as a local action, which is then broadcast.
+    client.onPerformRequest = { kind, time in
+      guard let controller = PlayerPresentation.shared.controller else { return }
+      switch kind {
+      case .pause:
+        controller.pause()
+      case .play:
+        controller.play()
+      case .seek:
+        if let time { controller.seek(to: time) }
+      }
+    }
+    // `status` source: what the player is doing now (nil = not in the player, `idle`).
+    client.localPlayback = {
+      guard let controller = PlayerPresentation.shared.controller else { return nil }
+      let snapshot = controller.syncSnapshot
+      let state: W2GPlaybackState
+      switch snapshot.state {
+      case .playing: state = .playing
+      case .paused: state = .paused
+      case .buffering: state = .buffering
+      case .loading: state = .loading
+      case .idle: state = .idle
+      }
+      return W2GLocalPlayback(state: state, time: snapshot.time, rate: snapshot.rate, media: snapshot.media, episode: snapshot.episode)
     }
     client.onRemoteIndex = { index in
       ShellPlayback.applyRemoteIndex(index)
     }
     client.onNotice = { title, message in
+      // In the full screen player the app toasts are hidden: show it in the player instead.
+      if PlayerPresentation.shared.isPresented, let controller = PlayerPresentation.shared.controller {
+        controller.showNotice(title, message)
+        return
+      }
       ShellPlayback.showWatchTogetherNotice(title, message)
     }
     client.onShowLobby = {

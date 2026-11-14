@@ -162,6 +162,42 @@ struct PlayerNotice: Identifiable, Equatable {
   var isError: Bool = false
 }
 
+/// Watch Together v2 `status` of the player (`PlayerController.syncSnapshot`).
+struct PlayerSyncSnapshot {
+  enum State {
+    case playing
+    case paused
+    case buffering
+    case loading
+    case idle
+  }
+
+  var state: State
+  var time: Double
+  var rate: Double
+  var media: Media
+  var episode: EpisodeRef
+}
+
+/// Watch Together v2: a play / pause / seek the user made (`PlayerController.onSyncAction`).
+struct PlayerSyncAction {
+  enum Kind {
+    case play
+    case pause
+    case seek
+  }
+
+  var kind: Kind
+  /// Position after the action (seconds).
+  var time: Double
+  var paused: Bool
+  /// Seek distance in seconds ("jumped to 12:34 (+1:30)"), nil for play / pause.
+  var delta: Double?
+  var rate: Double
+  /// A pause made by the system (app sent to the background, audio interruption), not by the user.
+  var automatic: Bool
+}
+
 /// Audio or embedded subtitle track (AVMediaSelectionOption).
 struct PlayerTrackOption: Identifiable, Hashable {
   let id: Int

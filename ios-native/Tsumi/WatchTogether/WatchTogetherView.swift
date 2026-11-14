@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 
 // Watch Together screen: WatchTogetherPage.svelte (Create / Join cards), Lobby.svelte (chat,
-// members, Leave / Invite / Send), Message.svelte (grouped bubbles) and User.svelte (member row).
+// members, Leave / Invite / Send, control mode, display name), Message.svelte (grouped bubbles, system lines)
+// and User.svelte (member row with host crown, sync badge and host actions).
 // State lives in WatchTogetherClient.shared, so the lobby survives navigation like the JS store.
 
 @MainActor
@@ -30,8 +31,22 @@ struct WatchTogetherView: View {
             await MainActor.run { client.dismissNotice(notice.id) }
           }
       }
+      // Host: requests can be answered from the lobby screen too.
+      if client.isInLobby && !client.pendingRequests.isEmpty {
+        HStack(spacing: 0) {
+          Spacer(minLength: 0)
+          VStack(alignment: .trailing, spacing: 8) {
+            ForEach(client.pendingRequests) { request in
+              W2GRequestPrompt(request: request, client: client)
+            }
+          }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, client.notice == nil ? 8 : 80)
+      }
     }
     .animation(.easeInOut(duration: 0.25), value: client.notice?.id)
+    .animation(.easeInOut(duration: 0.2), value: client.pendingRequests)
     .navigationTitle("Watch Together")
     .navigationBarTitleDisplayMode(.inline)
   }
@@ -152,15 +167,22 @@ struct W2GLobbyView: View {
         HStack(spacing: 0) {
           chat
           Divider()
-          W2GMemberList(members: client.members)
-            .frame(width: 320)
+          W2GMemberList(client: client)
+            .frame(width: 340)
         }
       } else {
-        W2GMemberStrip(members: client.members)
+        W2GMemberStrip(client: client)
         Divider()
         chat
       }
     }
+    .onAppear { markRead() }
+    .onChange(of: client.messages.count) { _, _ in markRead() }
+  }
+
+  /// The chat is on screen (not under the full screen player): nothing unread.
+  private func markRead() {
+    if !PlayerPresentation.shared.isPresented { client.markChatRead() }
   }
 
   private var chat: some View {
@@ -298,9 +320,39 @@ struct W2GLobbyHeader: View {
           .font(.subheadline)
           .lineLimit(1)
       }
+      HStack(spacing: 10) {
+        W2GModeChip(mode: client.effectiveMode, long: true)
+        Spacer(minLength: 4)
+        if client.isHost {
+          Toggle("Host only", isOn: modeBinding)
+            .toggleStyle(.switch)
+            .font(.subheadline)
+            .fixedSize()
+        } else if client.isWatching {
+          Button {
+            _ = client.resync()
+          } label: {
+            Label("Resync", systemImage: "arrow.triangle.2.circlepath")
+              .font(.subheadline.weight(.semibold))
+          }
+          .buttonStyle(.bordered)
+          .accessibilityHint("Jump to the host")
+        }
+      }
+      if !client.isLoggedIn {
+        W2GDisplayNameField(client: client)
+      }
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 10)
+  }
+
+  private var modeBinding: Binding<Bool> {
+    let client = self.client
+    return Binding(
+      get: { client.mode == .host },
+      set: { value in _ = client.setMode(value ? .host : .everyone) }
+    )
   }
 
   private var statusBadge: some View {
@@ -330,69 +382,262 @@ struct W2GLobbyHeader: View {
 
 // MARK: - Members (User.svelte)
 
+/// Compact layout: horizontal strip of member cards (host actions in a menu on each card).
 @MainActor
 struct W2GMemberStrip: View {
-  let members: [W2GMember]
+  let client: WatchTogetherClient
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text("\(members.count) Member(s)")
-        .font(.headline)
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 16) {
-          ForEach(members) { member in
-            W2GMemberRow(member: member, avatarSize: 36)
+    TimelineView(.periodic(from: .now, by: 1)) { context in
+      let members = client.memberViews(now: context.date.timeIntervalSince1970 * 1000)
+      VStack(alignment: .leading, spacing: 8) {
+        Text("\(members.count) Member(s)")
+          .font(.headline)
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(alignment: .top, spacing: 10) {
+            ForEach(members) { member in
+              W2GMemberCard(
+                member: member,
+                canManage: client.isHost,
+                onKick: { _ = client.kick(member.userId) },
+                onTransfer: { _ = client.transferHost(to: member.userId) }
+              )
+            }
           }
         }
       }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 10)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
   }
 }
 
+/// Regular layout: member column.
 @MainActor
 struct W2GMemberList: View {
-  let members: [W2GMember]
+  let client: WatchTogetherClient
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Text("\(members.count) Member(s)")
-        .font(.title3.bold())
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 10) {
-          ForEach(members) { member in
-            W2GMemberRow(member: member, avatarSize: 44)
+    TimelineView(.periodic(from: .now, by: 1)) { context in
+      let members = client.memberViews(now: context.date.timeIntervalSince1970 * 1000)
+      VStack(alignment: .leading, spacing: 0) {
+        Text("\(members.count) Member(s)")
+          .font(.title3.bold())
+          .padding(.horizontal, 16)
+          .padding(.vertical, 12)
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 12) {
+            ForEach(members) { member in
+              W2GMemberRow(
+                member: member,
+                canManage: client.isHost,
+                onKick: { _ = client.kick(member.userId) },
+                onTransfer: { _ = client.transferHost(to: member.userId) }
+              )
+            }
           }
+          .padding(.horizontal, 16)
+          .padding(.bottom, 16)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 16)
       }
     }
   }
 }
 
+/// Member row: avatar, host crown, name, sync badge; the host gets "Make host" and "Remove from the lobby".
 @MainActor
 struct W2GMemberRow: View {
-  let member: W2GMember
-  var avatarSize: CGFloat = 44
+  let member: W2GMemberView
+  var canManage = false
+  var compact = false
+  var onKick: () -> Void = {}
+  var onTransfer: () -> Void = {}
 
   var body: some View {
     HStack(spacing: 10) {
-      W2GAvatarView(user: member.user, size: avatarSize)
-      Text(member.user.displayName)
-        .lineLimit(1)
-      if let url = member.user.profileURL {
-        Spacer(minLength: 4)
+      W2GAvatarView(user: member.user, size: compact ? 34 : 44)
+      VStack(alignment: .leading, spacing: 4) {
+        HStack(spacing: 5) {
+          if member.isHost {
+            Image(systemName: "crown.fill")
+              .font(.caption)
+              .foregroundStyle(.yellow)
+              .accessibilityLabel("Host")
+          }
+          Text(member.isSelf ? member.name + " (you)" : member.name)
+            .font(compact ? .subheadline : .body)
+            .lineLimit(1)
+        }
+        W2GBadgeChip(badge: member.badge, rtt: member.rtt)
+      }
+      Spacer(minLength: 4)
+      if canManage && !member.isSelf {
+        Menu {
+          W2GMemberActions(name: member.name, canBeHost: member.canBeHost, onKick: onKick, onTransfer: onTransfer)
+        } label: {
+          Image(systemName: "ellipsis.circle")
+            .font(.title3)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Manage \(member.name)")
+      } else if !compact, let url = member.user.profileURL {
         Link(destination: url) {
           Image(systemName: "arrow.up.right.square")
             .font(.title3)
+            .frame(width: 44, height: 44)
         }
         .accessibilityLabel("Open profile")
       }
     }
+  }
+}
+
+/// Compact member card for the horizontal strip.
+@MainActor
+struct W2GMemberCard: View {
+  let member: W2GMemberView
+  var canManage = false
+  var onKick: () -> Void = {}
+  var onTransfer: () -> Void = {}
+
+  var body: some View {
+    if canManage && !member.isSelf {
+      Menu {
+        W2GMemberActions(name: member.name, canBeHost: member.canBeHost, onKick: onKick, onTransfer: onTransfer)
+      } label: {
+        card
+      }
+      .accessibilityLabel("Manage \(member.name)")
+    } else {
+      card
+    }
+  }
+
+  private var card: some View {
+    VStack(spacing: 4) {
+      W2GAvatarView(user: member.user, size: 40)
+        .overlay(alignment: .topTrailing) {
+          if member.isHost {
+            Image(systemName: "crown.fill")
+              .font(.system(size: 11, weight: .bold))
+              .foregroundStyle(.yellow)
+              .padding(3)
+              .background(Circle().fill(Color(.systemBackground)))
+              .offset(x: 4, y: -4)
+          }
+        }
+      Text(member.isSelf ? "You" : member.name)
+        .font(.caption)
+        .foregroundStyle(Color.primary)
+        .lineLimit(1)
+      W2GBadgeChip(badge: member.badge, rtt: member.rtt)
+    }
+    .frame(width: 104)
+    .padding(.vertical, 4)
+    .contentShape(Rectangle())
+  }
+}
+
+/// Host actions on a member (in a menu, so a mis-tap does not remove anyone).
+@MainActor
+struct W2GMemberActions: View {
+  let name: String
+  /// v2 client: a v1 client cannot act as host (mode, kick, requests).
+  let canBeHost: Bool
+  let onKick: () -> Void
+  let onTransfer: () -> Void
+
+  var body: some View {
+    if canBeHost {
+      Button {
+        onTransfer()
+      } label: {
+        Label("Make \(name) the host", systemImage: "crown")
+      }
+    }
+    Button(role: .destructive) {
+      onKick()
+    } label: {
+      Label("Remove from the lobby", systemImage: "person.fill.xmark")
+    }
+  }
+}
+
+/// Sync badge: "In sync", "+1.2 s ahead", "Buffering", "No signal"… with the ping when known.
+@MainActor
+struct W2GBadgeChip: View {
+  let badge: W2GBadge
+  var rtt: Double? = nil
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Text(badge.text)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(color)
+        .lineLimit(1)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(color.opacity(0.18)))
+      if let rtt {
+        Text("\(Int(rtt.rounded())) ms")
+          .font(.caption2)
+          .foregroundStyle(Color.secondary)
+          .lineLimit(1)
+      }
+    }
+    .accessibilityElement(children: .combine)
+  }
+
+  private var color: Color {
+    switch badge.kind {
+    case .sync: return .green
+    case .ahead, .behind: return .orange
+    case .buffering, .loading: return .yellow
+    case .other: return .purple
+    case .playing: return .blue
+    case .paused, .idle, .nosignal, .old: return .gray
+    }
+  }
+}
+
+/// Name shown to the lobby when not logged in (settings `w2gDisplayName`).
+@MainActor
+struct W2GDisplayNameField: View {
+  let client: WatchTogetherClient
+  @State private var name = AppSettings.shared.values.w2gDisplayName
+  @FocusState private var focused: Bool
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "person.text.rectangle")
+        .foregroundStyle(Color.secondary)
+      TextField("Display name", text: $name)
+        .textInputAutocapitalization(.words)
+        .autocorrectionDisabled()
+        .submitLabel(.done)
+        .focused($focused)
+        .onSubmit { save() }
+      if focused {
+        Button("Save") { save() }
+          .font(.subheadline.weight(.semibold))
+      }
+    }
+    .padding(.vertical, 8)
+    .padding(.horizontal, 12)
+    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .onChange(of: focused) { _, isFocused in
+      if !isFocused { save() }
+    }
+    .onChange(of: name) { _, value in
+      if value.count > W2GSync.maxNameLength { name = String(value.prefix(W2GSync.maxNameLength)) }
+    }
+  }
+
+  private func save() {
+    client.setDisplayName(name)
+    focused = false
+    name = AppSettings.shared.values.w2gDisplayName
   }
 }
 
@@ -465,6 +710,20 @@ struct W2GMessageGroupView: View {
   private var incoming: Bool { group.direction == .incoming }
 
   var body: some View {
+    if group.isSystem {
+      // Local line: joins, leaves, actions, requests, reactions.
+      Text(group.messages.first ?? "")
+        .font(.footnote)
+        .foregroundStyle(Color.secondary)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 20)
+    } else {
+      bubbles
+    }
+  }
+
+  private var bubbles: some View {
     HStack(alignment: .bottom, spacing: 8) {
       if incoming {
         W2GAvatarView(user: group.user, size: 36)

@@ -43,6 +43,8 @@ final class W2GSwarm {
   private var chunkBuffers: [String: [Int: [UInt16]]] = [:]
   /// P2PT message ids each peer sent us (see send(_:to:)).
   private var receivedMessageIds: [String: Set<Int>] = [:]
+  /// Peers removed from the lobby (Watch Together `kick`): their links are closed and refused.
+  private var blockedPeerIds = Set<String>()
   private var isDestroyed = false
 
   init(announceURLs: [String], identifier: String) {
@@ -92,7 +94,7 @@ final class W2GSwarm {
   }
 
   func canAcceptLink(from peerId: String) -> Bool {
-    guard !isDestroyed, peerId != peerIdHex else { return false }
+    guard !isDestroyed, peerId != peerIdHex, !blockedPeerIds.contains(peerId) else { return false }
     let open = openLinks[peerId]?.count ?? 0
     let pending = connectingLinks.values.filter { $0.remotePeerId == peerId }.count
     return open + pending < Self.maxLinksPerPeer
@@ -114,7 +116,7 @@ final class W2GSwarm {
 
   private func linkOpened(_ link: W2GPeerLink) {
     connectingLinks[ObjectIdentifier(link)] = nil
-    guard let id = link.remotePeerId else {
+    guard let id = link.remotePeerId, !blockedPeerIds.contains(id) else {
       link.destroy()
       return
     }
@@ -209,6 +211,16 @@ final class W2GSwarm {
       chunk += 1
     }
     return delivered
+  }
+
+  /// Closes every link of a remote peer and refuses its next ones (kick, or a banned user that came back).
+  /// 'peerclose' follows when it had open links.
+  func block(_ peerId: String) {
+    guard !isDestroyed else { return }
+    blockedPeerIds.insert(peerId)
+    var links = openLinks[peerId] ?? []
+    links.append(contentsOf: connectingLinks.values.filter { $0.remotePeerId == peerId })
+    for link in links { link.destroy() }
   }
 
   // MARK: Teardown
