@@ -2002,26 +2002,10 @@
         instance: true,
         type: 3
       }
-      // cannot have buttons and secrets at once
-      if (w2g) {
-        activity.secrets = {
-          join: w2g,
-          match: w2g + 'm'
-        }
-        activity.party.id = w2g + 'p'
-      } else {
-        const _media = $nowPlaying?.media ?? fullMedia
-        const isTmdb = _media?.isTmdb || (typeof _media?.id === 'string' && _media?.id.startsWith('tmdb-'))
-        const tmdbId = typeof _media?.id === 'string' ? _media?.id.replace('tmdb-', '') : _media?.idTmdb
-        const isMovie = _media?.format === 'MOVIE'
-        // The original download page (github.com/50n50/Tsumi) no longer exists: only link to the title.
-        if (_media?.id) {
-          activity.buttons = [{
-            label: isTmdb ? (isMovie ? 'View Movie' : 'View Show') : 'View Anime',
-            url: isTmdb ? `https://www.themoviedb.org/${isMovie ? 'movie' : 'tv'}/${tmdbId}` : `https://anilist.co/anime/${_media.id}`
-          }]
-        }
-      }
+      // Discord allows two link buttons, and no buttons together with join secrets: during Watch Together
+      // the join goes through a public https page that opens tsumi://w2g/CODE (it also works from phones).
+      activity.buttons = presenceButtons($nowPlaying?.media ?? fullMedia, w2g)
+      if (w2g) activity.party.id = w2g + 'p'
     } else {
       activity = {
         timestamps: { start: Date.now() },
@@ -2032,10 +2016,42 @@
           large_text: 'Tsumi — Media Streaming'
         },
         instance: true,
-        type: 3
+        type: 3,
+        buttons: presenceButtons(null, state.value?.code)
       }
     }
     IPC.emit('discord', { activity })
+  }
+
+  const TSUMI_LINK = 'https://mxfia19.github.io/tsumi-link/'
+
+  /**
+   * Rich presence buttons (2 at most): the title page first (AniList, or TMDB for shows and movies), then
+   * "Join Watch Together" in a lobby, otherwise MyAnimeList or the download page (rpcSecondButton setting).
+   * @param {any} media
+   * @param {string} [w2g] lobby code
+   */
+  function presenceButtons (media, w2g) {
+    const buttons = []
+    const isTmdb = media?.isTmdb || (typeof media?.id === 'string' && media.id.startsWith('tmdb-'))
+    const isMovie = media?.format === 'MOVIE'
+    if (w2g) buttons.push({ label: 'Join Watch Together', url: `${TSUMI_LINK}w2g/?c=${encodeURIComponent(w2g)}` })
+    if (media?.id) {
+      if (isTmdb) {
+        const tmdbId = typeof media.id === 'string' ? media.id.replace(/^tmdb-(tv-|movie-)?/, '') : media.idTmdb
+        if (tmdbId) buttons.push({ label: isMovie ? 'View Movie' : 'View Show', url: `https://www.themoviedb.org/${isMovie ? 'movie' : 'tv'}/${tmdbId}` })
+      } else {
+        buttons.push({ label: 'View on AniList', url: `https://anilist.co/anime/${media.id}` })
+      }
+    }
+    if (!w2g && buttons.length < 2) {
+      if ($settings.rpcSecondButton === 'mal' && media?.idMal) {
+        buttons.push({ label: 'View on MyAnimeList', url: `https://myanimelist.net/anime/${media.idMal}` })
+      } else {
+        buttons.push({ label: 'Download Tsumi', url: TSUMI_LINK })
+      }
+    }
+    return buttons.slice(0, 2)
   }
 </script>
 

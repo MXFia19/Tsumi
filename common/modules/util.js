@@ -582,6 +582,8 @@ export const defaults = {
   doHURL: 'https://cloudflare-dns.com/dns-query',
   disableSubtitleBlur: SUPPORTS.isAndroid,
   enableRPC: 'full',
+  // Second Discord presence button outside Watch Together: 'mal' (MyAnimeList page) or 'download' (Tsumi download page).
+  rpcSecondButton: 'mal',
   cards: 'small',
   cardPreview: true,
   cardAudio: false,

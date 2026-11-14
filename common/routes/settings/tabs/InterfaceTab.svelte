@@ -26,6 +26,12 @@
       <option value='disabled'>Disabled</option>
     </select>
   </SettingCard>
+  <SettingCard title='Second Discord Button' description={'The first button opens the title on AniList (or TMDB for shows and movies). During Watch Together, the second button is always "Join Watch Together".\nOutside Watch Together, choose what the second button opens.'}>
+    <select class='form-control bg-dark w-100 mw-full text-truncate' bind:value={settings.rpcSecondButton}>
+      <option value='mal' selected>MyAnimeList</option>
+      <option value='download'>Download Tsumi</option>
+    </select>
+  </SettingCard>
 {/if}
 
 <h4 class='mb-10 font-weight-bold'>Interface Settings</h4>
