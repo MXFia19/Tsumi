@@ -1,69 +1,82 @@
 name: iOS Build
-
+# Builds an unsigned .ipa to sideload (for example with Sideloadly).
+# macOS minutes count 10x against the free Actions quota of private repositories,
+# so this workflow only runs when started by hand (Actions > iOS Build > Run workflow).
 on:
-  workflow_dispatch:  # Manual only (Windows is the only automatic build)
-
+  workflow_dispatch:
+env:
+  NODE_VERSION: '22.21.1'
+  PNPM_VERSION: '10.15.1'
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'  # the desktop runtime is not needed for the iOS build
 jobs:
-  build:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+  build-ios:
     runs-on: macos-latest
-    
     defaults:
       run:
         working-directory: ./capacitor
-
     steps:
       - name: Check out Git repository
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@v6
       - name: Setup PNPM
         uses: pnpm/action-setup@v4
         with:
-          version: 10.15.1
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+          version: ${{ env.PNPM_VERSION }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
         with:
-          node-version: '22.21.1'
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
-
       - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build web app
+        env:
+          NODE_ENV: production
+        run: pnpm run build:web
+      # The Xcode project is generated on each build instead of being committed.
+      - name: Add iOS platform
+        run: npx cap add ios
+      - name: Configure the iOS app
         run: |
-          pnpm install --frozen-lockfile
-
-      - name: Add iOS Platform (if missing)
-        run: |
-          if [ ! -d "ios" ]; then
-            npx cap add ios
-          fi
-
-      - name: Build iOS App
-        run: pnpm run build:ios
-
-      - name: Build Archive (Unsigned)
+          PLIST=ios/App/App/Info.plist
+          PB=/usr/libexec/PlistBuddy
+          # tsumi:// links (Watch Together invites, AniList/MAL login); shiru:// for older links
+          $PB -c "Add :CFBundleURLTypes array" "$PLIST" 2>/dev/null || true
+          $PB -c "Add :CFBundleURLTypes:0 dict" "$PLIST"
+          $PB -c "Add :CFBundleURLTypes:0:CFBundleURLName string org.tsumi.app" "$PLIST"
+          $PB -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$PLIST"
+          $PB -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string tsumi" "$PLIST"
+          $PB -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:1 string shiru" "$PLIST"
+          # keep the sound playing when the screen locks
+          $PB -c "Add :UIBackgroundModes array" "$PLIST" 2>/dev/null || true
+          $PB -c "Add :UIBackgroundModes:0 string audio" "$PLIST"
+          # some extensions return plain http streams
+          $PB -c "Add :NSAppTransportSecurity dict" "$PLIST" 2>/dev/null || true
+          $PB -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST"
+          $PB -c "Print" "$PLIST"
+      - name: Sync Capacitor plugins
+        run: npx cap sync ios
+      - name: Build archive (unsigned)
         run: |
           xcodebuild -workspace ios/App/App.xcworkspace \
                      -scheme App \
                      -sdk iphoneos \
                      -configuration Release \
-                     -archivePath $PWD/App.xcarchive \
+                     -archivePath "$PWD/App.xcarchive" \
                      archive \
                      CODE_SIGNING_ALLOWED=NO \
                      CODE_SIGNING_REQUIRED=NO \
                      CODE_SIGN_IDENTITY=""
-
-      - name: Export IPA (Unsigned)
+      - name: Package IPA
         run: |
-          echo "Building unsigned IPA for side-loading..."
           mkdir -p output/Payload
-          cp -r App.xcarchive/Products/Applications/App.app output/Payload/
+          cp -R App.xcarchive/Products/Applications/App.app output/Payload/
           cd output
-          zip -r Tsumi-unsigned.ipa Payload
+          zip -qr Tsumi-unsigned.ipa Payload
           rm -rf Payload
-
-      - name: Upload IPA as Artifact
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Tsumi-iOS-IPA
+          name: tsumi-ios-ipa
           path: capacitor/output/*.ipa
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 30

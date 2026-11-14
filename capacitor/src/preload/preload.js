@@ -1,7 +1,12 @@
+/* global PictureInPicture */
+import { Capacitor } from '@capacitor/core'
 import { IntentUri } from 'capacitor-intent-uri'
 import { ForegroundService, Importance, ServiceType } from '@capawesome-team/capacitor-android-foreground-service'
 import { indexedDB as fakeIndexedDB } from 'fake-indexeddb'
 import EventEmitter from 'events'
+
+/** Some plugins below only exist on Android; iOS uses the web view's own features instead. */
+export const isAndroid = Capacitor.getPlatform() === 'android'
 
 if (typeof localStorage === 'undefined') {
   const data = {}
@@ -17,27 +22,31 @@ if (typeof indexedDB === 'undefined') {
 
 // cordova screen orientation plugin is also used, and it patches global screen.orientation.lock
 
-// hook into pip request, and use our own pip implementation, then instantly report exit pip
-// this is more like DOM PiP, rather than video PiP
-HTMLVideoElement.prototype.requestPictureInPicture = function () {
-  PictureInPicture.enter(this.videoWidth, this.videoHeight, success => {
-    this.dispatchEvent(new Event('leavepictureinpicture'))
-    if (success) document.querySelector('.content-wrapper').requestFullscreen()
-  }, error => {
-    this.dispatchEvent(new Event('leavepictureinpicture'))
-    console.error(error)
-  })
-  return Promise.resolve({})
+// Android: hook into pip request, and use our own pip implementation, then instantly report exit pip
+// this is more like DOM PiP, rather than video PiP. iOS keeps WebKit's native video PiP.
+if (isAndroid) {
+  HTMLVideoElement.prototype.requestPictureInPicture = function () {
+    PictureInPicture.enter(this.videoWidth, this.videoHeight, success => {
+      this.dispatchEvent(new Event('leavepictureinpicture'))
+      if (success) document.querySelector('.content-wrapper').requestFullscreen()
+    }, error => {
+      this.dispatchEvent(new Event('leavepictureinpicture'))
+      console.error(error)
+    })
+    return Promise.resolve({})
+  }
 }
 
 export const IPC = new EventEmitter()
 const STREAMING_FG_ID = 1001
-ForegroundService.createNotificationChannel({
-  id: 'external-playback',
-  name: 'External Playback',
-  description: 'Keeps Video Streaming To An External Player Active',
-  importance: Importance.Min
-})
+if (isAndroid) {
+  ForegroundService.createNotificationChannel({
+    id: 'external-playback',
+    name: 'External Playback',
+    description: 'Keeps Video Streaming To An External Player Active',
+    importance: Importance.Min
+  }).catch(console.error)
+}
 
 window.IPC = IPC
 window.version = {
@@ -52,6 +61,7 @@ window.android = {
    * @returns {Promise<void>} Resolves when the app returns and the service stops.
    */
   launchExternal: (url) => {
+    if (!isAndroid) return Promise.resolve() // Android intents only
     ForegroundService.startForegroundService({
       id: STREAMING_FG_ID,
       title: 'External Playback',

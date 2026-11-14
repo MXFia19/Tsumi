@@ -3,7 +3,7 @@ import { IPC } from '../preload/preload.js'
 import { App } from '@capacitor/app'
 
 export default class Protocol {
-  // schema: shiru://key/value
+  // schema: tsumi://key/value (shiru:// is still accepted for older links and login redirects)
   protocolMap = {
     alauth: token => this.sendToken(token),
     malauth: token => this.sendMalToken(token),
@@ -17,7 +17,7 @@ export default class Protocol {
     show: () => IPC.emit('window-show')
   }
 
-  protocolRx = /shiru:\/\/([a-z0-9]+)\/(.*)/i
+  protocolRx = /(?:tsumi|shiru):\/\/([a-z0-9]+)\/(.*)/i
 
   constructor() {
     App.getLaunchUrl().then(res => {
@@ -66,7 +66,6 @@ export default class Protocol {
    * @param {string} text
    */
   handleProtocol(text) {
-    // Handle shiru:// scheme
     const match = text.match(this.protocolRx)
     if (match) this.protocolMap[match[1]]?.(match[2])
   }

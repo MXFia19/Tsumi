@@ -1,4 +1,3 @@
-/* globals AndroidFullScreen, PictureInPicture */
 import { LocalNotifications } from '@capacitor/local-notifications'
 import { StatusBar, Style } from '@capacitor/status-bar'
 import { SafeArea } from 'capacitor-plugin-safe-area'
@@ -10,7 +9,7 @@ import Updater from './updater.js'
 import Dialog from './dialog.js'
 
 import { cache } from '@/modules/cache.js'
-import { IPC } from '../preload/preload.js'
+import { IPC, isAndroid } from '../preload/preload.js'
 
 export default class App {
   protocol = new Protocol()
@@ -49,13 +48,16 @@ export default class App {
   ]
 
   constructor() {
-    StatusBar.hide()
-    StatusBar.setStyle({ style: Style.Dark })
-    StatusBar.setOverlaysWebView({ overlay: true })
+    StatusBar.hide().catch(() => {})
+    StatusBar.setStyle({ style: Style.Dark }).catch(() => {})
+    // Android only: on iOS the web view always draws under the status bar.
+    if (isAndroid) StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {})
 
     this.updateSafeInsets()
     SafeArea.addListener('safeAreaChanged', this.updateSafeInsets)
-    screen.orientation.addEventListener('change', this.updateSafeInsets)
+    // screen.orientation only exists on iOS 16.4+, the 'orientationchange' event below covers older versions.
+    screen.orientation?.addEventListener('change', this.updateSafeInsets)
+    window.addEventListener('orientationchange', this.updateSafeInsets)
 
     // notification actions are only handled once the cache is ready
     Promise.resolve(cache.isReady).then(() => { this.handleNotify = true })
@@ -148,8 +150,15 @@ export default class App {
    * @returns {Promise<void>}
    */
   async updateSafeInsets() {
-    const { insets } = await SafeArea.getDisplayCutoutInsets()
-    for (const [key, value] of Object.entries(insets)) {
+    // getDisplayCutoutInsets is added by our Android patch of the plugin; iOS has the standard safe area.
+    let insets
+    try {
+      ({ insets } = isAndroid ? await SafeArea.getDisplayCutoutInsets() : await SafeArea.getSafeAreaInsets())
+    } catch (error) {
+      console.error('Failed to read safe area insets', error)
+      return
+    }
+    for (const [key, value] of Object.entries(insets || {})) {
       document.documentElement.style.setProperty(`--safe-area-${key}`, `${value}px`)
     }
   }

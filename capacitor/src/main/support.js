@@ -7,6 +7,6 @@ export const SUPPORTS = {
   doh: false,
   discord: false,
   keybinds: false,
-  isAndroid: true,
+  isAndroid: true, // true on every mobile build (Android and iOS): it selects the mobile layout
   externalPlayer: false
 }
