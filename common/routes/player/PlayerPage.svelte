@@ -2,15 +2,9 @@
   import { settings } from '@/modules/settings.js'
   import { cache, caches } from '@/modules/cache.js'
   import { page, modal, playPage, goBack } from '@/modules/navigation.js'
-  import {
-    getAnimeProgress,
-    setAnimeProgress
-  } from '@/modules/anime/animeprogress.js'
+  import { getAnimeProgress, setAnimeProgress } from '@/modules/anime/animeprogress.js'
   import { playAnime } from '@/modals/extension/ExtensionModal.svelte'
-  import {
-    nowPlaying,
-    files as filesStore
-  } from '@/components/MediaHandler.svelte'
+  import { nowPlaying, files as filesStore } from '@/components/MediaHandler.svelte'
   import { loadStream, stopStream } from '@/modules/streaming.js'
   import { anilistClient } from '@/modules/anilist.js'
   import { episodesList } from '@/modules/episodes.js'
@@ -35,43 +29,7 @@
   import 'rvfc-polyfill'
   import { IPC, ELECTRON, ANDROID } from '@/modules/bridge.js'
   import WPC from '@/modules/wpc.js'
-  import {
-    X,
-    Minus,
-    Captions,
-    CircleHelp,
-    Contrast,
-    FastForward,
-    Keyboard,
-    EllipsisVertical,
-    SquareArrowOutUpRight,
-    List,
-    Eye,
-    FilePlus2,
-    ListMusic,
-    ListVideo,
-    Maximize,
-    Minimize,
-    Pause,
-    PictureInPicture,
-    PictureInPicture2,
-    Play,
-    Proportions,
-    RefreshCcw,
-    Rewind,
-    RotateCcw,
-    RotateCw,
-    ScreenShare,
-    SkipBack,
-    SkipForward,
-    Volume1,
-    Volume2,
-    VolumeX,
-    SlidersVertical,
-    SquarePen,
-    Milestone,
-    Server
-  } from 'lucide-svelte'
+  import { X, Captions, CircleHelp, Contrast, FastForward, Keyboard, EllipsisVertical, SquareArrowOutUpRight, List, Eye, FilePlus2, ListMusic, ListVideo, Maximize, Minimize, Pause, PictureInPicture, PictureInPicture2, Play, Proportions, RefreshCcw, Rewind, RotateCcw, RotateCw, ScreenShare, SkipBack, SkipForward, Volume1, Volume2, VolumeX, SlidersVertical, SquarePen, Milestone, Server } from 'lucide-svelte'
   import Debug from 'debug'
   const debug = Debug('ui:player')
 

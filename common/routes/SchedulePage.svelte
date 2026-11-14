@@ -7,6 +7,7 @@
   import { animeSchedule } from '@/modules/anime/animeschedule.js'
   import { cache, caches } from '@/modules/cache.js'
   import { tmdbClient } from '@/modules/tmdb.js'
+  import Helper from '@/modules/helper.js'
 
   const key = writable({})
   const search = writable(cache.getEntry(caches.HISTORY, 'lastSchedule') || { scheduleList: true, western: false, format: ['TV'], format_not: [], genre: [], genre_not: [], tag: [], tag_not: [], status: [], status_not: [] })

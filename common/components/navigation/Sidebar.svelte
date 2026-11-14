@@ -8,34 +8,10 @@
   import { click } from '@/modules/click.js'
   import { toast } from 'svelte-sonner'
   import Helper from '@/modules/helper.js'
-  import { page, modal, playPage } from '@/modules/navigation.js'
-  import { IPC, ELECTRON, VERSION } from '@/modules/bridge.js'
-  import {
-    goBack,
-    goForward,
-    canGoBack,
-    canGoForward
-  } from '@/modules/navigation.js'
+  import { page, modal } from '@/modules/navigation.js'
+  import { ELECTRON, VERSION } from '@/modules/bridge.js'
   import SidebarLink from '@/components/navigation/SidebarLink.svelte'
-  import {
-    MoveLeft,
-    MoveRight,
-    CalendarSearch,
-    Clapperboard,
-    CloudDownload,
-    Heart,
-    Home,
-    Search,
-    ListVideo,
-    History,
-    TvMinimalPlay,
-    LogIn,
-    Settings,
-    Users,
-    Bell,
-    BellDot
-  } from 'lucide-svelte'
-
+  import { CalendarSearch, Clapperboard, CloudDownload, Home, Search, ListVideo, History, LogIn, Settings, Users, Bell, BellDot } from 'lucide-svelte'
   const btnSize = !SUPPORTS.isAndroid ? '3.1rem' : '3.6rem'
   let _status = status.value
   $: statusTransition = false
@@ -70,41 +46,6 @@
       class:status-transition={statusTransition}
     ></div>
     {#if !SUPPORTS.isAndroid}
-      <!--
-      <div
-        class="d-flex align-items-center justify-content-center z-102"
-        style="width: var(--sidebar-width); margin-top:{`1rem`} !important"
-      >
-        <SidebarLink
-          click={goBack}
-          icon="moveleft"
-          css="p-0 m-0 ml-5 h-auto w-30"
-          innerCss="rounded-left-block"
-        >
-          <MoveLeft
-            size={"2.5rem"}
-            class="flex-shrink-0 rounded m-0"
-            strokeWidth="2.5"
-            color={$canGoBack ? "currentColor" : "var(--gray-color-very-dim)"}
-          />
-        </SidebarLink>
-        <SidebarLink
-          click={goForward}
-          icon="moveright"
-          css="p-0 m-0 h-auto w-30"
-          innerCss="rounded-right-block"
-        >
-          <MoveRight
-            size={"2.5rem"}
-            class="flex-shrink-0 rounded m-0"
-            strokeWidth="2.5"
-            color={$canGoForward
-              ? "currentColor"
-              : "var(--gray-color-very-dim)"}
-          />
-        </SidebarLink>
-      </div>
-      -->
       <img
         src='./icon_filled.png'
         tabindex='-1'

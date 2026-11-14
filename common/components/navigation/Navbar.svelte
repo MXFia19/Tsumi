@@ -1,9 +1,9 @@
 <script>
-  import { page, modal, playPage } from '@/modules/navigation.js'
+  import { page, modal } from '@/modules/navigation.js'
   import { nowPlaying as media } from '@/components/MediaHandler.svelte'
   import { hasUnreadNotifications } from '@/modals/NotificationsModal.svelte'
   import NavbarLink from '@/components/navigation/NavbarLink.svelte'
-  import { Home, Search, Users, CalendarSearch, Settings, Bell, BellDot, ListVideo, History, TvMinimalPlay } from 'lucide-svelte'
+  import { Home, Search, Users, CalendarSearch, Settings, Bell, BellDot, ListVideo, History } from 'lucide-svelte'
 </script>
 
 <nav class='navbar z-80 navbar-fixed-bottom d-block d-md-none border-0 bg-dark bt-10'>

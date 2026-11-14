@@ -3,7 +3,6 @@
   import FontSelect from 'simple-font-select'
   import ClampedNumber from '@/components/inputs/ClampedNumber.svelte'
   import SettingCard from '@/routes/settings/components/SettingCard.svelte'
-  import { playPage } from '@/modules/navigation.js'
   import { SUPPORTS } from '@/modules/support.js'
   import { click } from '@/modules/click.js'
   import { IPC } from '@/modules/bridge.js'

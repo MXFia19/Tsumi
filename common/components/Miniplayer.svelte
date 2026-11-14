@@ -1,6 +1,5 @@
 <script context='module'>
   import { readable } from 'simple-store-svelte'
-
   const mql = matchMedia('(min-width: 769px)')
   export const isMobile = readable(!mql.matches, (set) => {
     const check = ({ matches }) => set(!matches)
@@ -20,9 +19,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { cache, caches } from '@/modules/cache.js'
   import { page, modal } from '@/modules/navigation.js'
-  import { settings } from '@/modules/settings.js'
   import { SUPPORTS } from '@/modules/support.js'
-
   export let active = false
   export let padding = '1rem'
   const tmppadding = padding

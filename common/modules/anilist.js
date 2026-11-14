@@ -331,12 +331,17 @@ class AnilistClient {
           }))
         }
       }
+      // Must stay inside this block: lastNotified/newNotifications are scoped to it.
+      if ((newNotifications?.length > 0) || (lastNotified <= 1)) cache.setEntry(caches.NOTIFICATIONS, 'lastAni', Date.now() / 1000)
     }
-    if ((newNotifications?.length > 0) || (lastNotified <= 1)) cache.setEntry(caches.NOTIFICATIONS, 'lastAni', Date.now() / 1000)
   }
 
-  /** @returns {Promise<import('./al.d.ts').PagedQuery<{ notifications: { id: number, type: string, createdAt: number, episode: number, media: import('./al.d.ts').Media}[] }>>} */
-  getNotifications (variables = {}) {
+  /**
+   * @param {object} [variables]
+   * @param {boolean} [ignoreExpiry] use the cached result even if it expired
+   * @returns {Promise<import('./al.d.ts').PagedQuery<{ notifications: { id: number, type: string, createdAt: number, episode: number, media: import('./al.d.ts').Media}[] }>>}
+   */
+  getNotifications (variables = {}, ignoreExpiry = false) {
     debug('Getting notifications')
     const cachedEntry = cache.cachedEntry(caches.NOTIFICATIONS, JSON.stringify(variables), ignoreExpiry || status.value.match(/offline/i))
     if (cachedEntry) return cachedEntry

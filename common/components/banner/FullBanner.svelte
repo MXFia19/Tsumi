@@ -13,8 +13,6 @@
   import Helper from '@/modules/helper.js'
   import { Play, Heart } from 'lucide-svelte'
   import { modal } from '@/modules/navigation.js'
-  import { fade } from 'svelte/transition'
-
   export let mediaList
 
   let currentStatic = mediaList[0]

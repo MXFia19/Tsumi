@@ -1,21 +1,14 @@
 <script>
   import HomePage from '@/routes/home/HomePage.svelte'
-  import {
-    nowPlaying as media
-  } from '@/components/MediaHandler.svelte'
   import SettingsPage from '@/routes/settings/SettingsPage.svelte'
   import WatchTogetherPage from '@/routes/w2g/WatchTogetherPage.svelte'
   import SchedulePage from '@/routes/SchedulePage.svelte'
   import CatalogPage from '@/routes/catalogs/CatalogPage.svelte'
-  import {
-    isMobile,
-    isSuperSmall
-  } from '@/components/Miniplayer.svelte'
+  import { isMobile, isSuperSmall } from '@/components/Miniplayer.svelte'
   import SearchPage from '@/routes/search/SearchPage.svelte'
   import { cache, caches } from '@/modules/cache.js'
   import { search, key } from '@/modules/sections.js'
-  import { page, playPage } from '@/modules/navigation.js'
-
+  import { page } from '@/modules/navigation.js'
   export let statusTransition = false
   export let miniplayer = false
 

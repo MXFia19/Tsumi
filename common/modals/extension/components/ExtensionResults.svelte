@@ -58,8 +58,6 @@
   let groupedResults = []
   let playingResult = null
   let expandedGroups = {}
-  let autoPlayActive = false
-  let autoPlayError = null
 
   $: defaultFailed = search?.defaultFailed
   $: failReason = search?.failReason
@@ -67,8 +65,6 @@
   async function searchExtensions () {
     loading = true
     groupedResults = []
-    autoPlayActive = false
-    autoPlayError = null
     const title = anilistClient.title(search?.media)
     if (!title) {
       loading = false
@@ -81,7 +77,6 @@
       return
     }
 
-    const defaultKey = settings.value.defaultExtension
     const starredKey = settings.value.starredExtension
 
     // Default extension auto-play is now handled by DefaultLoadingModal.

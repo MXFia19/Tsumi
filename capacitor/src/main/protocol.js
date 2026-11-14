@@ -1,7 +1,5 @@
-import { Browser } from '@capacitor/browser'
 import { IPC } from '../preload/preload.js'
 import { App } from '@capacitor/app'
-
 export default class Protocol {
   // schema: tsumi://key/value (shiru:// is still accepted for older links and login redirects)
   protocolMap = {

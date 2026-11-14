@@ -1,4 +1,4 @@
-import { app, protocol, shell, ipcMain } from 'electron'
+import { app, protocol, ipcMain } from 'electron'
 import { development } from './util.js'
 import path from 'path'
 

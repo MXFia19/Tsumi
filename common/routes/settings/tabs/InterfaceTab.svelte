@@ -1,5 +1,5 @@
 <script>
-  import { variables, setStyle, setScale } from '@/modules/themes.js'
+  import { variables, setScale } from '@/modules/themes.js'
   import { click } from '@/modules/click.js'
   import HomeSections from '@/routes/settings/components/HomeSections.svelte'
   import { IPC } from '@/modules/bridge.js'

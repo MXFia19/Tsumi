@@ -1,17 +1,11 @@
 <script context='module'>
   import { modal } from '@/modules/navigation.js'
   import { settings } from '@/modules/settings.js'
-  import {
-    extensionManager,
-    callExtensionFunction
-  } from '@/modules/extension.js'
+  import { extensionManager, callExtensionFunction } from '@/modules/extension.js'
   import { sessionServer } from '@/modules/session.js'
   import { shareNowPlaying } from '@/routes/w2g/components/session.js'
   import { anilistClient } from '@/modules/anilist.js'
-  import {
-    files,
-    nowPlaying as currentMedia
-  } from '@/components/MediaHandler.svelte'
+  import { files, nowPlaying as currentMedia } from '@/components/MediaHandler.svelte'
   import { page } from '@/modules/navigation.js'
   import { parseStreamResponse } from '@/modules/streaming.js'
   import Debug from 'debug'
@@ -43,16 +37,13 @@
 
 <script>
   import SoftModal from '@/components/modals/SoftModal.svelte'
-  import { Loader, AlertTriangle } from 'lucide-svelte'
+  import { Loader } from 'lucide-svelte'
   import { onDestroy } from 'svelte'
-
   $: data = $modal[modal.DEFAULT_LOADING]?.data
   $: media = data?.media
   $: episode = data?.episode || 1
 
   let statusText = 'Connecting to extension...'
-  let failed = false
-  let failReason = ''
   let running = false
 
   function close () {
@@ -111,8 +102,6 @@
     running = true
     const capturedMedia = media
     const capturedEpisode = episode
-    failed = false
-    failReason = ''
     statusText = 'Connecting to extension...'
 
     const title = anilistClient.title(capturedMedia)

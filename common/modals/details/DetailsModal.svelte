@@ -1,13 +1,6 @@
 <script>
   import { onDestroy } from 'svelte'
-  import {
-    formatMap,
-    genreIcons,
-    getEpisodeMetadataForMedia,
-    getKitsuMappings,
-    getMediaMaxEp,
-    playMedia
-  } from '@/modules/anime/anime.js'
+  import { formatMap, genreIcons, getMediaMaxEp, playMedia } from '@/modules/anime/anime.js'
   import { playAnime } from '@/modals/extension/ExtensionModal.svelte'
   import { copyToClipboard } from '@/modules/clipboard.js'
   import { settings } from '@/modules/settings.js'
@@ -31,19 +24,7 @@
   import { modal } from '@/modules/navigation.js'
   import DOMPurify from 'dompurify'
   import { marked } from 'marked'
-  import {
-    Clapperboard,
-    Users,
-    Heart,
-    Play,
-    Timer,
-    TrendingUp,
-    Tv,
-    Hash,
-    ArrowDown01,
-    ArrowUp10
-  } from 'lucide-svelte'
-
+  import { Clapperboard, Users, Heart, Play, Timer, TrendingUp, Tv, Hash, ArrowDown01, ArrowUp10 } from 'lucide-svelte'
   $: view = $modal[modal.ANIME_DETAILS]?.data
   function close () {
     modal.close(modal.ANIME_DETAILS)

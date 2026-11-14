@@ -2,14 +2,7 @@
   import { IPC } from '@/modules/bridge.js'
   import { writable } from 'simple-store-svelte'
   import { anilistClient } from '@/modules/anilist.js'
-  import {
-    page,
-    modal,
-    playPage as playPageStore,
-    destroyHistory,
-    enableHistory
-  } from '@/modules/navigation.js'
-
+  import { page, modal, destroyHistory, enableHistory } from '@/modules/navigation.js'
   export const statusTransition = writable(false)
 
   export async function handleAnime (detail) {
@@ -43,9 +36,7 @@
   import { status } from '@/modules/networking.js'
   import { Toaster } from 'svelte-sonner'
   import { onMount, onDestroy } from 'svelte'
-  import MediaHandler, {
-    nowPlaying as media
-  } from '@/components/MediaHandler.svelte'
+  import MediaHandler, { nowPlaying as media } from '@/components/MediaHandler.svelte'
   import Miniplayer from '@/components/Miniplayer.svelte'
 
   IPC.emit('main-ready')

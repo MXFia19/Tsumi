@@ -41,16 +41,7 @@
   import ExtensionTab from '@/routes/settings/tabs/ExtensionTab.svelte'
   import { status } from '@/modules/networking.js'
   import { modal } from '@/modules/navigation.js'
-  import {
-    AppWindow,
-    Puzzle,
-    User,
-    Heart,
-    Logs,
-    Play,
-    LayoutDashboard
-  } from 'lucide-svelte'
-
+  import { AppWindow, Puzzle, User, Play, LayoutDashboard } from 'lucide-svelte'
   export let statusTransition = false
   export let miniplayerPadding = ''
 
