@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import BackgroundTasks
 
 // Connects the blocks written separately (Services, Extensions, Player, Watch Together) once at launch.
 // Svelte equivalents: the module-level IPC / window event listeners of App.svelte, ExtensionModal.svelte
@@ -70,11 +71,9 @@ enum ShellExtensionBridge {
     }
     // /find/{imdb}?external_source=imdb_id.
     context.tmdbFindByIMDb = { imdbId in
-      guard let found = await TMDBService.shared.find(externalId: imdbId, source: "imdb_id") else { return nil }
-      if found.type == .tv {
-        return ExtensionIMDbMatch(tvIds: [found.id], movieIds: [])
-      }
-      return ExtensionIMDbMatch(tvIds: [], movieIds: [found.id])
+      let found = await TMDBService.shared.findAll(externalId: imdbId, source: "imdb_id")
+      if found.tvIds.isEmpty && found.movieIds.isEmpty { return nil }
+      return ExtensionIMDbMatch(tvIds: found.tvIds, movieIds: found.movieIds)
     }
     // getDetails(id, 'tv').seasons.
     context.tmdbSeasons = { tmdbId in
@@ -124,6 +123,8 @@ enum ShellLifecycle {
     case .background:
       // Delivers the queued notifications before the app is suspended (15 s debounce otherwise).
       AppNotificationsService.shared.flush()
+      // Notification checks while the app is closed (the desktop tray keeps polling).
+      ShellBackgroundRefresh.schedule()
     case .inactive:
       break
     @unknown default:
@@ -132,15 +133,69 @@ enum ShellLifecycle {
   }
 }
 
-/// App delegate: orientation lock of the player and early wiring.
+/// App delegate: orientation lock of the player, background refresh registration and early wiring.
 @MainActor
 final class ShellAppDelegate: NSObject, UIApplicationDelegate {
   func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+    // BGTaskScheduler handlers must be registered before launching finishes.
+    ShellBackgroundRefresh.register()
     ShellLaunch.start()
     return true
   }
 
   func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
     PlayerOrientation.supportedMask
+  }
+}
+
+/// BGAppRefreshTask running the AniList notification check and the schedule announcements while the app is
+/// closed (`AppNotificationsService.backgroundRefresh()`), then delivering the system notifications.
+/// Info.plist: `BGTaskSchedulerPermittedIdentifiers` and the `fetch` background mode.
+enum ShellBackgroundRefresh {
+  static let identifier = "org.tsumi.app.refresh"
+  private static let registered = ServiceLocked<Bool>(false)
+
+  static func register() {
+    let first = registered.update { done -> Bool in
+      if done { return false }
+      done = true
+      return true
+    }
+    guard first else { return }
+    _ = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
+      run(task)
+    }
+  }
+
+  /// Asks iOS for the next run (at the earliest in 15 minutes, like the 5 min polling but battery friendly).
+  static func schedule() {
+    let request = BGAppRefreshTaskRequest(identifier: identifier)
+    request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+    try? BGTaskScheduler.shared.submit(request)
+  }
+
+  private static func run(_ task: BGTask) {
+    schedule()
+    let finished = ServiceLocked<Bool>(false)
+    let complete: (Bool) -> Void = { success in
+      let first = finished.update { done -> Bool in
+        if done { return false }
+        done = true
+        return true
+      }
+      if first { task.setTaskCompleted(success: success) }
+    }
+    let work = Task { @MainActor in
+      ShellLaunch.start()
+      await AppNotificationsService.shared.backgroundRefresh()
+      // Let the notifications dispatched by the checks reach the queue, then deliver them now.
+      try? await Task.sleep(nanoseconds: 500_000_000)
+      await AppNotificationsService.shared.flushAndWait()
+      complete(!Task.isCancelled)
+    }
+    task.expirationHandler = {
+      work.cancel()
+      complete(false)
+    }
   }
 }

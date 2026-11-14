@@ -44,6 +44,10 @@ struct PlayerControlsOverlay: View {
   private var topBar: some View {
     HStack(alignment: .center, spacing: 12) {
       iconButton("xmark", label: "Exit", size: 22) { controller.close() }
+      if controller.canMinimize {
+        // Leaves the player without stopping it: in-app miniplayer (Miniplayer.svelte).
+        iconButton("chevron.down", label: "Minimize", size: 20) { controller.minimize() }
+      }
       VStack(alignment: .leading, spacing: 2) {
         Text(controller.displayTitle)
           .font(.headline)

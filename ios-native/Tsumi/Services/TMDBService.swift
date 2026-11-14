@@ -12,6 +12,8 @@ struct TMDBEpisodeRef: Codable, Hashable {
   var seasonNumber: Int?
   var name: String?
   var still: URL?
+  /// Episode overview (summary of the episode preview card).
+  var overview: String? = nil
 }
 
 struct TMDBPerson: Codable, Hashable {
@@ -463,7 +465,7 @@ final class TMDBService: @unchecked Sendable {
 
   private static func episodeRef(_ dict: [String: Any]?) -> TMDBEpisodeRef? {
     guard let dict else { return nil }
-    return TMDBEpisodeRef(airDate: dict.string("air_date"), episodeNumber: dict.int("episode_number"), seasonNumber: dict.int("season_number"), name: dict.string("name"), still: image(dict.string("still_path"), size: "w500"))
+    return TMDBEpisodeRef(airDate: dict.string("air_date"), episodeNumber: dict.int("episode_number"), seasonNumber: dict.int("season_number"), name: dict.string("name"), still: image(dict.string("still_path"), size: "w500"), overview: dict.string("overview"))
   }
 
   /// DetailsModal TMDB enrichment: applies getDetails to a normalized media.
@@ -578,12 +580,21 @@ final class TMDBService: @unchecked Sendable {
     return await self.details(id: id, type: media.tmdbType ?? (media.format == .movie ? .movie : .tv))?.trailerYouTubeId
   }
 
-  /// /find/{id}?external_source=imdb_id|tvdb_id.
+  /// /find/{id}?external_source=imdb_id|tvdb_id: first match, a show before a movie.
   func find(externalId: String, source: String) async -> (id: Int, type: TMDBType)? {
-    guard let data = try? await get("/find/\(externalId)", params: ["external_source": source]) else { return nil }
-    if let show = data.array("tv_results").first, let id = show.int("id") { return (id, .tv) }
-    if let movie = data.array("movie_results").first, let id = movie.int("id") { return (id, .movie) }
+    let matches = await findAll(externalId: externalId, source: source)
+    if let show = matches.tvIds.first { return (show, .tv) }
+    if let movie = matches.movieIds.first { return (movie, .movie) }
     return nil
+  }
+
+  /// /find/{id}?external_source=imdb_id|tvdb_id: every match (tv_results and movie_results ids, in order),
+  /// for callers that prefer a type (stremio.js tmdbFromImdb).
+  func findAll(externalId: String, source: String) async -> (tvIds: [Int], movieIds: [Int]) {
+    guard let data = try? await get("/find/\(externalId)", params: ["external_source": source]) else { return ([], []) }
+    let tvIds = data.array("tv_results").compactMap { $0.int("id") }
+    let movieIds = data.array("movie_results").compactMap { $0.int("id") }
+    return (tvIds, movieIds)
   }
 
   // MARK: - Schedule (getSchedule) and recent episodes (getMediaForRSS)
@@ -650,7 +661,7 @@ final class TMDBService: @unchecked Sendable {
           let href = show.dict("_links")?.dict("nextepisode")?.string("href"),
           let nextURL = URL(string: href),
           let next = (try? await HTTP.jsonObject(from: nextURL)) as? [String: Any] else { return nil }
-    return TMDBEpisodeRef(airDate: next.string("airdate"), episodeNumber: next.int("number"), seasonNumber: next.int("season"), name: next.string("name"), still: nil)
+    return TMDBEpisodeRef(airDate: next.string("airdate"), episodeNumber: next.int("number"), seasonNumber: next.int("season"), name: next.string("name"), still: nil, overview: next.string("summary"))
   }
 
   /// "Western - Recent TV Episodes" feed (getMediaForRSS): next or last episode of the shows on the air.
@@ -659,7 +670,7 @@ final class TMDBService: @unchecked Sendable {
     let items: [EpisodeFeedItem] = onTheAir.entries.compactMap { entry in
       guard let episode = entry.nextEpisode ?? entry.lastEpisode, let number = episode.episodeNumber else { return nil }
       let date = ServiceDates.parse(episode.airDate) ?? entry.airing.airingAt
-      return EpisodeFeedItem(media: entry.media, episode: number, date: date, dub: false, episodeTitle: episode.name, thumbnail: episode.still ?? entry.media.images.banner)
+      return EpisodeFeedItem(media: entry.media, episode: number, date: date, dub: false, episodeTitle: episode.name, thumbnail: episode.still ?? entry.media.images.banner, summary: episode.overview)
     }
     return Array(items.prefix(perPage))
   }

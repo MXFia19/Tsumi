@@ -41,10 +41,14 @@ struct PlayerView: View {
         controller.importSubtitleFile(at: url)
       }
     }
+    .onDrop(of: [UTType.data], isTargeted: nil) { providers in
+      // Subtitle files or text dropped on the player (clipboard.js drop handler).
+      controller.importDroppedSubtitles(providers)
+    }
     .focusable()
     .focusEffectDisabled()
     .focused($keyboardFocused)
-    .onKeyPress(phases: .down) { press in
+    .onKeyPress(phases: [.down, .repeat]) { press in
       handleKey(press)
     }
     .onAppear {
@@ -67,8 +71,23 @@ struct PlayerView: View {
         controlsVisible = true
       }
     }
-    .onChange(of: showEpisodes) { _, shown in
-      if !shown { keyboardFocused = true }
+    .onChange(of: isCovered) { _, covered in
+      if !covered { restoreKeyboardFocus() }
+    }
+  }
+
+  /// A sheet, dialog or panel is shown over the player: the hardware keyboard focus is given back to the
+  /// player when the last one closes (episode list, Files importer, details, extension dialogs, panels).
+  private var isCovered: Bool {
+    showEpisodes || showImporter || showSubtitleOffset || showKeybinds
+      || controller.isExternalOverlayPresented || PlaybackRequestCoordinator.shared.presentation != nil
+  }
+
+  private func restoreKeyboardFocus() {
+    Task { @MainActor in
+      // Let the dismissal hand the focus back to this window first.
+      try? await Task.sleep(nanoseconds: 200_000_000)
+      if !isCovered { keyboardFocused = true }
     }
   }
 
@@ -81,10 +100,7 @@ struct PlayerView: View {
     PlayerVideoSurface(controller: controller)
       .ignoresSafeArea()
 
-    GeometryReader { proxy in
-      PlayerSubtitleOverlay(cues: controller.activeSubtitleCues, size: proxy.size, raised: controlsVisible)
-    }
-    .allowsHitTesting(false)
+    PlayerSubtitleCanvas(controller: controller, raised: controlsVisible)
 
     gestureLayer
       .ignoresSafeArea()
@@ -115,7 +131,8 @@ struct PlayerView: View {
     .opacity(controlsVisible ? 1 : 0)
     .allowsHitTesting(controlsVisible)
 
-    if let name = controller.currentSkippable {
+    // Hidden with the controls, like `.immersed .skip` in PlayerPage.svelte.
+    if let name = controller.currentSkippable, controlsVisible {
       skipButton(name)
     }
   }
@@ -258,7 +275,7 @@ struct PlayerView: View {
         .buttonStyle(.plain)
       }
       .padding(.trailing, 24)
-      .padding(.bottom, controlsVisible ? 104 : 28)
+      .padding(.bottom, 104)
     }
   }
 
@@ -293,7 +310,19 @@ struct PlayerView: View {
 
   // MARK: - Keyboard (hardware keyboard on iPad, svelte-keybinds)
 
+  /// Held keys repeat for seeking, volume and speed (svelte-keybinds runs on every keydown, repeats included).
+  private static func repeats(_ press: KeyPress) -> Bool {
+    if press.key == .leftArrow || press.key == .rightArrow || press.key == .upArrow || press.key == .downArrow {
+      return true
+    }
+    return press.characters == "[" || press.characters == "]"
+  }
+
   private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+    if press.phase == .repeat && !PlayerView.repeats(press) {
+      // Swallowed so a held Space or letter does not toggle again and again.
+      return .handled
+    }
     if press.key == .escape {
       if showKeybinds {
         showKeybinds = false

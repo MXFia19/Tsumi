@@ -4,7 +4,7 @@ import Network
 
 // Toasts (svelte-sonner <Toaster visibleToasts={2} position='top-right' theme='dark' richColors
 // duration={10_000} closeButton> in App.svelte) fed by ServiceMessages, and the connection status bar
-// (common/components/Status.svelte: "Offline" / "Connection Restored").
+// (common/components/Status.svelte: "Offline" / "AniList Outage" / "Connection Restored").
 
 enum ShellToastStyle {
   static let duration: TimeInterval = 10
@@ -178,6 +178,20 @@ final class ShellConnectionMonitor {
         ShellConnectionMonitor.shared.update(offline: offline)
       }
     }
+    observeAniListStatus()
+  }
+
+  /// Follows ServiceNetworkMonitor.isAniListDown (set by the AniList client) for the restored flash.
+  private func observeAniListStatus() {
+    withObservationTracking {
+      _ = ServiceNetworkMonitor.shared.isAniListDown
+    } onChange: {
+      Task { @MainActor in
+        let monitor = ShellConnectionMonitor.shared
+        monitor.aniListStatusChanged(down: ServiceNetworkMonitor.shared.isAniListDown)
+        monitor.observeAniListStatus()
+      }
+    }
   }
 
   func update(offline: Bool) {
@@ -188,6 +202,20 @@ final class ShellConnectionMonitor {
       showRestored = false
       return
     }
+    flashRestored()
+  }
+
+  /// End / start of an AniList outage (ServiceNetworkMonitor.isAniListDown): "Connection Restored" when it ends.
+  func aniListStatusChanged(down: Bool) {
+    restoredTask?.cancel()
+    if down || isOffline {
+      showRestored = false
+      return
+    }
+    flashRestored()
+  }
+
+  private func flashRestored() {
     showRestored = true
     restoredTask = Task { @MainActor in
       try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -202,14 +230,18 @@ final class ShellConnectionMonitor {
 struct ShellConnectionBanner: View {
   var body: some View {
     let monitor = ShellConnectionMonitor.shared
+    let aniListDown = ServiceNetworkMonitor.shared.isAniListDown
     return Group {
       if monitor.isOffline {
         bar(text: "Offline", icon: "wifi.slash", background: ShellPalette.color(0x101114))
+      } else if aniListDown {
+        bar(text: "AniList Outage", icon: "exclamationmark.icloud", background: ShellPalette.color(0x101114))
       } else if monitor.showRestored {
         bar(text: "Connection Restored", icon: "globe", background: ShellPalette.color(0x2E7D32))
       }
     }
     .animation(.easeInOut(duration: 0.3), value: monitor.isOffline)
+    .animation(.easeInOut(duration: 0.3), value: aniListDown)
     .animation(.easeInOut(duration: 0.3), value: monitor.showRestored)
   }
 

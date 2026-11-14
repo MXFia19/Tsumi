@@ -2,8 +2,9 @@ import SwiftUI
 import UserNotifications
 
 // Settings > Interface (common/routes/settings/tabs/InterfaceTab.svelte): interface options, notification
-// settings and home screen settings. Desktop / web only options (Discord rich presence, UI scale, CSS
-// variables, expandable sidebar, ANGLE backend) and the card type have no iOS equivalent.
+// settings and home screen settings. UI Scale maps to a Dynamic Type size and the CSS variables are reduced to
+// an accent colour (App/TsumiApp.swift). Desktop only options (Discord rich presence, expandable sidebar,
+// ANGLE backend) have no iOS equivalent.
 
 @MainActor
 struct ShellInterfaceSettingsView: View {
@@ -20,12 +21,37 @@ struct ShellInterfaceSettingsView: View {
 /// "Interface Settings" group.
 @MainActor
 struct ShellInterfaceOptionsSection: View {
-  @State private var cardAudio = ServiceSettingsExtras.cardAudio
+  /// settings.cards (Small / Full), stored where the Browse screens read it.
+  @AppStorage(BrowseCardMode.storageKey) private var cardMode = BrowseCardMode.small.rawValue
 
   var body: some View {
     let values = AppSettings.shared.values
     let aniListAuth = ProfilesService.shared.isAniList
     return Section {
+      ShellSettingPicker(
+        title: "Scale",
+        description: "Adjust the size of text, buttons, and other interface elements to match your preference and screen size. 100% follows the iOS text size.",
+        options: TsumiAppearanceStyle.scales.map { ShellOption(String($0), "\(Int(($0 * 100).rounded()))%") },
+        selection: scaleBinding
+      )
+      ShellSettingCard(
+        title: "Accent Color",
+        description: "Color of the buttons, switches and selections (the accent color variable of the desktop themes)."
+      ) {
+        HStack(spacing: 10) {
+          if !values.accentColor.isEmpty {
+            Button("Reset") { AppSettings.shared.values.accentColor = "" }
+              .buttonStyle(.borderless)
+          }
+          ColorPicker("Accent Color", selection: accentBinding, supportsOpacity: false)
+            .labelsHidden()
+        }
+      }
+      ShellSettingToggle(
+        title: "Expandable Lists",
+        description: "Choose whether lists like recommendations or relations, open as dropdowns or scroll horizontally. Scrollable lists work better on smaller screens.",
+        isOn: ShellBind.value(\.toggleList)
+      )
       if !aniListAuth {
         ShellSettingPicker(
           title: "Preferred Title Language",
@@ -34,15 +60,23 @@ struct ShellInterfaceOptionsSection: View {
           selection: titleLanguageBinding
         )
       }
-      ShellSettingToggle(
-        title: "Card Preview",
-        description: "If a detailed preview card should be shown when tapping or hovering over the small card.",
-        isOn: ShellBind.value(\.cardPreview)
+      ShellSettingPicker(
+        title: "Card Type",
+        description: "What type of cards to display in menus.",
+        options: [ShellOption(BrowseCardMode.small.rawValue, "Small"), ShellOption(BrowseCardMode.full.rawValue, "Full")],
+        selection: $cardMode
       )
+      if cardMode != BrowseCardMode.full.rawValue {
+        ShellSettingToggle(
+          title: "Card Preview",
+          description: "If a detailed preview card should be shown when tapping or hovering over the small card.",
+          isOn: ShellBind.value(\.cardPreview)
+        )
+      }
       ShellSettingToggle(
         title: "Card Audio",
         description: "If the sub, dub, partial dub, and age rating icons should be shown on the cards, the corresponding episode number will be shown when possible. Additionally a label will be shown on the preview cards, anime view, episode cards, and the home banner of the highest possible audio available, either dub, partial dub, or sub. Note these will not be visible when viewing the schedule page. ",
-        isOn: $cardAudio
+        isOn: ShellBind.value(\.cardAudio)
       )
       ShellSettingToggle(
         title: "Prefer Dubs",
@@ -65,9 +99,22 @@ struct ShellInterfaceOptionsSection: View {
     } header: {
       Text("Interface Settings")
     }
-    .onChange(of: cardAudio) { _, value in
-      ServiceSettingsExtras.cardAudio = value
-    }
+  }
+
+  /// settings.uiScale, shown as the closest scale choice.
+  private var scaleBinding: Binding<String> {
+    Binding(
+      get: { String(TsumiAppearanceStyle.nearestScale(AppSettings.shared.values.uiScale)) },
+      set: { value in AppSettings.shared.values.uiScale = Double(value) ?? 1 }
+    )
+  }
+
+  /// "#RRGGBB" accent color (the app default while empty).
+  private var accentBinding: Binding<Color> {
+    Binding(
+      get: { TsumiAppearanceStyle.color(hex: AppSettings.shared.values.accentColor) ?? Color.accentColor },
+      set: { color in AppSettings.shared.values.accentColor = TsumiAppearanceStyle.hex(color) }
+    )
   }
 
   /// <select bind:value={settings.titleLang}> with Japanese (romaji) and English.
@@ -86,8 +133,6 @@ struct ShellInterfaceOptionsSection: View {
 /// "Notification Settings" group.
 @MainActor
 struct ShellNotificationSettingsSection: View {
-  @State private var hentaiAnnounce = ServiceSettingsExtras.hentaiAnnounce
-
   static let announceOptions = [ShellOption("all", "All"), ShellOption("following", "Following"), ShellOption("none", "None")]
 
   var body: some View {
@@ -124,15 +169,12 @@ struct ShellNotificationSettingsSection: View {
           title: "Hentai Announcements",
           description: Self.announceDescription("Hentai"),
           options: Self.announceOptions,
-          selection: $hentaiAnnounce
+          selection: ShellBind.value(\.hentaiAnnounce)
         )
       }
       ShellReleasesNotifyEditor()
     } header: {
       Text("Notification Settings")
-    }
-    .onChange(of: hentaiAnnounce) { _, value in
-      ServiceSettingsExtras.hentaiAnnounce = value
     }
   }
 
@@ -159,9 +201,7 @@ struct ShellNotificationSettingsSection: View {
 /// "Releases Notifications": list of list statuses (+ Not on List) with add / change / remove.
 @MainActor
 struct ShellReleasesNotifyEditor: View {
-  @State private var notOnList = ServiceSettingsExtras.releasesNotifyNotOnList
-
-  static let notOnListValue = "NOTONLIST"
+  static let notOnListValue = SettingsValues.notOnListValue
   static let options: [ShellOption] = [
     ShellOption(ListStatus.current.rawValue, "Watching"),
     ShellOption(ListStatus.planning.rawValue, "Planning"),
@@ -173,7 +213,8 @@ struct ShellReleasesNotifyEditor: View {
   ]
 
   private var selected: [String] {
-    AppSettings.shared.values.releasesNotify.map { $0.rawValue } + (notOnList ? [Self.notOnListValue] : [])
+    let values = AppSettings.shared.values
+    return values.releasesNotify.map { $0.rawValue } + (values.releasesNotifyNotOnList ? [Self.notOnListValue] : [])
   }
 
   var body: some View {
@@ -243,10 +284,10 @@ struct ShellReleasesNotifyEditor: View {
     for value in list {
       if let status = ListStatus(rawValue: value), !statuses.contains(status) { statuses.append(status) }
     }
-    let includesNotOnList = list.contains(Self.notOnListValue)
-    AppSettings.shared.values.releasesNotify = statuses
-    ServiceSettingsExtras.releasesNotifyNotOnList = includesNotOnList
-    notOnList = includesNotOnList
+    var values = AppSettings.shared.values
+    values.releasesNotify = statuses
+    values.releasesNotifyNotOnList = list.contains(Self.notOnListValue)
+    AppSettings.shared.values = values
   }
 }
 

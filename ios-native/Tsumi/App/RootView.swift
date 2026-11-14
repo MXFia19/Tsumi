@@ -3,7 +3,7 @@ import UIKit
 
 /// Root of the app (App.svelte + Router.svelte + Sidebar.svelte / Navbar.svelte): one tab per page, each
 /// in its own NavigationStack, the root sheets (details, notifications, profiles), the playback dialogs,
-/// the full screen player, the toasts, deep links and the app lifecycle.
+/// the full screen player and its miniplayer, the toasts, deep links and the app lifecycle.
 @MainActor
 struct RootView: View {
   @Environment(\.scenePhase) private var scenePhase
@@ -18,6 +18,10 @@ struct RootView: View {
     ShellTabs(compact: compact)
       .safeAreaInset(edge: .top, spacing: 0) {
         ShellConnectionBanner()
+      }
+      // In-app miniplayer over every tab (App.svelte global player layer, Miniplayer.svelte).
+      .overlay {
+        ShellMiniPlayerOverlay(layer: .root)
       }
       .modifier(ShellRootPresenters())
       .task {

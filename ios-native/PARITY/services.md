@@ -30,12 +30,12 @@ Swift code: `ios-native/Tsumi/Services/`
 | File | Types |
 |---|---|
 | `Services.swift` | `Services` (container, `start()`, deep links), `TsumiDeepLink` |
-| `ServiceSupport.swift` | `ServiceError`, `ServiceLocked`, `ServiceRateLimiter`, `ServiceInflight`, `ServiceAnyBox`, `FuzzyDate`, `ServiceDates`, `AnimeSeasonClock`, `ServiceJSON`, `ServiceText`, `ServiceNetworkMonitor`, `ServiceSettingsExtras`, `ServiceMessages` (toasts) |
+| `ServiceSupport.swift` | `ServiceError`, `ServiceLocked`, `ServiceRateLimiter`, `ServiceInflight`, `ServiceAnyBox`, `FuzzyDate`, `ServiceDates`, `AnimeSeasonClock`, `ServiceJSON`, `ServiceText`, `ServiceNetworkMonitor` (observable, online / AniList outage), `ServiceSettingsExtras` (forwards to `SettingsValues`), `ServiceMessages` (toasts) |
 | `MediaStore.swift` | `MediaStore` (mediaCache), `MediaExtras`, `AiringNode`, `StreamingEpisodeInfo`, `RelationEdgeInfo`, `CustomListFlag`, `TMDBSeasonInfo`, `ServiceListOverlay` |
-| `AniListService.swift` | `AniListService`, `AniListVariables`, `AniListParser`, `ListEntryInput`, `SavedListEntry`, `AniListNotificationItem`, `AniListFollowingEntry`, `AniListCompoundTitle`, `AniListMediaBatcher` |
+| `AniListService.swift` | `AniListService`, `AniListVariables`, `AniListParser`, `ListEntryInput`, `SavedListEntry`, `AniListNotificationItem`, `AniListFollowingEntry`, `AniListCompoundTitle`, `AniListMediaBatcher`, `AniListOutageMonitor` |
 | `MyAnimeListService.swift` | `MyAnimeListService`, `MALStatusMap` |
 | `AccountStore.swift` | `AccountProfile`, `AccountStore`, `TsumiKeychain` |
-| `ProfilesService.swift` | `ProfilesService` (login / profiles), `TsumiWebAuthenticator` |
+| `ProfilesService.swift` | `ProfilesService` (login / profiles, web view login state, pasted token), `TsumiWebLoginRequest`, `TsumiWebAuthenticator` |
 | `MediaListService.swift` | `MediaListService` (helper.js), `UserListItem`, `UserLists`, `ListFilter`, `UserListSorts` |
 | `TMDBService.swift` | `TMDBService`, `TMDBDetails`, `TMDBSeasonEpisode`, `TMDBScheduleEntry`, `TMDBSearchQuery`, `TMDBEpisodeRef`, `TMDBPerson`, `TMDBCastMember`, `TMDBArtwork` |
 | `AnimeMappingsService.swift` | `AnimeMappingsService`, `AnimapEntry`, `AnimapIndex`, `AniZipMappings`, `AniZipEpisode`, `AniZipIds`, `KitsuEpisode`, `JikanEpisode` |
@@ -45,12 +45,13 @@ Swift code: `ios-native/Tsumi/Services/`
 | `AnimeProgressService.swift` | `AnimeProgressService`, `EpisodeProgressRecord` |
 | `HomeSectionsService.swift` | `HomeSectionsService`, `HomeSection`, `HomeSectionKind`, `HomeSectionPage`, `SectionQuery`, `SearchRequest` |
 | `MediaDetailsService.swift` | `MediaDetailsService` (details, episode list, trailer, following) |
-| `AppNotificationsService.swift` | `AppNotificationsService`, `MediaNotification`, `ReleaseNotifyStore`, `TsumiNotificationDelegate` |
+| `AppNotificationsService.swift` | `AppNotificationsService`, `MediaNotification`, `ReleaseNotifyStore`, `TsumiNotificationCategory`, `TsumiNotificationDelegate` |
 
-Status: **done** = same behavior; **partial** = works, gap described; **n.a.** = not applicable on iOS (reason given).
+Status: **done** = same behavior; **partial** = works, gap described; **different** = intentional, documented difference; **n.a.** = not applicable on iOS (reason given).
 Shared types added outside Core (Core was not modified): see the second table above. Settings missing from
-Core `SettingsValues` are stored by `ServiceSettingsExtras` (UserDefaults): `releasesNotifyNotOnList`
-('NOTONLIST'), `hentaiAnnounce`, `cardAudio`.
+Core `SettingsValues` used to be stored by `ServiceSettingsExtras`; `releasesNotifyNotOnList` ('NOTONLIST'),
+`hentaiAnnounce` and `cardAudio` now live in `SettingsValues` (exported, imported and reset with the other
+settings, migrated once from the old UserDefaults keys) and `ServiceSettingsExtras` forwards to them.
 
 ## 1. AniList client (AL)
 
@@ -58,11 +59,11 @@ Core `SettingsValues` are stored by `ServiceSettingsExtras` (UserDefaults): `rel
 |---|---|---|---|---|
 | 1.1 | `seasons`, `currentSeason`, `currentYear` | AL 17-20 | `AnimeSeasonClock.ordered / currentSeason / currentYear / nextSeason` | done |
 | 1.2 | `getDistanceFromTitle` (Levenshtein, synonyms +2) | AL 26-33 | `AniListParser.distance`, `ServiceText.levenshtein` | done |
-| 1.3 | `queryObjects` media fields (titles, dates, tags, cover, airing schedule, list entry, relations, streaming episodes, trailer, stats...) | AL 35-134 | `AniListService.mediaFields` + `AniListParser.media` → `Media` + `MediaExtras` | done |
-| 1.4 | `queryComplexObjects` (studios, recommendations) with `queryComplexity` | AL 136-153 | always included in `mediaFields` | partial: the "Simple" query complexity option does not exist in Core settings, Complex is always used (the Svelte default) |
+| 1.3 | `queryObjects` media fields (titles, dates, tags, cover, airing schedule, list entry, relations, streaming episodes, trailer, stats...) | AL 35-134 | `AniListService.baseMediaFields` + `AniListParser.media` → `Media` + `MediaExtras` | done |
+| 1.4 | `queryComplexObjects` (studios, recommendations) with `queryComplexity` | AL 136-153, 409 | `AniListService.complexMediaFields`, added by `mediaFields` when `SettingsValues.queryComplexity` is "Complex" (default); "Simple" leaves them out and `recommendationIds(id:)` fetches recommendations on demand | done (Simple results use their own cache keys, so switching back to Complex does not reuse pages without studios) |
 | 1.5 | Bottleneck limiter (90 / min, 10 concurrent, 100 ms) | AL 156-162 | `ServiceRateLimiter(capacity: 90, interval: 60, minSpacing: 0.1)` | done (no concurrency cap, spacing only) |
 | 1.6 | `failed` handler: 429 Retry-After +1 s, 500 retry, offline stop, error toast | AL 173-185 | `AniListService.request` (pause limiter, up to 4 attempts, offline throws, `ServiceMessages` toast) | done |
-| 1.7 | `handleRequest`: fetch, JSON, error toasts "Search Failed" | AL 212-242 | `AniListService.request` | done |
+| 1.7 | `handleRequest`: fetch, JSON, error toasts "Search Failed" | AL 212-242 | `AniListService.request` | done (muted during an AniList outage, see 13.9) |
 | 1.8 | `alRequest`: default `page 1 / perPage 50 / sort TRENDING_DESC`, `sort: 'OMIT'`, Authorization token | AL 248-277 | `AniListVariables` defaults (`sort == nil` = OMIT), `request(token:)` | done (sends `Bearer <token>`, the documented AniList format) |
 | 1.9 | String ids return `{data: null}` | AL 249 | ids are typed `Int`, TMDB media never reach AniList | n.a. (typed ids) |
 | 1.10 | `userLists` store loaded at start from cache then refreshed, refresh every 15 min | AL 187-202 | `MediaListService.start()` (cached lists → refresh → every 15 min) | done |
@@ -118,25 +119,26 @@ Core `SettingsValues` are stored by `ServiceSettingsExtras` (UserDefaults): `rel
 | 3.2 | `profiles` store (other profiles) | SET 75-79 | `AccountStore.others`, `ProfilesService.others` | done |
 | 3.3 | `sync` store (synced profile ids) | SET 55-59 | `AccountStore.syncIds`, `ProfilesService.toggleSync` | done |
 | 3.4 | `isAuthorized` | SET 81-83 | `AccountStore.isAuthorized`, `ProfilesService.isAuthorized` | done |
-| 3.5 | Paste handler: `access_token=` / `code=&state=` / anilist.co & myanimelist.net anime links | SET 85-123 | `ProfilesService.handleCallback(_:)`, `Services.parseWebLink`, `Services.handle(url:)` | partial: available as API, the UI must forward pasted text / URLs |
+| 3.5 | Paste handler: `access_token=` / `code=&state=` / anilist.co & myanimelist.net anime links | SET 85-123 | `ProfilesService.login(pasted:)` (`pastedAniListToken`: bare token, pin page URL or `access_token=...`; MAL `code=&state=` → `handleCallback`), `Services.handle(url:)` for links; UI: "Paste token" field of the login box (`ShellPasteHandler`) | done (an explicit field instead of a global paste event) |
 | 3.6 | `handleToken` (viewer check, error toast, swapProfiles) | SET 125-134 | `ProfilesService.handleAniListToken` | done |
 | 3.7 | `swapProfiles` (same viewer → update, existing other → update, else push current to others; null → first other or logout) | SET 224-252 | `ProfilesService.swapProfiles` (+ `logout`, `switchTo`) | done |
 | 3.8 | `location.reload()` after a profile change | SET 251 | `ProfilesService.accountChanged` (clears list entries, reloads lists, rebuilds sections, restarts polling) | done |
 | 3.9 | `cache.abandon` (per-user cache) | SET 226, 246 | per-account cache keys (`lists.v1.<account>`, `al.notifications.<viewer>`) + `MediaStore.clearListEntries` | partial: shared API caches are not wiped on account switch (only user-specific data) |
 | 3.10 | `setViewer` (AniList profile = has avatar) | SET 254-264 | `AccountProfile.viewer.service` | done |
-| 3.11 | AniList login: implicit grant, client id `MzU5NzE=` (35971), redirect `tsumi://alauth` | PRO 47-49, PROT 6, 32-38 | `ProfilesService.loginAniList` (ASWebAuthenticationSession, scheme `tsumi`) | done |
-| 3.12 | MAL login: random 10 char state, 50 char plain PKCE challenge, redirect `tsumi://malauth` | PRO 51-57, PROT 7, 40-50 | `ProfilesService.loginMAL`, `pendingMALStates` | done |
-| 3.13 | "Login Canceled" toast when the auth window is closed | PRO 59-64 | `ProfilesService.runLogin` (ASWebAuthenticationSessionError.canceledLogin) | done |
+| 3.11 | AniList login: implicit grant, client id `MzU5NzE=` (35971) | PRO 47-49, PROT 6, 32-38 | `ProfilesService.loginAniList` → in-app web view sheet (`webLogin`, `finishWebLogin`); the client's registered redirect is the AniList pin page (`https://anilist.co/api/v2/oauth/pin#access_token=...`), so the web view catches `access_token=` in any URL it loads (navigation, redirect, commit, KVO on `url` for fragment changes) | done (BUG-login: ASWebAuthenticationSession waited for a `tsumi://` callback that never came) |
+| 3.12 | MAL login: random 10 char state, 50 char plain PKCE challenge | PRO 51-57, PROT 7, 40-50 | `ProfilesService.loginMAL`, `pendingMALStates`; the web view takes the first URL with `code` + this login's `state`, or any `tsumi://` / `shiru://` callback (`loginCallbackURL`) | done |
+| 3.13 | "Login Canceled" toast when the auth window is closed | PRO 59-64 | Cancel / swipe down closes the web view sheet without a toast; the toast stays for `authenticateOverride` (ASWebAuthenticationSession) | different (requested: a cancel is not an error) |
 | 3.14 | Current profile, other profiles, AniList / MAL badge | PRO 87-104 | `ProfilesService.current / others`, `AccountProfile.isAniList` | done (UI by the screens step) |
 | 3.15 | Switch / drop (logout) another profile | PRO 31-39 | `ProfilesService.switchTo`, `drop` | done |
 | 3.16 | Sync list entries switch | PRO 41-45 | `ProfilesService.toggleSync`, `isSynced` | done |
 | 3.17 | "Authenticate" for profiles needing reauth | PRO 99-103, 133-139 | `AccountProfile.reauth`, `ProfilesService.reauthenticate()` | done |
 | 3.18 | At most 5 other profiles ("Add Profile") | PRO 106 | `ProfilesService.canAddProfile`, `maxOtherProfiles` | done |
 | 3.19 | Sign Out | PRO 140-146 | `ProfilesService.logout()` | done |
-| 3.20 | `IPC 'open' / 'open-auth'` auth windows | PRO 48, 56 | ASWebAuthenticationSession (ephemeral) | n.a. (desktop / Android windows) |
+| 3.20 | `IPC 'open' / 'open-auth'` auth windows | PRO 48, 56 | WKWebView sheet (UI/Shell/ProfilesView.swift `ShellWebLoginSheet`) with the default persistent `WKWebsiteDataStore`, so the next login is remembered (the Electron window used a cleared partition, the Android build the system browser) | done |
 | 3.21 | Protocol links `anime`, `malanime`, `search`, `w2g`, `schedule` | PROT 4-16 | `Services.handle(url:)` → `TsumiDeepLink`, `Services.media(for:)` | done |
 | 3.22 | Protocol `update`, `show` | PROT 14-15 | — | n.a. (desktop updater / window) |
 | 3.23 | `App.svelte handleAnime` (open by AniList or MAL id) | APP 7-15 | `Services.media(for:)` | done |
+| 3.24 | Settings, sync, notifications and watch history per profile (`cacheID` = viewer id) | CACHE 374, SET 55, 226, 246 | `AppSettings` (`tsumi.settings.v1`), `AccountStore.syncIds`, `AppNotificationsService` items, `AnimeProgressService` records are global to the device | different (documented, L51: one settings / history set shared by every profile; list data stays per account, see 3.9) |
 
 ## 4. List helper (HLP, Scoring.svelte, AN setStatus / playMedia)
 
@@ -153,10 +155,10 @@ Core `SettingsValues` are stored by `ServiceSettingsExtras` (UserDefaults): `rel
 | 4.9 | `userLists` (refetch with a user sort) | HLP 105-109 | `MediaListService.items(_:sort:)` (sorted locally from the cached lists) | done |
 | 4.10 | `entry` (current client or other profile token, mediaCache update, 'notification-read') | HLP 111-133 | `MediaListService.performSave` + `AppNotificationsService.markRead` | done |
 | 4.11 | `delete` | HLP 135-148 | `MediaListService.delete` | done |
-| 4.12 | `updateEntry` (auto progress after watching: failed resolve toast, CANCELLED skip, zero episode, single episode / movie, completion, rewatch count, change detection, profile sync) | HLP 150-242 | `MediaListService.updateAfterWatching(_:episode:failed:)` | done (dates use the final status, so a completion date is set; the Svelte app passed the pre-completion status) |
+| 4.12 | `updateEntry` (auto progress after watching: failed resolve toast, CANCELLED skip, zero episode, single episode / movie, completion, rewatch count, change detection, profile sync) | HLP 150-242 | `MediaListService.updateAfterWatching(_:episode:failed:)` | done (dates use the final status, so a completion date is set; the Svelte app passed the pre-completion status; synced profiles get the entry's own start / completion dates like `...variables`) |
 | 4.13 | `listToast` (success / error, toasts setting) | HLP 244-264 | `ServiceMessages.post` (All / Errors / None) | done |
 | 4.14 | `getPaginatedMediaList` (AniList filters: search, genres, tags, season, year, format(_not), status(_not), continueWatching, dub only; user sort local paging; MAL node filters with TV_SHORT < 20 min; id search with idMal order) | HLP 266-357 | `MediaListService.paginatedMedia(page:perPage:filter:items:)` | partial: title search uses an approximate Fuse.js matcher (`ServiceText.matchKeys`) |
-| 4.15 | Scoring `saveEntry` (no change warning, x10 AniList score, custom lists kept, description toast, profile sync) | Scoring.svelte 70-112 | `MediaListService.save(_:status:progress:score:repeatCount:)` | done (custom lists are not re-sent: the Svelte mutation never used `$lists` either) |
+| 4.15 | Scoring `saveEntry` (no change warning, x10 AniList score, custom lists kept, description toast, profile sync with the entry's dates) | Scoring.svelte 70-112 | `MediaListService.save(_:status:progress:score:repeatCount:)` → `syncProfiles(…, startedAt:, completedAt:)` | done (custom lists are not re-sent: the Svelte mutation never used `$lists` either) |
 | 4.16 | Scoring `deleteEntry` (warning toast, profile sync by list entry id / MAL id) | Scoring.svelte 50-69 | `MediaListService.delete(_:)` | done |
 | 4.17 | Scoring score names / max episodes label | Scoring.svelte 23-35 | `AnimeHelpers.maxEpisode` (labels are UI) | done |
 | 4.18 | `setStatus` | AN 760-772 | `MediaListService.setStatus(_:media:progress:)` | done |
@@ -238,7 +240,7 @@ Core `SettingsValues` are stored by `ServiceSettingsExtras` (UserDefaults): `rel
 | 7.13 | `feedChanged` (download, stale fallback, cache 315 s, manifest value update under a lock) | SCH 280-311 | `feedChanged` + `ScheduleManifestStore` actor | done |
 | 7.14 | `getMediaForRSS` / `_getMediaForRSS` ("Recent Subs / Dubs / Hentai": preferDubs filter, paging, missed episodes, AniList ids, episode metadata) | SCH 313-432 | `AnimeScheduleService.recentEpisodes(_:page:perPage:)` | partial: the preferDubs filter only looks at media already in the store (the Svelte app fetched every feed media) |
 | 7.15 | Section format filter of the feed | SCH 330-331 | — | partial: not applied; the Svelte lookup used old section titles ("Subbed Releases") and never matched, so the visible behavior is the same |
-| 7.16 | Release notifications (releasesNotify statuses + NOTONLIST, preferDubs, messages "The wait is over!", lastSub / lastDub / lastHentai) | SCH 386-424 | `AnimeScheduleService.notifyReleases` | done ('NOTONLIST' stored in `ServiceSettingsExtras.releasesNotifyNotOnList`) |
+| 7.16 | Release notifications (releasesNotify statuses + NOTONLIST, preferDubs, messages "The wait is over!", lastSub / lastDub / lastHentai) | SCH 386-424 | `AnimeScheduleService.notifyReleases` | done ('NOTONLIST' stored in `SettingsValues.releasesNotifyNotOnList`, read through `ServiceSettingsExtras`) |
 | 7.17 | `structureResolveResults` (episode metadata, play click, movies without episode number) | SCH 434-463 | `withEpisodeMetadata` → `EpisodeFeedItem.episodeTitle / thumbnail` | done (movie display rule left to the card) |
 | 7.18 | `fromPending` | SCH 465-468 | — | n.a. (async pages) |
 
@@ -288,7 +290,7 @@ Core `SettingsValues` are stored by `ServiceSettingsExtras` (UserDefaults): `rel
 | 10.4 | 15 s debounce queue | NOT 45-50 | `queue` + `debounceTask`, `flush()` | done |
 | 10.5 | `dedupeNotifications` (id-episode-dub) | NOT 52-60 | `processIncoming` (`MediaNotification.id`) | done |
 | 10.6 | `splitLocalAndSystem` (system notifications sorted, max 20) | NOT 62-77 | `processIncoming` + `deliver` | done |
-| 10.7 | System notification (title, message, icon, activation `tsumi://anime/<id>`) | NOT 83, IPC 'notification' | `deliver` (UNUserNotificationCenter, cover attachment, `url` userInfo), `TsumiNotificationDelegate` → `onOpenURL` | done |
+| 10.7 | System notification (title, message, hero image, action buttons, activation `tsumi://anime/<id>`) | NOT 83, IPC 'notification', capacitor app.js 24-46, 113-129 | `deliver` (UNUserNotificationCenter, attachment `heroImage ?? iconXL ?? icon`, `url` / `watchURL` userInfo, `TsumiNotificationCategory` view_anime / start_watching / continue_watching / watch_now), `TsumiNotificationDelegate`: the watch action opens `tsumi://search/<id>` (play), "View Anime" and a tap open the details | done (Start Watching / Resume / Watch is chosen from the list progress; the Svelte modules only ever sent "View Anime") |
 | 10.8 | `systemNotify` setting | NOT 40 | `dispatch` uses `AppSettings.values.systemNotify`; permission asked in `start()` | done |
 | 10.9 | `addNotification` (delayed / released replacement, read when already watched) | NOT 86-98 | `add(_:)` | done |
 | 10.10 | `sort` (newest, episode order, unread first) | NOT 100-112 | `AppNotificationsService.sorted` | done |
@@ -300,7 +302,7 @@ Core `SettingsValues` are stored by `ServiceSettingsExtras` (UserDefaults): `rel
 | 10.16 | Incremental list rendering (25 per scroll) | NOT 175-185 | — | n.a. (SwiftUI lists are lazy) |
 | 10.17 | 'notification-reset' / `cache.resetNotifications` | NOT 43, CACHE 581-584 | `reset()` (also clears `ReleaseNotifyStore`) | done |
 | 10.18 | Notification bookkeeping (lastAni / lastSub / lastDub / lastHentai, delayedDubs, announced ids) | CACHE notifyDefaults | `ReleaseNotifyStore` (UserDefaults) | done |
-| 10.19 | Checks while the app is closed (desktop tray) | AL 204, SCH 55 | `AppNotificationsService.backgroundRefresh()` | partial: polling runs while the app is in foreground; background delivery needs a BGAppRefreshTask (Info.plist `BGTaskSchedulerPermittedIdentifiers` + `fetch` background mode) wired by the app |
+| 10.19 | Checks while the app is closed (desktop tray) | AL 204, SCH 55 | `AppNotificationsService.backgroundRefresh()` + `flushAndWait()`, run by the `BGAppRefreshTask` `org.tsumi.app.refresh` (`ShellBackgroundRefresh`, scheduled when the app goes to background; Info.plist `BGTaskSchedulerPermittedIdentifiers` + `fetch`) | done (iOS decides when the task runs, at the earliest 15 min apart) |
 
 ## 11. Playback progress (AP)
 
@@ -332,14 +334,14 @@ Core `SettingsValues` are stored by `ServiceSettingsExtras` (UserDefaults): `rel
 | # | Svelte feature | Source | Swift | Status |
 |---|---|---|---|---|
 | 13.1 | IndexedDB caches (queries, mappings, user lists, media, history, notifications) | CACHE 26-42 | Core `DiskCache` (API responses), `MediaStore`, Keychain, UserDefaults | done |
-| 13.2 | `cachedEntry` / `cacheEntry` (expiry, stale fallback on errors / offline, remap ids to mediaCache) | CACHE 719-796 | DiskCache `get(allowExpired:)` / `set` + `MediaStore.ingest(overwrite: false)` | done |
+| 13.2 | `cachedEntry` / `cacheEntry` (expiry, stale fallback on errors / offline, remap ids to mediaCache) | CACHE 719-796 | DiskCache `get(allowExpired:)` / `set` + `MediaStore.ingest(overwrite: false)`; files are named by the SHA-256 of the whole key (the old base64 prefix names made long keys collide, H1; old files are dropped once) | done |
 | 13.3 | Pending request de-duplication | CACHE 758-794 | `ServiceInflight` | done |
 | 13.4 | `updateMedia` (merge, keep logo / banner / airing schedule) | CACHE 662-681 | `MediaStore.ingest` | done |
 | 13.5 | `requestMedia`, `getMedia` | CACHE 689-709 | `AniListService.requestMedia(id:)`, `MediaStore.media(_:)` | done |
 | 13.6 | `fillEntries` (MAL list entries on AniList media) | CACHE 852-876 | `ServiceListOverlay.apply / applyDates`, `MediaStore.reapplyOverlay` | done |
 | 13.7 | `resetCaches` | CACHE 569-575 | `Services.clearCaches()` | done |
-| 13.8 | `resetSettings` | CACHE 549-552 | Core `AppSettings.reset()` | n.a. (Core) |
-| 13.9 | Offline status (`status` store) | NET | `ServiceNetworkMonitor` (NWPathMonitor) | partial: no "AniList API disabled" status, only online / offline |
+| 13.8 | `resetSettings` | CACHE 549-552 | `ShellSettingsDefaults.resetAll()` (settings, player preferences, card type, installed extensions) | done |
+| 13.9 | Offline status (`status` store) and AniList outage (`isAnilistDown`) | NET 39, 60-93, 110-170 | `ServiceNetworkMonitor` (observable `isOnline`, `isAniListDown`); `AniListOutageMonitor`: a 403 "temporarily disabled" sets the outage, posts one "AniList Outage" toast, mutes the AniList error toasts and pings every 15-25 s until the API answers (a successful request also ends it) | done |
 | 13.10 | `printError` toasts | NET | `ServiceMessages` (`messages`, `latest`, `dismiss`) | done (display is UI) |
 | 13.11 | Toast setting (All / Errors / None) | util.js defaults | `ServiceMessages.post` | done |
 | 13.12 | `matchKeys` / `matchPhrase` (Fuse.js + Levenshtein) | util.js 323-384 | `ServiceText.matchKeys`, `matchPhrase` | partial: approximate re-implementation without Fuse.js |
@@ -350,10 +352,11 @@ Core `SettingsValues` are stored by `ServiceSettingsExtras` (UserDefaults): `rel
 
 | Status | Rows |
 |---|---|
-| done | 198 |
-| partial | 18 |
-| n.a. | 13 |
-| **total** | **229** |
+| done | 203 |
+| partial | 14 |
+| different | 2 |
+| n.a. | 11 |
+| **total** | **230** |
 
 ## Wiring needed in the app (not in this folder)
 
@@ -363,7 +366,6 @@ Core `SettingsValues` are stored by `ServiceSettingsExtras` (UserDefaults): `rel
   ASWebAuthenticationSession), other links return a `TsumiDeepLink`.
 - `AppNotificationsService.shared.onOpenURL = { url in ... }` for notification taps (same router).
 - Optional: `ProfilesService.shared.authenticateOverride` to use SwiftUI's `webAuthenticationSession`.
-- Optional background refresh: register a BGAppRefreshTask (Info.plist) that awaits
-  `AppNotificationsService.shared.backgroundRefresh()`.
+- Background refresh: done by `ShellBackgroundRefresh` (UI/Shell/AppWiring.swift).
 - Player hooks: progress → `AnimeProgressService.shared.set(...)`, autocomplete →
   `MediaListService.shared.updateAfterWatching(_:episode:)`, start episode → `startEpisode(for:)`.

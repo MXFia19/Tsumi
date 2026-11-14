@@ -40,21 +40,42 @@ final class PlayerLayerUIView: UIView {
   }
 }
 
+/// Container of the shared video view. The full screen player and the in-app miniplayer each have one; the
+/// one that most recently entered a window takes the video layer, so the same AVPlayerLayer moves between
+/// them (and keeps Picture in Picture attached).
+final class PlayerVideoContainerView: UIView {
+  var onEnterWindow: ((PlayerVideoContainerView) -> Void)?
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    if window != nil { onEnterWindow?(self) }
+  }
+}
+
 /// SwiftUI host of the controller's video view.
 @MainActor
 struct PlayerVideoSurface: UIViewRepresentable {
   let controller: PlayerController
 
-  func makeUIView(context: Context) -> UIView {
-    let container = UIView()
+  func makeUIView(context: Context) -> PlayerVideoContainerView {
+    let container = PlayerVideoContainerView()
     container.backgroundColor = .black
     container.clipsToBounds = true
+    let controller = self.controller
+    container.onEnterWindow = { [weak controller] view in
+      MainActor.assumeIsolated {
+        controller?.mountVideoView(in: view)
+      }
+    }
     controller.mountVideoView(in: container)
     return container
   }
 
-  func updateUIView(_ uiView: UIView, context: Context) {
-    controller.mountVideoView(in: uiView)
+  func updateUIView(_ uiView: PlayerVideoContainerView, context: Context) {
+    // Only reclaim an orphaned layer: another visible surface may own it.
+    if controller.layerView.superview == nil || controller.layerView.superview === uiView {
+      controller.mountVideoView(in: uiView)
+    }
   }
 }
 

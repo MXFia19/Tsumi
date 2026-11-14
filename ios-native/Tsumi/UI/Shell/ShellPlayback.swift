@@ -2,8 +2,9 @@ import SwiftUI
 import Observation
 
 // Playback wiring: PlaybackRequestCoordinator.onReady → PlayerController (ExtensionResults.launchPlayer +
-// PlayerPage.svelte hooks), episode switching with the same extension (playNext / playLast / episode list /
-// Watch Together setindex), progress (animeprogress.js), list auto-complete (Helper.updateEntry),
+// PlayerPage.svelte hooks), episode switching from the search result that was played, else the extension flow
+// (playNext / playLast / episode list / Watch Together setindex → playAnime), progress (animeprogress.js),
+// list auto-complete (Helper.updateEntry),
 // Watch Together sharing (session.js shareNowPlaying) and the play entry points of the shell
 // (DetailsModal handlePlay for deep links and notifications, anime.js playMedia).
 
@@ -98,19 +99,31 @@ enum ShellPlayback {
     ServiceMessages.shared.post(.info, title, message)
   }
 
-  /// "Now Playing" entry while the player is minimized to Picture in Picture.
+  /// "Now Playing" entry and miniplayer tap: presents the player again (from Picture in Picture or the in-app
+  /// miniplayer) once the root sheets are closed.
   static func restorePlayer() {
     let presentation = PlayerPresentation.shared
     guard let controller = presentation.controller else { return }
     ShellNavigation.clearRootSheets()
-    if controller.isPictureInPictureActive {
-      controller.togglePictureInPicture()
-    }
+    // Stops PiP as a restore (sets restoringFromPiP before pip.stop()), so AVKit's stop is not taken for the
+    // PiP window being closed and the player UI is presented here only once.
+    controller.stopPictureInPictureForRestore()
     Task { @MainActor in
       await ShellPresentationTiming.waitUntilSettled(maxDepth: 0)
       if presentation.controller === controller {
         presentation.isPresented = true
       }
+    }
+  }
+
+  /// playAnime(media, episode) from the player: default extension, else the extension picker
+  /// (ExtensionModal.svelte), shown over the player. Used when the played result cannot give that episode.
+  static func playWithExtensionFlow(_ media: Media, episode: EpisodeRef) {
+    let coordinator = PlaybackRequestCoordinator.shared
+    if episode.season != nil || episode.localEpisode != nil {
+      coordinator.play(media: media, episode: episode)
+    } else {
+      coordinator.play(media: media, episodeNumber: episode.number)
     }
   }
 
@@ -120,6 +133,7 @@ enum ShellPlayback {
   static func start(_ playback: ResolvedPlayback) {
     generation += 1
     let token = generation
+    let source = PlaybackRequestCoordinator.shared.source(for: playback)
     let presentation = PlayerPresentation.shared
     let replacing = presentation.isPresented && presentation.controller != nil
     if replacing {
@@ -142,50 +156,101 @@ enum ShellPlayback {
         try? await Task.sleep(nanoseconds: 100_000_000)
       }
       guard token == ShellPlayback.generation else { return }
-      let controller = ShellPlayback.makeController(playback, episodes: loader.result ?? [])
+      let controller = ShellPlayback.makeController(playback, source: source, episodes: loader.result ?? [])
       if loader.result == nil {
         loader.onLoad = { [weak controller] list in
           controller?.setEpisodeList(list)
         }
       }
       ShellState.shared.replacingPlayer = false
+      // PiP "restore" while a root sheet (details) is open: close it before presenting the player.
+      presentation.restoreHandler = { ShellPlayback.restorePlayer() }
       presentation.present(controller)
     }
   }
 
-  private static func makeController(_ playback: ResolvedPlayback, episodes: [EpisodeInfo]) -> PlayerController {
+  private static func makeController(_ playback: ResolvedPlayback, source: PlaybackSource?, episodes: [EpisodeInfo]) -> PlayerController {
     let media = playback.media
-    let session = PlaybackSession(
+    let session = ShellPlayback.session(
       media: media,
       episode: playback.episode,
-      episodeTitle: episodeTitle(in: episodes, for: playback.episode),
       servers: playback.servers,
       selectedServer: playback.selectedIndex,
-      subtitleURL: playback.subtitleURL
+      subtitleURL: playback.subtitleURL,
+      episodes: episodes
     )
     let controller = PlayerController(session: session, episodeList: episodes)
-    wire(controller, media: media, extensionKey: playback.extensionKey)
+    wire(controller, media: media, extensionKey: playback.extensionKey, source: source)
     return controller
   }
 
+  /// PlaybackSession with everything the app already knows: the episode title, the saved position
+  /// (loadAnimeProgress), the subtitle headers (the stream headers, like `streamHeaders`), the filler / recap
+  /// flags and the zero episode from the episode list. Unknown flags stay nil so the player asks Jikan.
+  static func session(
+    media: Media,
+    episode: EpisodeRef,
+    servers: [StreamServer],
+    selectedServer: Int,
+    subtitleURL: URL?,
+    episodes: [EpisodeInfo]
+  ) -> PlaybackSession {
+    let info = episodeInfo(in: episodes, for: episode)
+    let server = servers.indices.contains(selectedServer) ? servers[selectedServer] : servers.first
+    let headers = server?.headers ?? [:]
+    let saved = AnimeProgressService.shared.record(mediaKey: media.id, episode: episode.number)?.currentTime
+    let startTime: Double? = saved.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+    return PlaybackSession(
+      media: media,
+      episode: episode,
+      episodeTitle: info?.title,
+      servers: servers,
+      selectedServer: selectedServer,
+      subtitleURL: subtitleURL,
+      subtitleHeaders: subtitleURL != nil && !headers.isEmpty ? headers : nil,
+      startTime: startTime,
+      isFiller: info?.isFiller == true ? true : nil,
+      isRecap: info?.isRecap == true ? true : nil,
+      zeroEpisode: episodes.isEmpty ? nil : episodes.contains { $0.number == 0 }
+    )
+  }
+
   /// Every hook of the player (see PARITY/player.md "Wiring notes for the app step").
-  private static func wire(_ controller: PlayerController, media: Media, extensionKey: String) {
-    // playNext / playLast / episode list / setindex: same extension, no dialog over the player.
+  private static func wire(_ controller: PlayerController, media: Media, extensionKey: String, source: PlaybackSource?) {
+    // playNext / playLast / episode list / setindex: the same search result as the episode playing (a dub or
+    // variant picked by hand is kept), no dialog over the player. When that fails: playAnime → default
+    // extension or the picker, like PlayerPage.svelte.
+    let memory = ShellPlaybackSourceMemory(source: source, extensionKey: extensionKey)
     controller.loadEpisode = { [weak controller] ref in
       let serverTitle = controller?.session.currentServer?.title
       let list = controller?.episodeList ?? []
       let current = MediaStore.shared.media(media.id) ?? media
-      let resolved = try await ShellEpisodeResolver.resolve(media: current, episode: ref, extensionKey: extensionKey, preferredServerTitle: serverTitle)
-      return PlaybackSession(
-        media: current,
-        episode: ref,
-        episodeTitle: ShellPlayback.episodeTitle(in: list, for: ref),
-        servers: resolved.servers,
-        selectedServer: resolved.selectedIndex,
-        subtitleURL: resolved.subtitleURL
-      )
+      do {
+        let resolved = try await ShellEpisodeResolver.resolve(
+          media: current,
+          episode: ref,
+          source: memory.source,
+          extensionKey: memory.extensionKey,
+          preferredServerTitle: serverTitle
+        )
+        memory.source = resolved.source
+        memory.extensionKey = resolved.source.extensionKey
+        let playback = resolved.playback
+        return ShellPlayback.session(
+          media: current,
+          episode: playback.episode,
+          servers: playback.servers,
+          selectedServer: playback.selectedIndex,
+          subtitleURL: playback.subtitleURL,
+          episodes: list
+        )
+      } catch {
+        if PlaybackResolver.isCancellation(error) { throw error }
+        ShellPlayback.playWithExtensionFlow(current, episode: ref)
+        throw PlayerEpisodeHandedOff()
+      }
     }
-    // loadAnimeProgress / setAnimeProgress (mediaId + episode).
+    // loadAnimeProgress (when the session has no startTime) / setAnimeProgress (mediaId + episode).
     controller.resumePosition = { media, episode in
       AnimeProgressService.shared.record(mediaKey: media.id, episode: episode.number)?.currentTime
     }
@@ -211,7 +276,7 @@ enum ShellPlayback {
         ShellState.shared.lastWatched = MediaStore.shared.media(closed.id) ?? closed
       }
     }
-    // Now Playing details (KeyO): details sheet over the player, which pauses it (pagePause).
+    // Now Playing details (KeyO): details sheet over the player, which keeps playing (Svelte parity).
     controller.onOpenDetails = { media in
       ShellNavigation.openDetails(MediaStore.shared.media(media.id) ?? media)
     }
@@ -227,43 +292,72 @@ enum ShellPlayback {
     }
   }
 
-  /// Title of an episode in the episode list (same matching as PlayerController.currentEpisodeIndex).
-  static func episodeTitle(in list: [EpisodeInfo], for ref: EpisodeRef) -> String? {
-    let match = list.first { info in
+  /// Episode of the episode list matching `ref` (same matching as PlayerController.currentEpisodeIndex).
+  static func episodeInfo(in list: [EpisodeInfo], for ref: EpisodeRef) -> EpisodeInfo? {
+    list.first { info in
       if let season = ref.season, let local = ref.localEpisode, let infoSeason = info.season, let infoLocal = info.localEpisode {
         return season == infoSeason && local == infoLocal
       }
       return info.number == ref.number
     }
-    return match?.title
+  }
+
+  /// Title of an episode in the episode list (same matching as PlayerController.currentEpisodeIndex).
+  static func episodeTitle(in list: [EpisodeInfo], for ref: EpisodeRef) -> String? {
+    episodeInfo(in: list, for: ref)?.title
   }
 }
 
-/// Resolves another episode with the extension of the current playback (DefaultLoadingModal steps).
+/// Search result used by one player for its next / previous episodes (updated when a fallback picks another).
+@MainActor
+final class ShellPlaybackSourceMemory {
+  var source: PlaybackSource?
+  var extensionKey: String
+
+  init(source: PlaybackSource?, extensionKey: String) {
+    self.source = source
+    self.extensionKey = extensionKey
+  }
+}
+
+/// Resolves another episode for the player without any dialog (DefaultLoadingModal steps).
 @MainActor
 enum ShellEpisodeResolver {
-  static func resolve(media: Media, episode: EpisodeRef, extensionKey: String, preferredServerTitle: String?) async throws -> ResolvedPlayback {
+  /// From the remembered search result (exact series the user played); without one, the best result of the
+  /// same extension. Throws when the extension is gone or the result does not list that episode, so the
+  /// caller can open the extension flow instead of playing another episode.
+  static func resolve(
+    media: Media,
+    episode: EpisodeRef,
+    source: PlaybackSource?,
+    extensionKey: String,
+    preferredServerTitle: String?
+  ) async throws -> (playback: ResolvedPlayback, source: PlaybackSource) {
     let manager = ExtensionManager.shared
     await manager.awaitPendingLoads()
     try Task.checkCancellation()
-    guard let ext = manager.enabledExtensions().first(where: { $0.key == extensionKey }) else {
-      // The extension was disabled or removed meanwhile: default extension flow.
-      let found = try await PlaybackResolver.resolveWithDefault(media: media, episode: episode, onStatus: { _ in })
-      return pick(media: media, episode: episode, stream: found.stream, extensionKey: found.extensionKey, preferredServerTitle: preferredServerTitle)
+    let key = source?.extensionKey ?? extensionKey
+    guard let ext = manager.enabledExtensions().first(where: { $0.key == key }) else {
+      throw PlaybackResolutionError.defaultExtensionUnavailable
+    }
+    if let source {
+      let found = try await PlaybackResolver.resolveSourceStream(ext, href: source.href, episode: episode, title: source.title, strict: true)
+      return (pick(media: media, found: found, preferredServerTitle: preferredServerTitle), source)
     }
     let title = ExtensionContext.shared.displayTitle(media)
     let results = try await PlaybackResolver.scoredResults(ext, title: title, media: media)
     guard let best = results.first else { throw PlaybackResolutionError.noResults }
-    let stream = try await PlaybackResolver.resolveStream(ext, href: best.href, episode: episode)
-    return pick(media: media, episode: episode, stream: stream, extensionKey: ext.key, preferredServerTitle: preferredServerTitle)
+    let found = try await PlaybackResolver.resolveSourceStream(ext, href: best.href, episode: episode, title: best.title, strict: true)
+    return (pick(media: media, found: found, preferredServerTitle: preferredServerTitle), found.source)
   }
 
   /// Server of the session memory, else the one playing now, else the first one.
-  private static func pick(media: Media, episode: EpisodeRef, stream: ExtensionStream, extensionKey: String, preferredServerTitle: String?) -> ResolvedPlayback {
+  private static func pick(media: Media, found: PlaybackSourceStream, preferredServerTitle: String?) -> ResolvedPlayback {
+    let stream = found.stream
     let index = stream.rememberedIndex(StreamSessionMemory.preferredServerTitle)
       ?? stream.rememberedIndex(preferredServerTitle)
       ?? 0
-    return PlaybackResolver.playback(media: media, episode: episode, stream: stream, selectedIndex: index, extensionKey: extensionKey)
+    return PlaybackResolver.playback(media: media, episode: found.episode, stream: stream, selectedIndex: index, extensionKey: found.source.extensionKey)
   }
 }
 

@@ -69,13 +69,23 @@ final class BrowseScheduleModel {
     }
     let calendar = Calendar.current
     var grouped: [Date: [AiringEpisode]] = [:]
+    // Suspended dubs have no real date (their predicted node is years ahead): listed last, without a day.
+    var suspended: [AiringEpisode] = []
     for item in visible {
+      if item.delayedIndefinitely {
+        suspended.append(item)
+        continue
+      }
       grouped[calendar.startOfDay(for: item.airingAt), default: []].append(item)
     }
-    return grouped.keys.sorted().map { date in
+    var result = grouped.keys.sorted().map { date in
       let items = (grouped[date] ?? []).sorted { $0.airingAt < $1.airingAt }
       return Day(date: date, title: BrowseText.dayTitle(date), items: items)
     }
+    if !suspended.isEmpty {
+      result.append(Day(date: Date.distantFuture, title: "Suspended", items: suspended))
+    }
+    return result
   }
 
   func reset() {
@@ -185,7 +195,9 @@ struct ScheduleView: View {
 
   var body: some View {
     ScrollView {
-      LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
+      // Plain stack: the only lazy container is the grid of BrowseScheduleContent (with its pinned day
+      // headers), so the content height is not mis-estimated.
+      VStack(alignment: .leading, spacing: 16) {
         BrowseScheduleHeader(model: model, showFilters: $showFilters)
         BrowseScheduleContent(model: model, style: style)
       }
@@ -214,6 +226,7 @@ struct ScheduleView: View {
 struct BrowseScheduleHeader: View {
   @Bindable var model: BrowseScheduleModel
   @Binding var showFilters: Bool
+  @AppStorage(BrowseCardMode.storageKey) private var cardMode = BrowseCardMode.small.rawValue
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -256,6 +269,8 @@ struct BrowseScheduleHeader: View {
       }
       .disabled(!active)
       Spacer(minLength: 0)
+      // Small / Large cards (SearchBar.svelte, shown on the Schedule page too).
+      BrowseCardModeButtons(cardMode: $cardMode)
     }
   }
 }
@@ -279,27 +294,34 @@ struct BrowseScheduleContent: View {
       placeholder
         .padding(.horizontal, 16)
     } else {
-      ForEach(days) { day in
-        Section {
-          LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
+      // A single lazy grid: one section per day with its pinned header, the next-page loader as the footer
+      // of a last empty section (created only when scrolled near, so pages are not loaded eagerly).
+      LazyVGrid(columns: columns, alignment: .leading, spacing: 18, pinnedViews: [.sectionHeaders]) {
+        ForEach(days) { day in
+          Section {
             ForEach(day.items) { item in
               BrowseMediaCard(media: item.media, style: style, airing: item)
             }
+          } header: {
+            BrowseScheduleDayHeader(title: day.title, count: day.items.count)
+              .padding(.horizontal, -16)
           }
-          .padding(.horizontal, 16)
-        } header: {
-          BrowseScheduleDayHeader(title: day.title, count: day.items.count)
+        }
+        if model.hasNextPage {
+          Section {
+            EmptyView()
+          } footer: {
+            ProgressView()
+              .tint(.white)
+              .frame(maxWidth: .infinity, minHeight: 80)
+              .id(model.page)
+              .onAppear {
+                Task { await model.loadMore() }
+              }
+          }
         }
       }
-      if model.hasNextPage {
-        ProgressView()
-          .tint(.white)
-          .frame(maxWidth: .infinity, minHeight: 80)
-          .id(model.page)
-          .onAppear {
-            Task { await model.loadMore() }
-          }
-      }
+      .padding(.horizontal, 16)
     }
   }
 

@@ -4,11 +4,24 @@ import AuthenticationServices
 import UIKit
 
 // Port of common/components/Profiles.svelte + settings.js handleToken / handleMalToken / swapProfiles.
-// Logins go through ASWebAuthenticationSession: AniList implicit grant (client 35971, redirect
-// tsumi://alauth#access_token=...) and MyAnimeList OAuth2 PKCE with a plain challenge
-// (redirect tsumi://malauth?code=...&state=...).
+// Logins run in an in-app web view (like the Electron 'open-auth' window): AniList implicit grant (client
+// 35971, whose registered redirect is the AniList pin page https://anilist.co/api/v2/oauth/pin#access_token=...)
+// and MyAnimeList OAuth2 PKCE with a plain challenge (redirect with ?code=...&state=...). The web view
+// (UI/Shell/ProfilesView.swift) watches every URL it loads and hands the first one carrying the result to
+// `finishWebLogin(_:request:)`. A pasted token / pin URL is the fallback (`login(pasted:)`).
 
-/// ASWebAuthenticationSession wrapper.
+/// A login page shown in the in-app web view sheet.
+struct TsumiWebLoginRequest: Identifiable {
+  let id: UUID
+  let url: URL
+  /// "AniList" / "MyAnimeList".
+  let title: String
+  /// MyAnimeList `state` the redirect must carry.
+  let malState: String?
+}
+
+/// ASWebAuthenticationSession wrapper (kept for `authenticateOverride` style integrations; the default
+/// flow is the web view sheet because the AniList client does not redirect to tsumi://).
 @MainActor
 final class TsumiWebAuthenticator: NSObject, ASWebAuthenticationPresentationContextProviding {
   private var session: ASWebAuthenticationSession?
@@ -23,7 +36,8 @@ final class TsumiWebAuthenticator: NSObject, ASWebAuthenticationPresentationCont
         }
       }
       session.presentationContextProvider = self
-      session.prefersEphemeralWebBrowserSession = true
+      // Keep the browser cookies so the next login is remembered (Profiles.svelte opens the system browser).
+      session.prefersEphemeralWebBrowserSession = false
       self.session = session
       if !session.start() {
         self.session = nil
@@ -60,14 +74,17 @@ final class ProfilesService {
   private(set) var syncIds: [Int] = []
   private(set) var isLoggingIn = false
   private(set) var lastError: String?
+  /// Login page the profiles UI shows in its web view sheet (nil when no login runs).
+  private(set) var webLogin: TsumiWebLoginRequest?
 
-  /// Optional replacement of the ASWebAuthenticationSession flow, e.g. SwiftUI's
+  /// Optional replacement of the web view login, e.g. SwiftUI's
   /// `webAuthenticationSession.authenticate(using:callbackURLScheme:preferredBrowserSession:)`.
   @ObservationIgnored var authenticateOverride: ((URL, String) async throws -> URL)?
 
   @ObservationIgnored private var authenticator: TsumiWebAuthenticator?
   @ObservationIgnored private var pendingMALStates: [String: String] = [:]
   @ObservationIgnored private var observer: NSObjectProtocol?
+  @ObservationIgnored private var webLoginContinuation: CheckedContinuation<URL?, Never>?
 
   private init() {
     reload()
@@ -102,7 +119,7 @@ final class ProfilesService {
   @discardableResult
   func loginAniList() async -> Bool {
     guard let url = URL(string: "https://anilist.co/api/v2/oauth/authorize?client_id=\(Self.aniListClientID)&response_type=token") else { return false }
-    return await runLogin(url)
+    return await runLogin(url, title: "AniList", malState: nil)
   }
 
   /// confirmMAL: PKCE with code_challenge_method=plain (challenge == verifier), 10 char state.
@@ -120,7 +137,7 @@ final class ProfilesService {
       URLQueryItem(name: "code_challenge_method", value: "plain")
     ]
     guard let url = components?.url else { return false }
-    return await runLogin(url)
+    return await runLogin(url, title: "MyAnimeList", malState: state)
   }
 
   /// "Authenticate" button of a MyAnimeList profile whose refresh failed.
@@ -129,29 +146,109 @@ final class ProfilesService {
     await loginMAL()
   }
 
-  private func runLogin(_ url: URL) async -> Bool {
-    isLoggingIn = true
+  private func runLogin(_ url: URL, title: String, malState: String?) async -> Bool {
     lastError = nil
-    defer { isLoggingIn = false }
-    do {
-      let callback: URL
-      if let override = authenticateOverride {
-        callback = try await override(url, Self.callbackScheme)
-      } else {
-        let session = authenticator ?? TsumiWebAuthenticator()
-        authenticator = session
-        callback = try await session.authenticate(url: url, callbackScheme: Self.callbackScheme)
+    if let override = authenticateOverride {
+      isLoggingIn = true
+      defer { isLoggingIn = false }
+      do {
+        let callback = try await override(url, Self.callbackScheme)
+        return await handleCallback(callback)
+      } catch {
+        if let authError = error as? ASWebAuthenticationSessionError, authError.code == .canceledLogin {
+          ServiceMessages.shared.post(.error, "Login Canceled", "The authorization window to log into your account was closed. If this was a mistake, please try logging in again.")
+        } else {
+          lastError = error.localizedDescription
+          ServiceMessages.shared.post(.error, "Login Failed", error.localizedDescription)
+        }
+        return false
       }
-      return await handleCallback(callback)
-    } catch {
-      if let authError = error as? ASWebAuthenticationSessionError, authError.code == .canceledLogin {
-        ServiceMessages.shared.post(.error, "Login Canceled", "The authorization window to log into your account was closed. If this was a mistake, please try logging in again.")
-      } else {
-        lastError = error.localizedDescription
-        ServiceMessages.shared.post(.error, "Login Failed", error.localizedDescription)
-      }
-      return false
     }
+    // Closing the sheet (Cancel / swipe down) ends the login without a toast.
+    guard let callback = await runWebLogin(url, title: title, malState: malState) else { return false }
+    isLoggingIn = true
+    defer { isLoggingIn = false }
+    return await handleCallback(callback)
+  }
+
+  // MARK: - Web view login
+
+  /// Shows the login page in the web view sheet and waits for its result (nil when it was closed).
+  private func runWebLogin(_ url: URL, title: String, malState: String?) async -> URL? {
+    finishWebLogin(nil)
+    return await withCheckedContinuation { (continuation: CheckedContinuation<URL?, Never>) in
+      webLoginContinuation = continuation
+      webLogin = TsumiWebLoginRequest(id: UUID(), url: url, title: title, malState: malState)
+    }
+  }
+
+  /// Ends the running web login: `callback` is the URL carrying the token / code, nil for a cancel.
+  /// With `request`, only that login is ended (a closing sheet must not end a newer one).
+  func finishWebLogin(_ callback: URL?, request: UUID? = nil) {
+    if let request, request != webLogin?.id { return }
+    webLogin = nil
+    let continuation = webLoginContinuation
+    webLoginContinuation = nil
+    continuation?.resume(returning: callback)
+  }
+
+  /// The login result carried by a URL the login web view loads (or tries to load), if any:
+  /// - AniList `access_token=` (fragment of the pin page, or a tsumi://alauth callback);
+  /// - MyAnimeList `code` + the `state` of this login in the query (any redirect URL);
+  /// - a tsumi:// / shiru:// callback (parsed by `handleCallback`).
+  nonisolated static func loginCallbackURL(_ url: URL, malState: String?) -> URL? {
+    let text = url.absoluteString
+    if let range = text.range(of: "access_token=") {
+      let rest = text[range.upperBound...]
+      if let first = rest.first, first != "&", first != "#" { return url }
+    }
+    if let malState, let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+      let items = components.queryItems ?? []
+      let code = items.first(where: { $0.name == "code" })?.value ?? ""
+      let state = items.first(where: { $0.name == "state" })?.value
+      if !code.isEmpty, state == malState { return url }
+    }
+    let scheme = url.scheme?.lowercased() ?? ""
+    if scheme == "tsumi" || scheme == "shiru" { return url }
+    return nil
+  }
+
+  // MARK: - Pasted token (settings.js paste handler)
+
+  /// AniList token of a pasted pin page URL / `access_token=...` string, or a bare token.
+  nonisolated static func pastedAniListToken(_ text: String) -> String? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let range = trimmed.range(of: "access_token=") {
+      var token = String(trimmed[range.upperBound...])
+      if let end = token.firstIndex(where: { $0 == "&" || $0.isWhitespace }) { token = String(token[..<end]) }
+      while token.hasSuffix("/") { token.removeLast() }
+      return token.isEmpty ? nil : token
+    }
+    // AniList access tokens are long JWTs (no spaces, no URL parts).
+    if trimmed.count >= 40, !trimmed.contains(where: { $0.isWhitespace }), !trimmed.contains("://"),
+       !trimmed.contains("code="), !trimmed.contains("/") {
+      return trimmed
+    }
+    return nil
+  }
+
+  /// Logs in with pasted text: an AniList token / pin URL, or a MyAnimeList `code=...&state=...` redirect.
+  @discardableResult
+  func login(pasted text: String) async -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return false }
+    lastError = nil
+    isLoggingIn = true
+    defer { isLoggingIn = false }
+    if let token = Self.pastedAniListToken(trimmed) {
+      return await handleAniListToken(token)
+    }
+    if trimmed.contains("code="), trimmed.contains("state=") {
+      let url = URL(string: trimmed) ?? URL(string: "tsumi://malauth?" + trimmed)
+      if let url { return await handleCallback(url) }
+    }
+    ServiceMessages.shared.post(.error, "Failed to sign in", "The pasted text is not an AniList token or a login link.")
+    return false
   }
 
   /// Handles tsumi://alauth / tsumi://malauth (and shiru://) callbacks, also usable from `onOpenURL`.

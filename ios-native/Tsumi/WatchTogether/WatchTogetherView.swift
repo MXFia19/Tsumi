@@ -139,6 +139,9 @@ struct W2GStartView: View {
 struct W2GLobbyView: View {
   let client: WatchTogetherClient
   @State private var draft = ""
+  /// Shift+Return was pressed on a hardware keyboard: the newline it types is kept (Lobby.svelte
+  /// checkInput: Enter sends, Shift+Enter adds a line).
+  @State private var newlineAllowedUntil = Date.distantPast
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
   var body: some View {
@@ -172,13 +175,16 @@ struct W2GLobbyView: View {
     !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
+  /// Lobby.svelte textarea: grows with its lines, Return sends, Shift+Return (hardware keyboard) adds a
+  /// line; received multi-line messages keep their line breaks. Pasted text keeps its line breaks too.
   private var inputBar: some View {
-    HStack(spacing: 12) {
+    HStack(alignment: .bottom, spacing: 12) {
       Button {
         client.leave()
       } label: {
         Image(systemName: "door.left.hand.open")
           .font(.title2)
+          .frame(minHeight: 40)
       }
       .tint(.red)
       .foregroundStyle(.red)
@@ -189,39 +195,76 @@ struct W2GLobbyView: View {
       } label: {
         Image(systemName: "person.badge.plus")
           .font(.title2)
+          .frame(minHeight: 40)
       }
       .foregroundStyle(.green)
       .accessibilityLabel("Invite")
 
-      TextField("Message", text: $draft)
+      TextField("Message", text: $draft, axis: .vertical)
         .textFieldStyle(.plain)
+        .lineLimit(1...6)
         .submitLabel(.send)
-        .onSubmit { send() }
+        .onSubmit { send(draft) }
+        .onKeyPress(phases: .down) { press in
+          guard press.key == .return else { return .ignored }
+          if press.modifiers.contains(.shift) {
+            // Let the field insert the line break; the draft observer keeps it.
+            newlineAllowedUntil = Date().addingTimeInterval(0.5)
+            return .ignored
+          }
+          send(draft)
+          return .handled
+        }
         .padding(.vertical, 10)
         .padding(.horizontal, 14)
-        .background(Color(.tertiarySystemFill), in: Capsule())
+        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
 
       Button {
-        send()
+        send(draft)
       } label: {
         Image(systemName: "paperplane.fill")
           .font(.title3)
+          .frame(minHeight: 40)
       }
       .disabled(!canSend)
       .accessibilityLabel("Send")
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
-    .onChange(of: draft) { _, newValue in
+    .onChange(of: draft) { oldValue, newValue in
+      // A vertical text field types "\n" for Return instead of submitting: send the text as it was.
+      if Self.typedNewline(old: oldValue, new: newValue) {
+        if Date() < newlineAllowedUntil {
+          newlineAllowedUntil = .distantPast
+        } else if oldValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          draft = oldValue
+          return
+        } else {
+          send(oldValue)
+          return
+        }
+      }
       // <textarea maxlength='2048'>
       if newValue.count > 2048 { draft = String(newValue.prefix(2048)) }
     }
   }
 
-  private func send() {
-    guard canSend else { return }
-    client.sendMessage(draft)
+  /// sendMessage: trimmed text (the client trims and caps it too), then clears the field.
+  private func send(_ text: String) {
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    client.sendMessage(text)
     draft = ""
+  }
+
+  /// Exactly one line break was typed into `old` (Return), as opposed to a paste or other edit.
+  static func typedNewline(old: String, new: String) -> Bool {
+    let before = Array(old)
+    let after = Array(new)
+    guard after.count == before.count + 1 else { return false }
+    var index = 0
+    while index < before.count && before[index] == after[index] { index += 1 }
+    guard after[index] == "\n" || after[index] == "\r\n" || after[index] == "\r" else { return false }
+    return Array(after[(index + 1)...]) == Array(before[index...])
   }
 }
 

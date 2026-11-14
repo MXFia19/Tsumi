@@ -1,11 +1,12 @@
 import Observation
 import SwiftUI
 
-/// Optional host for the player: keeps the current PlayerController alive, presents PlayerView full screen,
-/// dismisses it while Picture in Picture runs (the desktop miniplayer) and presents it again on PiP restore.
+/// Keeps the current PlayerController alive and tells the shell how to show it: full screen (`isPresented`),
+/// minimized to the in-app miniplayer (Miniplayer.svelte) or to Picture in Picture. The shell presents
+/// `PlayerView` while `isPresented` is true (ShellPlayerHost) and the miniplayer while `miniPlayerController`
+/// is set (ShellMiniPlayerOverlay).
 ///
-/// Usage: attach `.playerPresentationHost()` once near the root view, then
-/// `PlayerPresentation.shared.present(controller)` after setting the controller hooks.
+/// Usage: set the controller hooks, then `PlayerPresentation.shared.present(controller)`.
 @MainActor
 @Observable
 final class PlayerPresentation {
@@ -13,6 +14,19 @@ final class PlayerPresentation {
 
   private(set) var controller: PlayerController?
   var isPresented = false
+  /// Presents the player UI after "restore" in the Picture in Picture window. The shell sets it to close its
+  /// sheets first; without it the player is presented at once.
+  @ObservationIgnored var restoreHandler: (() -> Void)?
+
+  /// The player UI is dismissed while playback continues (miniplayer or Picture in Picture).
+  var isMinimized: Bool { controller != nil && !isPresented }
+
+  /// Controller to show in the in-app miniplayer: minimized and not in Picture in Picture (the PiP window
+  /// already shows the video; closing it brings the video back to the miniplayer).
+  var miniPlayerController: PlayerController? {
+    guard let controller, !isPresented, !controller.isPictureInPictureActive else { return nil }
+    return controller
+  }
 
   /// Shows a player, closing the previous one (only one player at a time, like the Svelte app).
   func present(_ newController: PlayerController) {
@@ -35,7 +49,12 @@ final class PlayerPresentation {
     let userRestore = newController.onRestoreFromPictureInPicture
     newController.onRestoreFromPictureInPicture = { [weak self] in
       userRestore?()
-      self?.isPresented = true
+      guard let self else { return }
+      if let handler = self.restoreHandler {
+        handler()
+      } else {
+        self.isPresented = true
+      }
     }
     controller = newController
     isPresented = true
@@ -46,31 +65,5 @@ final class PlayerPresentation {
     controller?.close()
     controller = nil
     isPresented = false
-  }
-}
-
-@MainActor
-struct PlayerPresentationHost: ViewModifier {
-  @ViewBuilder
-  func body(content: Content) -> some View {
-    let presentation = PlayerPresentation.shared
-    content.fullScreenCover(
-      isPresented: Binding(
-        get: { presentation.isPresented },
-        set: { presentation.isPresented = $0 }
-      )
-    ) {
-      if let controller = presentation.controller {
-        PlayerView(controller: controller)
-      }
-    }
-  }
-}
-
-extension View {
-  /// Presents `PlayerPresentation.shared` full screen. Attach once, near the root view.
-  @MainActor
-  func playerPresentationHost() -> some View {
-    modifier(PlayerPresentationHost())
   }
 }

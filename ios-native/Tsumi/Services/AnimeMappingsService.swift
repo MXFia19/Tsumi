@@ -190,6 +190,10 @@ final class AnimeMappingsService: @unchecked Sendable {
   private let episodesLimiter = ServiceRateLimiter(capacity: 60, interval: 60, minSpacing: 0.333)
   private let inflight = ServiceInflight()
   private let metadata = ServiceLocked<[Int: [String: AniZipEpisode]]>([:])
+  /// Jikan episode pages kept in memory for the session ("malId.page"), so an episode list reads each page once.
+  private let jikanMemory = ServiceLocked<[String: JikanEpisodePage]>([:])
+  /// Jikan pages that failed recently ("malId.page" -> time): not requested again for 10 minutes.
+  private let jikanFailures = ServiceLocked<[String: Date]>([:])
 
   private init() {}
 
@@ -451,12 +455,37 @@ final class AnimeMappingsService: @unchecked Sendable {
     }
   }
 
+  /// One Jikan page through the session memory: a page is decoded / requested once, and a failed page is
+  /// not requested again for 10 minutes.
+  private func sessionJikanPage(malId: Int, page: Int) async -> JikanEpisodePage? {
+    let key = "\(malId).\(page)"
+    if let cached = jikanMemory.get()[key] { return cached }
+    if let failed = jikanFailures.get()[key], Date().timeIntervalSince(failed) < 600 { return nil }
+    guard let result = await jikanPage(malId: malId, page: page) else {
+      jikanFailures.update { $0[key] = Date() }
+      return nil
+    }
+    jikanMemory.update { $0[key] = result }
+    return result
+  }
+
+  /// Episodes of one Jikan page (100 episodes per page), nil when the page could not be loaded.
+  func jikanEpisodePage(malId: Int, page: Int) async -> [JikanEpisode]? {
+    await sessionJikanPage(malId: malId, page: max(page, 1))?.episodes
+  }
+
+  /// Jikan page holding an episode (getSingleEpisode: episode 0 is looked up on page 1).
+  static func jikanPageNumber(episode: Int) -> Int {
+    let number = episode == 0 ? 1 : max(episode, 1)
+    return max((number + 99) / 100, 1)
+  }
+
   /// getEpisodeData: episodes of the first page, or of the last page when there are several (as the Svelte app).
   func jikanEpisodes(malId: Int?) async -> [JikanEpisode] {
     guard let malId else { return [] }
-    guard let first = await jikanPage(malId: malId, page: 1) else { return [] }
+    guard let first = await sessionJikanPage(malId: malId, page: 1) else { return [] }
     if first.hasNextPage, let last = first.lastVisiblePage, last > 1 {
-      return await jikanPage(malId: malId, page: last)?.episodes ?? []
+      return await sessionJikanPage(malId: malId, page: last)?.episodes ?? []
     }
     return first.episodes
   }
@@ -464,9 +493,7 @@ final class AnimeMappingsService: @unchecked Sendable {
   /// getSingleEpisode: one episode (title, aired date, filler / recap flags).
   func jikanEpisode(malId: Int?, episode: Int) async -> JikanEpisode? {
     guard let malId else { return nil }
-    let number = episode == 0 ? 1 : max(episode, 1)
-    let page = Int((Double(number) / 100).rounded(.up))
-    return await jikanPage(malId: malId, page: max(page, 1))?.episodes.first { $0.malId == episode }
+    return await sessionJikanPage(malId: malId, page: Self.jikanPageNumber(episode: episode))?.episodes.first { $0.malId == episode }
   }
 
   /// getMedia: Jikan anime root, used for the YouTube trailer fallback (TrailerModal / PreviewCard).

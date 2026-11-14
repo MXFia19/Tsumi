@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import JavaScriptCore
 
@@ -225,11 +226,55 @@ enum SoraBridge {
       }
     }
 
+    // crypto.getRandomValues / randomUUID: `count` random bytes (system CSPRNG), base64.
+    let random: @convention(block) (JSValue) -> String = { count in
+      SoraBridge.randomBytes(count: Int(count.toInt32()))
+    }
+
+    // crypto.subtle.digest: (SHA1 | SHA256 | SHA384 | SHA512, base64 data) -> base64 digest, "" if unknown.
+    let digest: @convention(block) (String, String) -> String = { algorithm, payload in
+      SoraBridge.digest(algorithm: algorithm, base64: payload)
+    }
+
     context.setObject(log, forKeyedSubscript: "__tsumiLog" as NSString)
     context.setObject(schedule, forKeyedSubscript: "__tsumiSchedule" as NSString)
     context.setObject(fetch, forKeyedSubscript: "__tsumiFetch" as NSString)
     context.setObject(bytes, forKeyedSubscript: "__tsumiBytes" as NSString)
     context.setObject(done, forKeyedSubscript: "__tsumiDone" as NSString)
+    context.setObject(random, forKeyedSubscript: "__tsumiRandom" as NSString)
+    context.setObject(digest, forKeyedSubscript: "__tsumiDigest" as NSString)
+  }
+
+  /// Random bytes for the crypto shim (SystemRandomNumberGenerator is cryptographically secure on
+  /// Apple platforms). Capped at 65536 bytes like getRandomValues.
+  static func randomBytes(count: Int) -> String {
+    let length = max(0, min(count, 65_536))
+    var generator = SystemRandomNumberGenerator()
+    var bytes = [UInt8](repeating: 0, count: length)
+    for index in bytes.indices {
+      bytes[index] = UInt8.random(in: UInt8.min...UInt8.max, using: &generator)
+    }
+    return Data(bytes).base64EncodedString()
+  }
+
+  /// SubtleCrypto.digest with CryptoKit. `algorithm` is upper-cased without dashes by the prelude.
+  static func digest(algorithm: String, base64: String) -> String {
+    let data = Data(base64Encoded: base64) ?? Data()
+    let name = algorithm.uppercased().replacingOccurrences(of: "-", with: "")
+    let output: [UInt8]
+    switch name {
+    case "SHA1":
+      output = Array(Insecure.SHA1.hash(data: data))
+    case "SHA256":
+      output = Array(SHA256.hash(data: data))
+    case "SHA384":
+      output = Array(SHA384.hash(data: data))
+    case "SHA512":
+      output = Array(SHA512.hash(data: data))
+    default:
+      return ""
+    }
+    return Data(output).base64EncodedString()
   }
 }
 

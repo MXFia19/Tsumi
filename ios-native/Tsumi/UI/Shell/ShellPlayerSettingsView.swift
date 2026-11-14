@@ -118,7 +118,9 @@ struct ShellPlaybackSettingsSection: View {
   }
 }
 
-/// iOS addition of the player module (PlayerPreferences.autoPictureInPicture).
+/// iOS addition of the player module (PlayerPreferences.autoPictureInPicture). Off by default, so leaving the
+/// app follows "Pause On Lost Focus" like the Svelte app; when it is on, the video keeps playing in PiP (the
+/// Svelte handleVisibility does not pause while in Picture in Picture).
 @MainActor
 struct ShellPictureInPictureSection: View {
   @State private var autoPictureInPicture = PlayerPreferences.autoPictureInPicture
@@ -127,7 +129,7 @@ struct ShellPictureInPictureSection: View {
     Section {
       ShellSettingToggle(
         title: "Auto Picture in Picture",
-        description: "Keeps the video playing in a floating window when you leave the app during playback.",
+        description: "Keeps the video playing in a floating window when you leave the app during playback. Pause On Lost Focus does not apply while the floating window is shown.",
         isOn: $autoPictureInPicture
       )
     } header: {

@@ -14,6 +14,12 @@ struct BrowseEpisodeCardData: Identifiable, Hashable {
   var thumbnail: URL?
   /// trace.moe similarity (0-1).
   var similarity: Double?
+  /// Episode summary (EpisodePreviewCard: episodeData.summary / overview).
+  var summary: String? = nil
+  /// Last episode of a batch release ("Episodes 1 ~ 3").
+  var lastEpisode: Int? = nil
+  /// Release name of the source (parseObject.anime_title), used for the "Season N" label of batches.
+  var releaseTitle: String? = nil
 
   init(feed: EpisodeFeedItem) {
     id = feed.id
@@ -24,6 +30,8 @@ struct BrowseEpisodeCardData: Identifiable, Hashable {
     episodeTitle = feed.episodeTitle
     thumbnail = feed.thumbnail
     similarity = nil
+    summary = feed.summary
+    lastEpisode = feed.lastEpisode
   }
 
   init(trace: TraceMoeMatch) {
@@ -51,10 +59,41 @@ struct BrowseEpisodeCardState {
 
   var entry: ListEntry? { media.listEntry }
 
-  /// lastEpisode: the episode, or 1 for single episode media.
+  /// lastEpisode: the last episode of a batch, the episode, or 1 for single episode media.
   var lastEpisode: Int? {
+    if let last = data.lastEpisode, let first = data.episode, last > first { return last }
     if let episode = data.episode { return episode }
     return media.episodes == 1 ? 1 : nil
+  }
+
+  /// Episode played by a tap (the first episode of a batch).
+  var playEpisode: Int? {
+    if let episode = data.episode { return episode }
+    return media.episodes == 1 ? 1 : nil
+  }
+
+  /// "Episodes 1 ~ 3" range of a batch, nil for a single episode.
+  var episodeRange: (first: Int, last: Int)? {
+    guard let first = data.episode, let last = data.lastEpisode, last > first else { return nil }
+    return (first, last)
+  }
+
+  /// Duration of the episode (times the number of episodes of a batch).
+  var durationMinutes: Int? {
+    guard let duration = media.duration else { return nil }
+    if let range = episodeRange { return duration * (range.last - range.first + 1) }
+    return duration
+  }
+
+  /// Hentai titles without episode image nor banner show their cover rotated (cover-rotated).
+  var rotatedCover: Bool {
+    data.thumbnail == nil && media.images.banner == nil && media.genres.contains("Hentai")
+  }
+
+  /// Preview text: the episode summary, else the media description.
+  var summaryText: String {
+    let summary = BrowseText.plain(data.summary)
+    return summary.isEmpty ? BrowseText.plain(media.description) : summary
   }
 
   var watched: Bool { entry?.status == .completed }
@@ -84,19 +123,25 @@ struct BrowseEpisodeCardState {
     return Services.shared.progress.episodeProgress(mediaKey: media.id, episode: episode, completed: completed) ?? 0
   }
 
-  /// "Episode 5" / "Movie".
+  /// EpisodeCard.svelte label: "Episodes 1 ~ 3", "Episode 5", "Movie", "Season 2" or "Batch".
   var episodeLabel: String {
-    if let episode = data.episode {
-      if media.format == .movie && media.episodes == 1 && episode <= 1 { return "Movie" }
-      return "Episode \(episode)"
-    }
+    if let range = episodeRange { return "Episodes \(range.first) ~ \(range.last)" }
+    if let episode = data.episode { return "Episode \(episode)" }
     if media.format == .movie { return "Movie" }
+    if let season = Self.seasonNumber(data.releaseTitle) { return "Season \(season)" }
     return data.similarity == nil ? "Batch" : ""
   }
 
-  /// AudioLabel banner/episode mode: Dub / Partial Dub / Sub.
+  /// `anime_title.match(/S(\d{2})/)` of EpisodeCard.svelte.
+  static func seasonNumber(_ title: String?) -> Int? {
+    guard let title, let range = title.range(of: "S[0-9]{2}", options: .regularExpression) else { return nil }
+    return Int(String(title[range].dropFirst()))
+  }
+
+  /// AudioLabel banner/episode mode: Dub / Partial Dub / Sub, only with the Card Audio setting.
   var audioLabel: String? {
     if data.similarity != nil { return nil }
+    if !ServiceSettingsExtras.cardAudio { return nil }
     if data.dub {
       return Services.shared.dubs.isIncomplete(malId: media.malId) ? "Partial Dub" : "Dub"
     }
@@ -112,7 +157,7 @@ struct BrowseEpisodeCardState {
 
   /// The "Continue Anyway?" prompt is shown when earlier episodes were not watched.
   var needsPrompt: Bool {
-    guard data.similarity == nil, let episode = lastEpisode else { return false }
+    guard data.similarity == nil, let episode = playEpisode else { return false }
     if episode - 1 < 1 { return false }
     if entry?.status == .completed { return false }
     return (entry?.progress ?? -1) < episode - 1
@@ -141,6 +186,12 @@ struct BrowseEpisodeCard: View {
         .frame(maxWidth: width == nil ? .infinity : nil)
     }
     .buttonStyle(BrowsePressableStyle())
+    // Hardware keyboard: Return on the focused card plays it (or opens the details).
+    .focusable()
+    .onKeyPress(.return) {
+      tap(state)
+      return .handled
+    }
     .contextMenu {
       menuItems(state)
     } preview: {
@@ -159,7 +210,7 @@ struct BrowseEpisodeCard: View {
 
   @ViewBuilder
   private func menuItems(_ state: BrowseEpisodeCardState) -> some View {
-    if state.lastEpisode != nil {
+    if state.playEpisode != nil {
       let playTitle: String = state.episodeLabel.isEmpty ? "Play" : "Play " + state.episodeLabel
       Button {
         play(state, force: false)
@@ -182,7 +233,7 @@ struct BrowseEpisodeCard: View {
   private func tap(_ state: BrowseEpisodeCardState) {
     if state.needsPrompt {
       showPrompt = true
-    } else if state.lastEpisode != nil {
+    } else if state.playEpisode != nil {
       play(state, force: false)
     } else {
       BrowseActions.open(state.media)
@@ -190,7 +241,7 @@ struct BrowseEpisodeCard: View {
   }
 
   private func play(_ state: BrowseEpisodeCardState, force: Bool) {
-    guard let episode = state.lastEpisode else {
+    guard let episode = state.playEpisode else {
       BrowseActions.open(state.media)
       return
     }
@@ -264,7 +315,7 @@ struct BrowseEpisodeThumbnail: View {
   var height: CGFloat
 
   var body: some View {
-    BrowseImage(state.thumbnailURLs, placeholder: BrowseMediaInfo.coverColor(state.media))
+    image
       .frame(height: height)
       .frame(maxWidth: .infinity)
       .overlay {
@@ -277,7 +328,7 @@ struct BrowseEpisodeThumbnail: View {
           .padding(10)
       }
       .overlay(alignment: .bottomTrailing) {
-        if let duration = state.media.duration {
+        if let duration = state.durationMinutes {
           Text("\(duration)m")
             .font(.subheadline.weight(.medium))
             .foregroundStyle(.white)
@@ -288,6 +339,15 @@ struct BrowseEpisodeThumbnail: View {
         progressBar
       }
       .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+  }
+
+  @ViewBuilder
+  private var image: some View {
+    if state.rotatedCover {
+      BrowseRotatedCover(urls: BrowseMediaInfo.coverURLs(state.media), placeholder: BrowseMediaInfo.coverColor(state.media))
+    } else {
+      BrowseImage(state.thumbnailURLs, placeholder: BrowseMediaInfo.coverColor(state.media))
+    }
   }
 
   @ViewBuilder
@@ -327,7 +387,7 @@ struct BrowseEpisodePreviewCard: View {
   }
 
   private var summary: String {
-    BrowseText.plain(state.media.description)
+    state.summaryText
   }
 
   private var header: some View {

@@ -236,6 +236,40 @@ enum ShellDeepLinks {
   }
 }
 
+/// settings.js paste handler: a token / MyAnimeList code signs in (`ProfilesService.login(pasted:)`), an
+/// anilist.co / myanimelist.net anime link or a tsumi:// link goes through `Services.handle` like a deep link.
+@MainActor
+enum ShellPasteHandler {
+  /// Returns true when the pasted text signed in.
+  @discardableResult
+  static func handle(_ text: String) async -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return false }
+    if ProfilesService.pastedAniListToken(trimmed) != nil || (trimmed.contains("code=") && trimmed.contains("state=")) {
+      return await ProfilesService.shared.login(pasted: trimmed)
+    }
+    guard let url = URL.lenient(trimmed) else {
+      unrecognized()
+      return false
+    }
+    if WatchTogetherClient.isLobbyLink(url) {
+      ShellDeepLinks.handle(url)
+      return false
+    }
+    guard let link = await Services.shared.handle(url: url) else {
+      unrecognized()
+      return false
+    }
+    if case .loginCallback(success: let success) = link { return success }
+    await ShellDeepLinks.route(link)
+    return false
+  }
+
+  private static func unrecognized() {
+    ServiceMessages.shared.post(.warning, "Nothing to Open", "The pasted text is not a login token or a link the app can open.")
+  }
+}
+
 /// Waits for UIKit presentations to settle before presenting something new from SwiftUI state
 /// (a sheet cannot be presented while another one is still being dismissed).
 @MainActor

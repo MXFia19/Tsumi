@@ -5,17 +5,20 @@ import CoreImage
 import Foundation
 import Observation
 import UIKit
+import UniformTypeIdentifiers
 
 /// Native video player. Port of the playback logic of common/routes/player/PlayerPage.svelte
 /// (stream loading, servers, progress, autocomplete, chapters/skip, next episode, subtitles, Watch Together)
 /// on top of AVPlayer. Create it on the main actor, set the hooks, then present `PlayerView(controller:)`
-/// (or use `PlayerPresentation.shared.present(_:)`). Playback starts when the view appears.
+/// (or use `PlayerPresentation.shared.present(_:)`). Playback starts when the view appears. `minimize()` leaves
+/// the full screen UI without stopping playback (in-app miniplayer, `PlayerMiniPlayer`).
 @MainActor
 @Observable
 final class PlayerController {
   // MARK: - Hooks wired by the app
 
-  /// Loads another episode (next/previous, episode list, Watch Together index). Errors are shown as a notice.
+  /// Loads another episode (next/previous, episode list, Watch Together index). Errors are shown as a notice;
+  /// throw `PlayerEpisodeHandedOff` when the app took over (e.g. it opened the extension picker).
   @ObservationIgnored var loadEpisode: ((EpisodeRef) async throws -> PlaybackSession)?
   /// Saved position when the session has no `startTime` (getAnimeProgress).
   @ObservationIgnored var resumePosition: ((Media, EpisodeRef) -> Double?)?
@@ -28,13 +31,16 @@ final class PlayerController {
   @ObservationIgnored var onPlaybackEnded: ((Media, EpisodeRef) -> Void)?
   /// Called every time an episode starts loading (initial one included); Watch Together can share it.
   @ObservationIgnored var onEpisodeStarted: ((PlaybackSession) -> Void)?
-  /// The user closed the player (or the PiP window while the player UI was dismissed).
+  /// The player was closed (X button, the miniplayer's close button, or a new player replacing it). Closing the
+  /// PiP window while the player UI is dismissed brings the video back in the miniplayer instead.
   @ObservationIgnored var onClose: (() -> Void)?
-  /// Picture in Picture started from the PiP button: the app may dismiss the player UI (miniplayer).
+  /// `minimize()` (in-app miniplayer) or Picture in Picture started from the PiP button: the app dismisses the
+  /// player UI and keeps the controller (PlayerPresentation shows the miniplayer when PiP is not running).
   @ObservationIgnored var onMinimize: (() -> Void)?
   /// "Restore" tapped in the PiP window while minimized: the app must present the player UI again.
   @ObservationIgnored var onRestoreFromPictureInPicture: (() -> Void)?
-  /// "Now Playing [O]": shows the media details. The app should call `setExternalOverlay(presented:)`.
+  /// "Now Playing [O]": shows the media details. The app reports the sheet with `setExternalOverlay(presented:)`
+  /// (playback continues, like the Svelte app; the player restores its keyboard focus when it closes).
   @ObservationIgnored var onOpenDetails: ((Media) -> Void)?
   /// Watch Together: local play/pause/seek (w2gEmitter 'player', time floored to the second).
   @ObservationIgnored var onLocalStateChange: (((paused: Bool, time: Double)) -> Void)?
@@ -87,6 +93,10 @@ final class PlayerController {
   private(set) var notice: PlayerNotice?
   /// "Filler" / "Recap" while the skip prompt is shown.
   private(set) var fillerPrompt: String?
+  /// Natural size of the video (presentationSize), used to map ASS script coordinates to the video rect.
+  private(set) var videoSize: CGSize = .zero
+  /// The app shows a sheet over the player (media details).
+  private(set) var isExternalOverlayPresented = false
   /// Episode being loaded through `loadEpisode`.
   private(set) var loadingEpisode: EpisodeRef?
   private(set) var stats: [PlayerStatLine]?
@@ -122,6 +132,8 @@ final class PlayerController {
   @ObservationIgnored private var wantsMinimizeOnPiPStart = false
   @ObservationIgnored private var pipStarting = false
   @ObservationIgnored private var restoringFromPiP = false
+  /// PiP stopped by `stopPictureInPictureForRestore()`: the app presents the player UI itself.
+  @ObservationIgnored private var restoreHandledByApp = false
   @ObservationIgnored private var itemGeneration = 0
   @ObservationIgnored private var episodeGeneration = 0
   @ObservationIgnored private var everReady = false
@@ -150,19 +162,28 @@ final class PlayerController {
   @ObservationIgnored private var detachedForBackground = false
   @ObservationIgnored private var playingBeforeResign = false
   @ObservationIgnored private var interruptedWhilePlaying = false
-  @ObservationIgnored private var externalOverlayPresented = false
-  @ObservationIgnored private var pausedByOverlay = false
-  @ObservationIgnored private var playWhenOverlayCloses = false
+  /// HLS seekbar thumbnails: small frames copied from the video output while playing, by time bucket.
+  @ObservationIgnored private var thumbnailCache: [Int: CGImage] = [:]
+  @ObservationIgnored private var lastThumbnailCapture = Date.distantPast
+  /// Last frame copied from the video output (screenshot fallback when the output has no new buffer).
+  @ObservationIgnored private var lastVideoFrame: (buffer: CVPixelBuffer, time: Double)?
 
   /// Playback speeds offered in the speed menu ([ and ] change it by 0.1 like the Svelte keybinds).
   static let speedOptions: [Float] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
   /// Watch Together: only seek to a remote time farther than this (times are floored to the second).
   static let remoteSeekThreshold: Double = 1.5
+  /// HLS thumbnails: one frame per bucket of this many seconds, at most `thumbnailLimit` frames (~20 MB).
+  private static let thumbnailInterval: Double = 6
+  private static let thumbnailLimit = 240
+  private static let thumbnailSize = CGSize(width: 192, height: 108)
+  private static let ciContext = CIContext()
 
   init(session: PlaybackSession, episodeList: [EpisodeInfo] = []) {
     self.session = session
     self.episodeList = episodeList
     self.chapterSource = PlayerPreferences.chapterSource
+    // Playback speed kept between episodes (PlayerPage.svelte keeps `playbackRate`).
+    self.playbackRate = PlayerPreferences.playbackRate
     configurePlayer()
   }
 
@@ -198,6 +219,8 @@ final class PlayerController {
   var isLoadingEpisode: Bool { loadingEpisode != nil }
   var canTryNextServer: Bool { session.servers.count > 1 }
   var canOpenDetails: Bool { onOpenDetails != nil }
+  /// The app can show the in-app miniplayer (`minimize()`).
+  var canMinimize: Bool { onMinimize != nil }
   var canLoadEpisodes: Bool { loadEpisode != nil }
   var isPictureInPictureSupported: Bool { PlayerPiPCoordinator.isSupported }
 
@@ -231,7 +254,8 @@ final class PlayerController {
         line = "Season \(season) · Episode \(local)"
       } else {
         line = "Episode \(episode.number)"
-        let maxEpisodes = PlayerEpisodeMath.maxEpisode(media)
+        // A zero episode is counted by AniList: "of N" leaves it out (PlayerPage.svelte maxEpisodes).
+        let maxEpisodes = PlayerEpisodeMath.maxEpisode(media) - (hasZeroEpisode ? 1 : 0)
         if maxEpisodes > 1 {
           line += " of \(maxEpisodes)"
         } else if maxEpisodes == 0 && episodeList.count > 1 {
@@ -246,11 +270,16 @@ final class PlayerController {
     return line.isEmpty ? nil : line
   }
 
-  /// Seekbar accent: completed, or already counted in the list progress.
+  /// Seekbar accent: completed, or already counted in the list progress (episode 0 counts as one).
   var isEpisodeWatched: Bool {
     if completed { return true }
     guard let progress = session.media.listEntry?.progress else { return false }
-    return progress >= session.episode.number
+    return progress - (hasZeroEpisode ? 1 : 0) >= session.episode.number
+  }
+
+  /// MediaHandler `zeroEpisode` (checkForZero): the media has an episode 0, from the session or the episode list.
+  var hasZeroEpisode: Bool {
+    session.zeroEpisode ?? episodeList.contains { $0.number == 0 }
   }
 
   var currentEpisodeIndex: Int? {
@@ -277,7 +306,7 @@ final class PlayerController {
     if media.isMovie && (media.episodes ?? 1) <= 1 { return false }
     let aired = (media.nextAiring?.episode ?? 0) - 1
     let available = aired > 0 ? aired : PlayerEpisodeMath.maxEpisode(media)
-    if available > session.episode.number { return true }
+    if available - (hasZeroEpisode ? 1 : 0) > session.episode.number { return true }
     return media.nextAiring == nil && media.episodes == nil
   }
 
@@ -295,7 +324,8 @@ final class PlayerController {
       return index > 0 && episodeList.indices.contains(index - 1) ? episodeList[index - 1].ref : nil
     }
     let episode = session.episode
-    guard episode.number > 1 else { return nil }
+    // Episode 1 goes back to episode 0 when the media has one (checkAvail hasLast).
+    guard episode.number > 1 || (hasZeroEpisode && episode.number == 1) else { return nil }
     var local: Int?
     if let value = episode.localEpisode, value > 1 { local = value - 1 }
     return EpisodeRef(number: episode.number - 1, season: local == nil ? nil : episode.season, localEpisode: local)
@@ -404,33 +434,33 @@ final class PlayerController {
     statsTask = nil
     player.replaceCurrentItem(with: nil)
     layerView.playerLayer.player = nil
+    thumbnailCache = [:]
+    lastVideoFrame = nil
     nowPlaying.clear()
     pip.detach()
     UIApplication.shared.isIdleTimerDisabled = false
     PlayerAudioSession.deactivate()
   }
 
-  /// pagePause: call with true when the app shows something over the player (media details), false after.
+  /// Call with true when the app shows something over the player (media details), false after. Playback goes
+  /// on like in the Svelte app (navigation.js never sets `playPage`, so details do not pause the player); the
+  /// player view restores its keyboard focus when the overlay closes.
   func setExternalOverlay(presented: Bool) {
-    if presented {
-      externalOverlayPresented = true
-      if isPlaying && !isPictureInPictureActive {
-        pausedByOverlay = true
-        pause()
-      }
-    } else {
-      externalOverlayPresented = false
-      if pausedByOverlay || playWhenOverlayCloses {
-        pausedByOverlay = false
-        playWhenOverlayCloses = false
-        play()
-      }
+    if isExternalOverlayPresented != presented {
+      isExternalOverlayPresented = presented
     }
   }
 
+  /// Episode list loaded after the player opened: MediaHandler fills the episode title once the episode data
+  /// arrives, so the missing title is taken from the list and Now Playing is refreshed.
   func setEpisodeList(_ list: [EpisodeInfo]) {
     episodeList = list
+    if PlayerText.cleanedTitle(session.episodeTitle) == nil, let index = currentEpisodeIndex,
+       list.indices.contains(index), let title = PlayerText.cleanedTitle(list[index].title) {
+      session.episodeTitle = title
+    }
     refreshRemoteCommandAvailability()
+    updateNowPlayingMetadata()
   }
 
   func openDetails() {
@@ -469,6 +499,8 @@ final class PlayerController {
       pendingSeek = .restore(resume)
     }
     startFlagsLookup(for: newSession)
+    thumbnailCache = [:]
+    lastVideoFrame = nil
 
     if newSession.servers.isEmpty {
       itemGeneration += 1
@@ -595,6 +627,12 @@ final class PlayerController {
       .receive(on: DispatchQueue.main)
       .sink { [weak self] ranges in
         self?.updateBuffered(ranges, generation: generation)
+      }
+      .store(in: &itemCancellables)
+    item.publisher(for: \.presentationSize)
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] size in
+        self?.updateVideoSize(size, generation: generation)
       }
       .store(in: &itemCancellables)
     NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification, object: item)
@@ -752,10 +790,6 @@ final class PlayerController {
         return
       }
       if self.autoplayHandledByRemote { return }
-      if self.externalOverlayPresented {
-        self.playWhenOverlayCloses = true
-        return
-      }
       self.player.play()
     }
   }
@@ -811,6 +845,11 @@ final class PlayerController {
     guard newValue != duration else { return }
     duration = newValue
     updateNowPlayingPlayback()
+  }
+
+  private func updateVideoSize(_ size: CGSize, generation: Int) {
+    guard generation == itemGeneration, size.width > 0, size.height > 0, size != videoSize else { return }
+    videoSize = size
   }
 
   private func updateBuffered(_ ranges: [NSValue], generation: Int) {
@@ -887,12 +926,22 @@ final class PlayerController {
     if Date().timeIntervalSince(lastProgressSave) >= 10 {
       saveProgress()
     }
+    captureThumbnailIfNeeded()
+  }
+
+  /// timeupdate runs checkSkippableChapters / checkCompletion even while paused: same after a seek.
+  private func runTimeChecks() {
+    guard phase == .ready, !isClosed else { return }
+    checkSkippableChapters()
+    checkCompletion()
   }
 
   // MARK: - App state
 
   private func handleWillResignActive() {
     playingBeforeResign = isPlaying
+    // Picks up a change of the "Auto Picture in Picture" setting made while this player was open.
+    pip.attach(to: layerView.playerLayer, autoStart: PlayerPreferences.autoPictureInPicture)
   }
 
   /// handleVisibility: pause when leaving the app if playerPause is on (unless PiP/AirPlay); otherwise keep
@@ -970,6 +1019,7 @@ final class PlayerController {
     performSeek(to: time) { [weak self] in
       self?.emitLocalState()
       self?.updateNowPlayingPlayback()
+      self?.runTimeChecks()
     }
   }
 
@@ -1014,6 +1064,7 @@ final class PlayerController {
       self.emitLocalState()
       self.updateNowPlayingPlayback()
       self.refreshSubtitleCues()
+      self.runTimeChecks()
     }
   }
 
@@ -1056,7 +1107,11 @@ final class PlayerController {
   }
 
   private func requestPreview(at time: Double) {
-    guard let generator = imageGenerator else { return }
+    guard let generator = imageGenerator else {
+      // HLS: frames cached while playing (generateThumbnails equivalent for streams).
+      scrubPreview = cachedThumbnail(near: time).map { UIImage(cgImage: $0) }
+      return
+    }
     previewTask?.cancel()
     previewTask = Task { [weak self] in
       try? await Task.sleep(nanoseconds: 120_000_000)
@@ -1072,6 +1127,7 @@ final class PlayerController {
     guard rate.isFinite else { return }
     let clamped = min(max(rate, 0.1), 4)
     playbackRate = clamped
+    PlayerPreferences.playbackRate = clamped
     player.defaultRate = clamped
     if isPlaying { player.rate = clamped }
     updateNowPlayingPlayback()
@@ -1549,6 +1605,8 @@ final class PlayerController {
     } catch {
       loadingEpisode = nil
       guard !isClosed else { return }
+      // The app opened its own flow (extension picker): no error, stay paused until it delivers.
+      if error is PlayerEpisodeHandedOff { return }
       if !(error is CancellationError) {
         showNotice("Failed to load Episode \(ref.number)", error.localizedDescription, isError: true)
       }
@@ -1607,32 +1665,56 @@ final class PlayerController {
     }
   }
 
-  // MARK: - Picture in Picture
+  // MARK: - Picture in Picture and miniplayer
 
   /// togglePopout (KeyP, PiP button). With `onMinimize` set, the player UI is dismissed once PiP runs so
-  /// the rest of the app can be used (replaces the desktop miniplayer).
+  /// the rest of the app can be used. When PiP is unavailable or fails, the player falls back to the in-app
+  /// miniplayer (PlayerPage.svelte: "PiP failed, falling back to miniplayer").
   func togglePictureInPicture() {
     if isPictureInPictureActive {
       pip.stop()
       return
     }
-    startPictureInPicture(minimize: onMinimize != nil)
+    startPictureInPicture(andMinimize: onMinimize != nil)
   }
 
+  /// Leaves the full screen player without stopping playback: the app shows the in-app miniplayer
+  /// (Miniplayer.svelte, shown when the player page is left). Needs `onMinimize` (PlayerPresentation sets it).
   func minimize() {
-    startPictureInPicture(minimize: true)
+    guard didStart, !isClosed, onMinimize != nil else { return }
+    wantsMinimizeOnPiPStart = false
+    isMinimized = true
+    onMinimize?()
   }
 
-  private func startPictureInPicture(minimize: Bool) {
+  /// "Now Playing" while minimized to Picture in Picture: stops PiP for a restore. The app presents the player
+  /// UI itself (once its sheets are closed), so the AVKit restore callback does not present it a second time.
+  func stopPictureInPictureForRestore() {
+    // Already stopping through the PiP window's restore button: nothing to stop.
+    guard isPictureInPictureActive, !restoringFromPiP else { return }
+    restoringFromPiP = true
+    restoreHandledByApp = true
+    pip.stop()
+  }
+
+  private func startPictureInPicture(andMinimize: Bool) {
     guard PlayerPiPCoordinator.isSupported else {
-      showNotice("Picture in Picture", "Picture in Picture is not supported on this device.", isError: true)
+      if andMinimize {
+        minimize()
+      } else {
+        showNotice("Picture in Picture", "Picture in Picture is not supported on this device.", isError: true)
+      }
       return
     }
     guard isPictureInPicturePossible else {
-      showNotice("Picture in Picture", "Picture in Picture isn't available for this video right now.", isError: true)
+      if andMinimize {
+        minimize()
+      } else {
+        showNotice("Picture in Picture", "Picture in Picture isn't available for this video right now.", isError: true)
+      }
       return
     }
-    wantsMinimizeOnPiPStart = minimize && onMinimize != nil
+    wantsMinimizeOnPiPStart = andMinimize && onMinimize != nil
     pip.start()
   }
 
@@ -1646,25 +1728,29 @@ final class PlayerController {
     }
   }
 
+  /// PiP window closed. While the player UI is dismissed, the video comes back in the in-app miniplayer
+  /// (PlayerPresentation shows it again once PiP is over) instead of closing the player.
   private func pictureInPictureDidStop() {
     pipStarting = false
     isPictureInPictureActive = false
-    let restoring = restoringFromPiP
     restoringFromPiP = false
-    if isMinimized && !restoring && !isClosed {
-      // The PiP window was closed while the player UI was dismissed: same as closing the player.
-      close()
-    }
+    restoreHandledByApp = false
   }
 
   private func pictureInPictureFailed(_ message: String) {
     pipStarting = false
+    let fallBack = wantsMinimizeOnPiPStart
     wantsMinimizeOnPiPStart = false
+    if fallBack && !isMinimized {
+      minimize()
+      return
+    }
     showNotice("Picture in Picture", message, isError: true)
   }
 
   private func pictureInPictureRestore() {
     restoringFromPiP = true
+    if restoreHandledByApp { return }
     if isMinimized {
       isMinimized = false
       onRestoreFromPictureInPicture?()
@@ -1711,21 +1797,106 @@ final class PlayerController {
 
   // MARK: - Tools
 
-  /// KeyX "Save Screenshot to Clipboard" (video frame only, external subtitles are not burned in).
+  /// KeyX "Save Screenshot to Clipboard": the video frame with the active external subtitles drawn on it
+  /// (embedded tracks are rendered by AVPlayer and cannot be captured).
   func takeScreenshot() {
     guard let output = videoOutput, let item = player.currentItem else { return }
     let time = item.currentTime()
-    guard let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil) else {
+    let fresh = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil)
+    var fallback: CVPixelBuffer?
+    if fresh == nil, let last = lastVideoFrame, time.seconds.isFinite, abs(last.time - time.seconds) < 1 {
+      fallback = last.buffer
+    }
+    guard let buffer = fresh ?? fallback else {
       showNotice("Screenshot", "No video frame is available yet.", isError: true)
       return
     }
     let image = CIImage(cvPixelBuffer: buffer)
-    guard let cgImage = CIContext().createCGImage(image, from: image.extent) else {
+    guard let cgImage = PlayerController.ciContext.createCGImage(image, from: image.extent) else {
       showNotice("Screenshot", "The video frame could not be captured.", isError: true)
       return
     }
-    UIPasteboard.general.image = UIImage(cgImage: cgImage)
+    let cues = activeSubtitleCues
+    if cues.isEmpty {
+      UIPasteboard.general.image = UIImage(cgImage: cgImage)
+    } else {
+      UIPasteboard.general.image = PlayerSubtitleBurner.render(cgImage, cues: cues, time: displayTime + subtitleDelay)
+    }
     showNotice("Screenshot", "Saved screenshot to clipboard.")
+  }
+
+  /// HLS has no AVAssetImageGenerator support: while playing, a small frame is copied from the video output
+  /// every few seconds of video so the seekbar can preview the parts already played.
+  private func captureThumbnailIfNeeded() {
+    guard imageGenerator == nil, !isScrubbing, !seekInFlight, let output = videoOutput,
+          let item = player.currentItem else { return }
+    let itemTime = item.currentTime()
+    let seconds = itemTime.seconds
+    guard seconds.isFinite, seconds >= 0 else { return }
+    let bucket = Int(seconds / PlayerController.thumbnailInterval)
+    guard thumbnailCache[bucket] == nil, Date().timeIntervalSince(lastThumbnailCapture) >= 1,
+          output.hasNewPixelBuffer(forItemTime: itemTime),
+          let buffer = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) else { return }
+    lastThumbnailCapture = Date()
+    lastVideoFrame = (buffer: buffer, time: seconds)
+    guard let thumbnail = PlayerController.thumbnail(from: buffer) else { return }
+    if thumbnailCache.count >= PlayerController.thumbnailLimit,
+       let farthest = thumbnailCache.keys.max(by: { abs($0 - bucket) < abs($1 - bucket) }) {
+      thumbnailCache[farthest] = nil
+    }
+    thumbnailCache[bucket] = thumbnail
+  }
+
+  /// Cached HLS frame closest to `time` (same bucket, else up to two buckets away).
+  private func cachedThumbnail(near time: Double) -> CGImage? {
+    guard !thumbnailCache.isEmpty, time.isFinite, time >= 0 else { return nil }
+    let bucket = Int(time / PlayerController.thumbnailInterval)
+    for distance in 0...2 {
+      if let image = thumbnailCache[bucket - distance] { return image }
+      if let image = thumbnailCache[bucket + distance] { return image }
+    }
+    return nil
+  }
+
+  private static func thumbnail(from buffer: CVPixelBuffer) -> CGImage? {
+    let image = CIImage(cvPixelBuffer: buffer)
+    let extent = image.extent
+    guard extent.width > 0, extent.height > 0 else { return nil }
+    let scale = min(thumbnailSize.width / extent.width, thumbnailSize.height / extent.height, 1)
+    let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    return ciContext.createCGImage(scaled, from: scaled.extent)
+  }
+
+  /// Subtitle files (or text) dropped on the player (common/modules/clipboard.js drop handler → subtitles.js).
+  /// Returns false when nothing in the drop can be read as data.
+  func importDroppedSubtitles(_ providers: [NSItemProvider]) -> Bool {
+    let dataType = UTType.data.identifier
+    var accepted = false
+    for provider in providers where provider.hasItemConformingToTypeIdentifier(dataType) {
+      let typeIdentifier = provider.registeredTypeIdentifiers.first { identifier in
+        UTType(identifier)?.conforms(to: .data) ?? false
+      } ?? dataType
+      let suggested = provider.suggestedName ?? ""
+      let suggestedExtension = (suggested as NSString).pathExtension
+      let fileExtension = suggestedExtension.isEmpty
+        ? (UTType(typeIdentifier)?.preferredFilenameExtension ?? "")
+        : suggestedExtension
+      let baseName = (suggested as NSString).deletingPathExtension
+      let name = baseName.isEmpty ? "Subtitles" : baseName
+      accepted = true
+      _ = provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] data, _ in
+        let controller = self
+        Task { @MainActor in
+          guard let controller else { return }
+          guard let data else {
+            controller.showNotice("Subtitles", "Failed to read \(name).", isError: true)
+            return
+          }
+          controller.parseAndAddSubtitles(data: data, fileExtension: fileExtension, name: name)
+        }
+      }
+    }
+    return accepted
   }
 
   /// KeyI "Toggle Stats".

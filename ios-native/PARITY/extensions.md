@@ -10,17 +10,19 @@ Svelte sources covered: `common/modules/extension.js`, `common/modules/stremio.j
 Swift code: `ios-native/Tsumi/Extensions/`.
 
 Status: **done** = same behavior; **partial** = works, with the gap described;
-**n.a.** = not applicable on iOS (reason given); **app** = the hook exists here, the app step wires it.
+**n.a.** = not applicable on iOS (reason given). The former **app** rows (hooks wired by the app) are
+wired in `UI/Shell/AppWiring.swift` and `UI/Shell/ShellPlayback.swift` and now count as done.
+
+Updated 2026-11-14 for the audit items L16, L19-L26 (`PARITY/AUDIT.md`).
 
 ## Summary
 
 | Status | Count |
 |---|---|
-| done | 171 |
-| partial | 7 |
+| done | 180 |
+| partial | 5 |
 | n.a. | 8 |
-| app (wired by the app step) | 4 |
-| **total** | **190** |
+| **total** | **193** |
 
 ## 1. `modules/extension.js` (Sora runtime + extension manager)
 
@@ -47,7 +49,7 @@ Status: **done** = same behavior; **partial** = works, with the gap described;
 | 1.19 | `text()`, `json()`, `arrayBuffer()`, `blob()` | `makeResponse` (bytes fetched lazily through `__tsumiBytes`) | done |
 | 1.20 | Plain `fetch` available to modules (browser fetch) | `g.fetch` (Response-like object, rejects with TypeError on network error) | done |
 | 1.21 | `console.log/error` (browser console) | `g.console` → `__tsumiLog` (printed in DEBUG builds) | done |
-| 1.22 | `atob`/`btoa`, `setTimeout`/`setInterval`, `TextEncoder`/`TextDecoder`, `URL`/`URLSearchParams`, `AbortController` (browser globals) | `SoraPrelude` polyfills (JavaScriptCore has none of them) | done |
+| 1.22 | `atob`/`btoa`, `setTimeout`/`setInterval`, `TextEncoder`/`TextDecoder`, `URL`/`URLSearchParams`, `AbortController` (browser globals) | `SoraPrelude` polyfills (JavaScriptCore has none of them; installed only when missing) | done |
 | 1.23 | Sora-host extras: fetchv2 5th/6th arguments (`redirect`, `encoding`), global `log()` | `SoraPrelude` + `SoraRedirectBlocker` + `SoraNetwork.decode` | done (iOS addition, harmless superset) |
 | 1.24 | `networkFetch` (Sora app WebView interception API) | - | n.a. (not provided by the Svelte app either) |
 | 1.25 | `loadExtension`: `stremio://` normalization, manifest fetch, error `Failed to load manifest from <url>: <msg>` | `ExtensionLoader.load` | done |
@@ -60,7 +62,7 @@ Status: **done** = same behavior; **partial** = works, with the gap described;
 | 1.32 | String results `JSON.parse`d, raw string kept when not JSON | `SoraRuntime.decodeResult` | done |
 | 1.33 | `extractDetails` (Sora module format) | `ExtensionCalls.extractDetails` | done (not used by the Svelte UI) |
 | 1.34 | `ExtensionManager.extensions` (loaded runtimes) / `loading` | `ExtensionManager.loaded` / `loadingKeys` | done |
-| 1.35 | `settings.extensions[key] = { url, enabled, manifest }` persisted | `ExtensionManager.installed` (UserDefaults `tsumi.extensions.v1`, JSON, insertion order) | done |
+| 1.35 | `settings.extensions[key] = { url, enabled, manifest }` persisted, and part of the settings Export / Import / Reset | `ExtensionManager.installed` (UserDefaults `tsumi.extensions.v1`, JSON, insertion order) | partial: persisted, but stored outside `SettingsValues`; Export / Import / Reset include it only through the settings screens (audit M4), which call the 1.49 APIs |
 | 1.36 | `addExtension(url)`: key `${sourceName}-${version}`, stored enabled with the raw URL, replaces same key | `ExtensionManager.addExtension` | done |
 | 1.37 | `removeExtension(key)` | `ExtensionManager.removeExtension` | done |
 | 1.38 | `toggleExtension(key, enabled)` | `ExtensionManager.toggleExtension` | done |
@@ -72,7 +74,10 @@ Status: **done** = same behavior; **partial** = works, with the gap described;
 | 1.44 | `getEnabled()` | `ExtensionManager.enabledExtensions()` | partial: ordered by install order (Svelte: by load completion order, which is random) |
 | 1.45 | `callDefault(fn, ...args)` with `No default extension set` / `Extension <key> not loaded` | `ExtensionManager.callDefault` | done |
 | 1.46 | `callAll(fn, ...args)` sequential, failures skipped | `ExtensionManager.callAll` | done |
-| 1.47 | A play request right after launch waits for loads in progress | `ExtensionManager.awaitPendingLoads` | done (iOS addition; Svelte would report the default extension as missing) |
+| 1.47 | A play request right after launch waits for loads in progress | `ExtensionManager.awaitPendingLoads` (also waits for loads started while waiting) | done (iOS addition; Svelte would report the default extension as missing) |
+| 1.48 | Other page globals the modules see in the Svelte WebView (`executeExtensionFunction` runs them in the page) | `SoraPrelude`: `window` / `self`, `crypto` (`getRandomValues`, `randomUUID` from the system CSPRNG via `__tsumiRandom`; `subtle.digest` SHA-1/256/384/512 via CryptoKit `__tsumiDigest`), `Headers`, `Request`, `Response` (+ `Response.json`), `Blob`, `File`, `FormData` (multipart bodies for `fetch` / `fetchv2`), `fetch(Request)`, `DOMParser` (HTML and XML) with a `document` (CSS selectors incl. `:scope`, `:not`, `:has`, `:nth-*`; `textContent`, `innerHTML`, `outerHTML`, attributes, `dataset`, `classList`, `createElement`, tree edits), `XMLSerializer`, `Node`, `navigator` (same User-Agent as the network layer), `performance.now`, `structuredClone`, `localStorage` / `sessionStorage` | partial: no `XMLHttpRequest`, `WebSocket`, `Worker`, layout / rendering, `crypto.subtle` beyond `digest`; storage lasts one call (each call is a fresh context); the parser is a light HTML tree builder (implied end tags, void / raw-text elements, no foster parenting) |
+| 1.49 | Settings Import / Reset replace or clear `settings.extensions` (+ `defaultExtension`, `starredExtension` on reset) | `ExtensionManager.replaceInstalled(_:)` (dedupe by key, keep runtimes whose URL did not change, unload removed keys and delete their offline copy, persist, reload) / `removeAll()` (unload everything, delete offline copies, clear default and star, persist) | done (called by the settings screens) |
+| 1.50 | Pull-to-refresh while extensions are loading (iOS only) | Per-load token in `ExtensionManager`: a cancelled or replaced load (refresh, removal, import, re-add) cannot clear the state of the load that replaced it; the refresh spinner waits for the reload | done (iOS-only bug, audit L26) |
 
 ## 2. `modules/stremio.js` (Stremio addons)
 
@@ -102,7 +107,7 @@ Status: **done** = same behavior; **partial** = works, with the gap described;
 | 2.22 | `searchCatalogs`: searchable catalogs of the types, in parallel, failures skipped, dedup by `type:id` | `StremioAddon.searchCatalogs` | done |
 | 2.23 | `metaToMedia`: tmdb:/tt ids → TMDB media, year from releaseInfo/year, status from the year | `StremioAddon.metaToMedia` | done |
 | 2.24 | Poster upgrade (`image.tmdb.org` `/wNNN/` → `/w500/`), background, genres, imdbRating → averageScore | `StremioAddon.metaToMedia` | done |
-| 2.25 | `normalizeMedia` mapping TMDB → AniList id (`tmdbToAnilist`) | `Media.anilistId` from `ExtensionContext.tmdbToAnilistId` | partial: the media stays a TMDB `Media` with `anilistId` set (the Svelte app swapped the id); the app decides how to open it |
+| 2.25 | `normalizeMedia` mapping TMDB → AniList id (`tmdbToAnilist`), so the card (mediaCache) and the details are the AniList entry | `Media.anilistId` from `ExtensionContext.tmdbToAnilistId`; the catalog screens swap such an item for its AniList entry (`StremioCatalogPageModel.showAnimeEntries`: stored entry at once, else a batched `AniListService.requestMedia`), so the card shows the AniList entry and opens its details | done |
 | 2.26 | `media.stremioId` | - | n.a. (no Core field; never read by the Svelte app) |
 | 2.27 | `metasToPage` (parallel, failures dropped, order kept) | `StremioAddon.metasToPage` | done |
 | 2.28 | `loadCatalogPage` (skip pagination, up to 6 batches per page, `hasNextPage`) | `StremioAddon.loadCatalogPage` | done |
@@ -131,7 +136,7 @@ Status: **done** = same behavior; **partial** = works, with the gap described;
 | 3.6 | `Invalid stream response` + callers' fallback (`raw` string, `raw.url`, `raw.streamUrl`) | `ExtensionStreamParser.streamData(from:)` | done |
 | 3.7 | `getStreamServers` | `ExtensionStreamParser.servers` | done |
 | 3.8 | Server title `title` or `Server N` | `ExtensionStream(parsed:)` | done |
-| 3.9 | Servers with an unusable URL | `ExtensionStream(parsed:)` drops them (Swift `StreamServer.url` is non-optional) | partial: such entries are hidden instead of failing at play time |
+| 3.9 | Servers with an unusable URL (kept by `parseStreamResponse`, `modules/streaming.js:139-164`) | `ExtensionStream(parsed:)` drops a server whose `streamUrl` is missing or not a URL before counting (Swift `StreamServer.url` is non-optional) | partial (audit L23, documented): such entries are hidden instead of failing when picked; when only one usable server is left, the selector is skipped and that server plays directly (Svelte showed the selector, and picking the broken entry failed at play time); `Server N` titles keep the original position |
 | 3.10 | `loadStream` / `stopStream` / `getProxyUrl` / hls.js loading | - | n.a. (Player area: AVPlayer plays HLS natively; headers go to the player with `StreamServer.headers`) |
 | 3.11 | `sessionServer` store (remembered server title for the session) | `StreamSessionMemory.preferredServerTitle` | done |
 
@@ -142,7 +147,7 @@ Status: **done** = same behavior; **partial** = works, with the gap described;
 | 4.1 | `playAnime(media, episode, force)` entry point | `PlaybackRequestCoordinator.shared.play(media:episode:force:)` | done |
 | 4.2 | Episode as object or number, NaN → 1 | `play(media:episodeNumber:force:)` (clamped to ≥ 1) | done |
 | 4.3 | Default extension set and not forced → compact loading dialog, else results modal | `PlaybackRequestCoordinator.play` | done |
-| 4.4 | `w2g-play` event → `playAnime(cached media, episode)` | Watch Together calls `PlaybackRequestCoordinator.shared.play` | app |
+| 4.4 | `w2g-play` event → `playAnime(cached media, episode)` | `WatchTogetherClient.onRemoteMedia` → `ShellPlayback.playRemote` (`UI/Shell/AppWiring.swift`) | done |
 | 4.5 | Results modal with close | `ExtensionPickerView` in the `.playbackRequestPresenter()` sheet | done |
 
 ## 5. `modals/extension/DefaultLoadingModal.svelte`
@@ -166,8 +171,8 @@ Status: **done** = same behavior; **partial** = works, with the gap described;
 | 5.15 | Several servers otherwise: loading dialog closed, server selector opened (back = just close) | `PlaybackRequestCoordinator.autoPlay` → `.server` presentation | done |
 | 5.16 | Any failure → results modal with `defaultFailed` + `failReason` (`error.message`, else `Stream failed`) | `PlaybackRequestCoordinator.autoPlay` → `openPicker(defaultFailed: true, ...)` | done |
 | 5.17 | `launchPlayer`: url/headers of the chosen server, `streamServers`, `subtitle`, `activeServerIndex`, file name `<title> - Episode <n>` | `ResolvedPlayback` (servers, selectedIndex, subtitleURL, displayName) | done |
-| 5.18 | `launchPlayer`: `nowPlaying`, `files`, navigate to the player | `PlaybackRequestCoordinator.onReady` / `ready` | app |
-| 5.19 | `launchPlayer`: `shareNowPlaying` (Watch Together) | `PlaybackRequestCoordinator.onReady` | app |
+| 5.18 | `launchPlayer`: `nowPlaying`, `files`, navigate to the player | `PlaybackRequestCoordinator.onReady` → `ShellPlayback.start` (`UI/Shell/AppWiring.swift`) | done |
+| 5.19 | `launchPlayer`: `shareNowPlaying` (Watch Together) | player `onEpisodeStarted` → `WatchTogetherClient.shareMedia` (`UI/Shell/ShellPlayback.swift`) | done |
 | 5.20 | `running` guard / re-run when data changes | one `Task` per request, previous one cancelled | done |
 | 5.21 | Closing the dialog | cancels the resolution | partial: deliberate change, the Svelte app kept resolving and still opened the player after the dialog was closed |
 | 5.22 | UI: spinner, title (2 lines), `Episode N`, status line | `DefaultLoadingView` | done (Svelte printed `[object Object]` for episode objects; iOS prints the number) |
@@ -182,21 +187,21 @@ Status: **done** = same behavior; **partial** = works, with the gap described;
 | 6.4 | Results scored and sorted per extension; extension name/icon/starred flag | `PlaybackResolver.resultGroup` | done |
 | 6.5 | Failing extension silently skipped (debug log) | `ExtensionPickerModel.searchExtensions` | done |
 | 6.6 | `selectResult` ignored while another result is resolving | `ExtensionPickerModel.select` (`playingResultID`) | done |
-| 6.7 | Toast `No episodes found for this title` | `PlaybackResolver.manualFailureMessage` → inline error banner | done (banner instead of toast) |
+| 6.7 | Toast `No episodes found for this title` | `PlaybackResolver.manualFailureMessage` → error toast (`ServiceMessages`, posted by `ExtensionPickerView` when `errorMessage` changes) + inline banner in the sheet (the sheet covers the app toaster) | done |
 | 6.8 | Same season-aware episode matching as the default flow | `PlaybackResolver.resolveStream` | done |
-| 6.9 | Toast `No stream URL found for this episode` | `PlaybackResolver.manualFailureMessage` | done (banner) |
+| 6.9 | Toast `No stream URL found for this episode` | `PlaybackResolver.manualFailureMessage` | done (toast + banner, as 6.7) |
 | 6.10 | Several servers: session server or server selector over the results (back = close selector) | `ExtensionPickerModel.serverChoice` + nested `ServerPickerView` sheet | done |
-| 6.11 | Toast `Stream failed: <message>` | `PlaybackResolver.manualFailureMessage` | done (banner) |
+| 6.11 | Toast `Stream failed: <message>` | `PlaybackResolver.manualFailureMessage` | done (toast + banner, as 6.7) |
 | 6.12 | `launchPlayer` (same as 5.17–5.19) then close the modal | `ExtensionPickerModel.onPlayback` → `PlaybackRequestCoordinator.deliver` | done |
 | 6.13 | Header: title (one line, ellipsis) + close button | `ExtensionPickerView.header` | done |
-| 6.14 | Header background: banner, trailer thumbnails, Kitsu cover, episode thumbnail, cover | `ExtensionPickerView.bannerURL` (banner → YouTube trailer thumbnail → cover) | partial: Kitsu/episode-metadata fallbacks need the anime services (not available in this folder) |
+| 6.14 | Header background (SmartImage list): banner, trailer `maxresdefault` / `hqdefault`, Kitsu cover (original → tiny), episode 1 thumbnail, cover | `ExtensionPickerView.loadHeaderImage`: same order; a URL that fails (HTTP error, not an image; YouTube answers 404 when there is no HD frame) moves to the next one (`BrowseImageCache`); the Kitsu mapping and episode metadata (`AnimeMappingsService.episodeMetadata`) are only fetched when everything before failed | done |
 | 6.15 | `Default extension failed` banner with `<reason> Showing all results instead.` (default reason `Unable to auto-play from your default extension.`) | `ExtensionPickerView` | done |
 | 6.16 | Loading: spinner + `Searching extensions...` | `ExtensionPickerView.content` | done |
 | 6.17 | Empty: `Ooops!` + `No extensions enabled. Add extensions in Settings → Extensions.` / `No results found from any extension.` | `ExtensionPickerView.content` | done |
 | 6.18 | Group header: icon, name, `Starred` badge, `N result(s)` | `ExtensionPickerView.groupSection` | done |
 | 6.19 | Result card: cover (or Play placeholder), title (2 lines), `N% match` badge (green ≥ 80, yellow ≥ 50, grey) | `ExtensionPickerView.resultCard` | done |
 | 6.20 | Spinner over the card being resolved; other cards disabled (opacity 0.6) | `ExtensionPickerView.resultCard` | done |
-| 6.21 | Collapsed groups with `+ N More` / `Show Less` when > 5 results | `ExtensionPickerView.groupSection` | partial: collapsed state shows the first 5 cards (Svelte showed one grid row) |
+| 6.21 | Collapsed groups show one grid row (`.results-grid-collapsed`), `+ N More` / `Show Less` | `ExtensionPickerView.groupSection`: one row at the measured width (adaptive column rule) | done (the toggle shows whenever the row hides cards and counts the hidden ones; Svelte always printed `count - 5` and hid the toggle at 5 results or fewer, even when the row hid some) |
 | 6.22 | Cleanup on destroy | `ExtensionPickerModel.cancel` via `PlaybackRequestCoordinator` | done |
 
 ## 7. `modals/extension/ServerSelectorModal.svelte`
@@ -229,7 +234,7 @@ Status: **done** = same behavior; **partial** = works, with the gap described;
 | 8.13 | `Extensions` list: all but the default, starred first | `ExtensionSettingsView.otherExtensions` | done |
 | 8.14 | Card: drag handle, icon, name, language, URL, starred border, dimmed when disabled | `ExtensionSettingsView.extensionCard` | done |
 | 8.15 | Star / Unstar button (`Star — always show at the top of search results`) | `ExtensionSettingsView.toggleStar` | done |
-| 8.16 | Delete with confirmation (ConfirmButton: confirm / cancel) | `ExtensionSettingsView.deleteControl` | done |
+| 8.16 | Delete with confirmation (ConfirmButton: confirm / cancel) | `ExtensionSettingsView.deleteControl` (inline confirm / cancel) and, for the context-menu `Delete Extension` item, a confirmation dialog (`menuDeleteKey`) | done |
 | 8.17 | Delete also unsets default / star | `ExtensionSettingsView.removeSource` | done |
 | 8.18 | Enable switch | `ExtensionSettingsView.extensionCard` `Toggle` → `toggleExtension` | done |
 | 8.19 | Badges: version, streamType, quality, type (not `stremio`) | `ExtensionSettingsView.badgeRow` | done |
@@ -251,21 +256,24 @@ Status: **done** = same behavior; **partial** = works, with the gap described;
 | 9.10 | Row loads lazily when visible (50 items) | `StremioCatalogRowView` `.task` inside `LazyVStack` + `StremioCatalogPageModel` | done |
 | 9.11 | Loading skeleton cards | `StremioCatalogRowView.placeholders` | done |
 | 9.12 | Error card | `StremioCatalogRowView.failureCard` (with Retry) | done |
-| 9.13 | Section title opens the full list (Search page) with pagination | `StremioCatalogGridView` sheet, infinite scroll with `loadMore` | done |
-| 9.14 | Card click opens the title | `onSelect: (Media) -> Void` | app |
+| 9.13 | Section title opens the full list (Search page) with pagination | `StremioCatalogGridView` pushed on the navigation stack (`navigationDestination(item:)`), Search-grid columns, infinite scroll with `loadMore` | done |
+| 9.14 | Card click opens the title | standard card tap (`BrowseActions.open`); `CatalogsView.onSelect` is kept for the callers but no longer called | done |
 | 9.15 | Left/right carousel buttons, drag-scroll, hover previews (desktop) | native horizontal scrolling | n.a. (touch UI) |
-| 9.16 | Card preview / list-status overlays of `Card.svelte` | `StremioCatalogCard` (poster + title) | partial: the rich Card component belongs to the main-screens step |
+| 9.16 | Card preview / list-status overlays of `Card.svelte` (small / full per the `cards` setting) | `BrowseMediaCard` (`UI/Browse/BrowseCards.swift`) in rows and grid, card type from `BrowseCardMode.storageKey`: list status dot, audio label, long-press preview, Play / View Details / Choose Extension / List Editor / Favourite; skeleton cards while loading | done |
 | 9.17 | Catalogs entry in the sidebar | - | n.a. here (navigation is the app step) |
 
-## Public API for the app step
+## Public API used by the app
 
 - `PlaybackRequestCoordinator.shared.play(media:episode:force:)` / `play(media:episodeNumber:force:)`;
-  attach `.playbackRequestPresenter()` once on the root view; set
-  `PlaybackRequestCoordinator.shared.onReady = { playback in ... }` (open the player with
-  `playback.servers[playback.selectedIndex]` + `playback.subtitleURL`, share with Watch Together, update
-  now-playing). `ready` / `consumeReady()` expose the same value for observation.
+  the dialogs are presented by the shell (`ShellPlaybackDialogHost` on the top layer; the older
+  `.playbackRequestPresenter()` is no longer attached); `PlaybackRequestCoordinator.shared.onReady` is
+  set in `UI/Shell/AppWiring.swift` (`ShellPlayback.start`). `ready` / `consumeReady()` expose the same
+  value for observation.
 - `ResolvedPlayback { media, episode, servers, selectedIndex, subtitleURL, extensionKey, displayName }`.
-- `ExtensionContext.shared` closures to wire: `animeToTMDB`, `tmdbIMDbId`, `tmdbFindByIMDb`,
-  `tmdbSeasons`, `tmdbToAnilistId`, `displayTitle`.
-- Screens: `ExtensionSettingsView()`, `CatalogsView(onSelect:onOpenSettings:)`.
-- `ExtensionManager.shared` (installed list, `enabledExtensions()`, add/remove/toggle/default/star).
+- `ExtensionContext.shared` closures (`animeToTMDB`, `tmdbIMDbId`, `tmdbFindByIMDb`, `tmdbSeasons`,
+  `tmdbToAnilistId`, `displayTitle`), wired by `ShellExtensionBridge.makeContext()`.
+- Screens: `ExtensionSettingsView()`, `CatalogsView(onSelect:onOpenSettings:)` (must be inside a
+  `NavigationStack`: the full catalog grid is pushed).
+- `ExtensionManager.shared`: installed list, `enabledExtensions()`, add / remove / toggle / default /
+  star, `refreshAll()` + `awaitPendingLoads()`, and for the settings Import / Reset
+  `replaceInstalled(_ configs: [InstalledExtension])` and `removeAll()`.

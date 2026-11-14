@@ -145,9 +145,11 @@ struct AiredEpisode: Codable, Hashable {
   var aired: Int?
   var airedAt: String?
   var addedAt: String?
+  /// Last episode of a batch release ("1 ~ 3" in the feed, handleArray of episodes.js), nil otherwise.
+  var airedLast: Int?
 
   private enum CodingKeys: String, CodingKey {
-    case aired, airedAt, addedAt
+    case aired, airedAt, addedAt, airedLast
   }
 
   init(from decoder: Decoder) throws {
@@ -155,6 +157,11 @@ struct AiredEpisode: Codable, Hashable {
     aired = container.svcLossyInt(.aired)
     airedAt = container.svcLossyString(.airedAt)
     addedAt = container.svcLossyString(.addedAt)
+    airedLast = container.svcLossyInt(.airedLast)
+    if aired == nil, let text = container.svcLossyString(.aired), let range = AnimeMappingsService.episodeRange(text) {
+      aired = range.first
+      airedLast = range.last
+    }
   }
 }
 
@@ -286,6 +293,8 @@ final class AnimeScheduleService: @unchecked Sendable {
     var manifestResult: ScheduleManifestCheck?
     var pageCache: [String: PageCacheEntry] = [:]
     var pollTask: Task<Void, Never>?
+    /// Aired dub episodes per AniList id (built lazily from aired[.dub], reset when it changes).
+    var dubCounts: [Int: Int]?
   }
 
   private let state = ServiceLocked<State>(State())
@@ -393,8 +402,44 @@ final class AnimeScheduleService: @unchecked Sendable {
   func airedList(_ feed: ReleaseFeed, refresh: Bool = false) async -> [AiredFeedEntry] {
     if !refresh, let list = state.get().aired[feed] { return list }
     let list = (try? await feedFromManifest(feed, schedule: false, as: [AiredFeedEntry].self)) ?? state.get().aired[feed] ?? []
-    state.update { $0.aired[feed] = list }
+    state.update { value in
+      value.aired[feed] = list
+      if feed == .dub { value.dubCounts = nil }
+    }
     return list
+  }
+
+  // MARK: - Loaded lists (synchronous reads for the UI, nil until loaded)
+
+  /// Dub schedule if already loaded (no request).
+  func loadedDubAiringList() -> [DubScheduleEntry]? {
+    state.get().dubAiring
+  }
+
+  /// Episode feed if already loaded (no request).
+  func loadedAiredList(_ feed: ReleaseFeed) -> [AiredFeedEntry]? {
+    state.get().aired[feed]
+  }
+
+  /// Number of aired dub episodes of a media (dubAiredLists of AudioLabel.svelte); nil until the dub feed is loaded.
+  func loadedDubAiredCount(anilistId: Int) -> Int? {
+    let counts: [Int: Int]? = state.update { value in
+      if let cached = value.dubCounts { return cached }
+      guard let list = value.aired[.dub] else { return nil }
+      var built: [Int: Int] = [:]
+      for entry in list {
+        if let id = entry.id { built[id, default: 0] += 1 }
+      }
+      value.dubCounts = built
+      return built
+    }
+    guard let counts else { return nil }
+    return counts[anilistId] ?? 0
+  }
+
+  /// Dub schedule entry of a media if the dub schedule is already loaded (no request).
+  func loadedDubEntry(anilistId: Int) -> DubScheduleEntry? {
+    state.get().dubAiring?.first { $0.anime?.id == anilistId }
   }
 
   // MARK: - Polling (checkManifestAndFeeds)
@@ -463,6 +508,7 @@ final class AnimeScheduleService: @unchecked Sendable {
         state.update { value in
           value.aired[feed] = list
           value.pageCache = value.pageCache.filter { !$0.key.hasPrefix(feed.rawValue + "-") }
+          if feed == .dub { value.dubCounts = nil }
         }
         updated.append(feed.rawValue)
       }
@@ -564,7 +610,9 @@ final class AnimeScheduleService: @unchecked Sendable {
     }
     let feedItems: [EpisodeFeedItem] = slice.compactMap { entry in
       guard let id = entry.id, let media = byId[id] else { return nil }
-      return EpisodeFeedItem(media: media, episode: entry.episode?.aired ?? 1, date: entry.airedDate ?? Date(), dub: feed == .dub, episodeTitle: nil, thumbnail: nil)
+      let last = entry.episode?.airedLast
+      let first = entry.episode?.aired ?? 1
+      return EpisodeFeedItem(media: media, episode: first, date: entry.airedDate ?? Date(), dub: feed == .dub, episodeTitle: nil, thumbnail: nil, summary: nil, lastEpisode: (last ?? 0) > first ? last : nil)
     }
     let results = await withEpisodeMetadata(feedItems)
 
@@ -584,8 +632,9 @@ final class AnimeScheduleService: @unchecked Sendable {
           var copy = item
           let metadata = await AnimeMappingsService.shared.episodeMetadata(for: item.media)
           if let episode = metadata[String(item.episode)] {
-            copy.episodeTitle = episode.title["en"]
+            copy.episodeTitle = episode.title["en"] ?? episode.title["x-jat"] ?? episode.title["ja"] ?? episode.title["jp"]
             copy.thumbnail = URL.lenient(episode.image)
+            copy.summary = episode.summary ?? episode.overview
           }
           return (offset, copy)
         }
@@ -824,9 +873,11 @@ final class AnimeScheduleService: @unchecked Sendable {
       guard let id = media.anilistId, !seen.contains(id) else { continue }
       seen.insert(id)
       var nodes: [AiringNode]
+      var suspended = false
       if filter.dubs {
         guard let entry = dubEntries[id] else { continue }
         if entry.delayedIndefinitely == true && (entry.status?.uppercased().contains("FINISHED") ?? false) { continue }
+        suspended = entry.delayedIndefinitely == true
         let numberOfEpisodes = entry.subtractedEpisodeNumber.map { (entry.episodeNumber ?? 0) - $0 } ?? 1
         nodes = entry.anime?.nodes ?? []
         var predict = false
@@ -847,7 +898,11 @@ final class AnimeScheduleService: @unchecked Sendable {
         nodes = nodesById[id] ?? MediaStore.shared.extras(for: media).airingSchedule
       }
       guard let next = AnimeHelpers.nextAiring(nodes, now: now) else { continue }
-      result.append(AiringEpisode(media: media, episode: next.episode, airingAt: next.airingAt))
+      // episode() of anime.js: "Episode a ~ b" when several episodes air at the same time ("Episode a is" when suspended).
+      let sameTime = nodes.filter { $0.airingAt == next.airingAt }.map { $0.episode }
+      let last = sameTime.max() ?? next.episode
+      let range: Int? = (!suspended && nodes.count > 1 && last > next.episode) ? last : nil
+      result.append(AiringEpisode(media: media, episode: next.episode, airingAt: next.airingAt, lastEpisode: range, delayedIndefinitely: suspended))
     }
     return result
   }
@@ -857,4 +912,90 @@ final class AnimeScheduleService: @unchecked Sendable {
     guard let id = media.anilistId else { return nil }
     return await dubAiringList().first { $0.anime?.id == id }
   }
+
+  // MARK: - Episode list dub rows (dubbedEpisode of EpisodeList.svelte)
+
+  /// Dub / Sub airing rows of the details episode list, keyed by episode number. Empty unless the Card Audio
+  /// setting is on (dubbedEpisode returns nothing without it).
+  func dubEpisodeAirings(for media: Media, episodes: [Int]) async -> [Int: DubEpisodeAiring] {
+    guard ServiceSettingsExtras.cardAudio, media.source == .anilist, media.anilistId != nil else { return [:] }
+    let entry = await dubEntry(for: media)
+    let id = media.anilistId
+    let aired = await airedList(.dub).filter { $0.id != nil && $0.id == id }
+    let lists = await MALDubsService.shared.lists()
+    let incomplete = media.malId.map { lists.incomplete.contains($0) } ?? false
+    let dubMedia = media.malId.map { lists.dubbed.contains($0) || lists.incomplete.contains($0) } ?? false
+    let now = Date()
+    var result: [Int: DubEpisodeAiring] = [:]
+    for episode in episodes {
+      if let value = Self.dubbedEpisode(episode, media: media, entry: entry, aired: aired, incomplete: incomplete, dubMedia: dubMedia, now: now) {
+        result[episode] = value
+      }
+    }
+    return result
+  }
+
+  /// dubbedEpisode(i, media) for one episode. `aired` = the dub episode feed entries of this media.
+  static func dubbedEpisode(_ episode: Int, media: Media, entry: DubScheduleEntry?, aired: [AiredFeedEntry], incomplete: Bool, dubMedia: Bool, now: Date = Date()) -> DubEpisodeAiring? {
+    let episodeEntry = aired.first { $0.episode?.aired == episode }
+    if let entry, episodeEntry == nil {
+      let nodes = entry.anime?.nodes ?? []
+      let airingEntry = nodes.first { $0.episode == episode }
+      let byIndex: AiringNode? = (episode >= 1 && episode - 1 < nodes.count) ? nodes[episode - 1] : nil
+      let airingSchedule = airingEntry ?? byIndex ?? nodes.first
+      let delayedFrom = ServiceDates.parse(entry.delayedFrom)
+      let delayedUntil = ServiceDates.parse(entry.delayedUntil)
+      let indefinitely = entry.delayedIndefinitely == true
+      let firstNode = nodes.first
+      func isDelayed(_ date: Date?) -> Bool {
+        guard let date else { return false }
+        if indefinitely { return true }
+        guard let until = delayedUntil, until >= date, until > now else { return false }
+        if let from = delayedFrom, from > date { return true }
+        if until == date { return true }
+        if let from = delayedFrom, from <= date, let firstNode, entry.episodeNumber == firstNode.episode, until == firstNode.airingAt { return true }
+        return false
+      }
+      let delayed = isDelayed(ServiceDates.parse(entry.episodeDate)) || (airingEntry != nil && isDelayed(airingSchedule?.airingAt))
+      let subtracted = entry.subtractedEpisodeNumber ?? 0
+      let numberOfEpisodes = subtracted != 0 ? subtracted : 1
+      let delayText = (entry.delayedText?.isEmpty ?? true) ? "Delayed" : (entry.delayedText ?? "Delayed")
+      if let episodeDate = entry.episodeDate, !episodeDate.isEmpty, let number = entry.episodeNumber, number <= episode {
+        guard let base = airingSchedule?.airingAt ?? ServiceDates.parse(episodeDate) else { return nil }
+        let weeks = number >= episode ? 0 : episode - number
+        let airDate = Calendar.current.date(byAdding: .day, value: 7 * weeks, to: base) ?? base
+        let text: String
+        if indefinitely {
+          text = "Suspended"
+        } else if episode > number && numberOfEpisodes > 4 && entry.unaired != true {
+          text = "In Production"
+        } else {
+          text = ServiceText.since(airDate) + (delayed ? " (\(delayText))" : "")
+        }
+        return DubEpisodeAiring(airdate: airDate, text: text, delayed: delayed)
+      } else if let schedule = airingSchedule, schedule.episode <= episode {
+        return DubEpisodeAiring(airdate: schedule.airingAt, text: ServiceText.since(schedule.airingAt) + (delayed ? " (\(delayText))" : ""), delayed: delayed && !indefinitely)
+      }
+      return DubEpisodeAiring(airdate: now, text: "Finished", delayed: false)
+    }
+    if let episodeEntry {
+      let date = ServiceDates.parse(episodeEntry.episode?.airedAt)
+      return DubEpisodeAiring(airdate: date, text: date.map { ServiceText.since($0) } ?? "", delayed: false)
+    }
+    if incomplete && aired.contains(where: { $0.episode?.aired == 1 }) {
+      return DubEpisodeAiring(airdate: nil, text: "Not Planned", delayed: true, notPlanned: true)
+    }
+    if entry == nil && (media.seasonYear ?? 0) >= Calendar.current.component(.year, from: now) && dubMedia {
+      return DubEpisodeAiring(airdate: nil, text: "In Production", delayed: false)
+    }
+    return nil
+  }
+}
+
+/// Dub airing state of one episode of the details episode list (dubbedEpisode of EpisodeList.svelte).
+struct DubEpisodeAiring: Hashable {
+  var airdate: Date?
+  var text: String
+  var delayed: Bool
+  var notPlanned: Bool = false
 }

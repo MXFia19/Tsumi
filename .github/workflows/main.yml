@@ -8,6 +8,8 @@ on:
       - 'main'
     paths-ignore:
       - '**.md'
+      - 'ios-native/**'
+      - '.github/workflows/ios-native.yml'
 env:
   NODE_VERSION: '22.21.1'
   PNPM_VERSION: '10.15.1'

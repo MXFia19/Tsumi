@@ -312,15 +312,14 @@ enum ShellSettingsDefaults {
     }
   }
 
-  /// "Reset to Defaults": every setting of the app, including the ones stored outside Core.
+  /// "Reset to Defaults" (cache.resetSettings: `{ ...defaults }`): every setting of the app, including the
+  /// ones stored outside Core (player preferences, card type) and the installed extensions (`extensions: {}`).
   static func resetAll() {
     var values = SettingsValues()
     values.homeSections = svelteLayout(values)
     AppSettings.shared.values = values
-    ServiceSettingsExtras.releasesNotifyNotOnList = false
-    ServiceSettingsExtras.hentaiAnnounce = "none"
-    ServiceSettingsExtras.cardAudio = false
-    PlayerPreferences.chapterSource = .embedded
-    PlayerPreferences.autoPictureInPicture = true
+    PlayerPreferences.resetAll()
+    UserDefaults.standard.set(BrowseCardMode.small.rawValue, forKey: BrowseCardMode.storageKey)
+    ExtensionManager.shared.removeAll()
   }
 }

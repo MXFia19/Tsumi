@@ -22,6 +22,9 @@ struct PlaybackSession: Hashable {
   /// Filler/recap flags when already known; nil = looked up on Jikan like the Svelte filler prompt.
   var isFiller: Bool?
   var isRecap: Bool?
+  /// The media has an episode 0 (prologue), like MediaHandler `zeroEpisode` (checkForZero). nil = derived from
+  /// the episode list (an entry numbered 0).
+  var zeroEpisode: Bool?
 
   init(
     media: Media,
@@ -33,7 +36,8 @@ struct PlaybackSession: Hashable {
     subtitleHeaders: [String: String]? = nil,
     startTime: Double? = nil,
     isFiller: Bool? = nil,
-    isRecap: Bool? = nil
+    isRecap: Bool? = nil,
+    zeroEpisode: Bool? = nil
   ) {
     self.media = media
     self.episode = episode
@@ -45,6 +49,7 @@ struct PlaybackSession: Hashable {
     self.startTime = startTime
     self.isFiller = isFiller
     self.isRecap = isRecap
+    self.zeroEpisode = zeroEpisode
   }
 
   /// Convenience initializer from an extension `StreamResult`.
@@ -145,6 +150,10 @@ struct PlayerFailure: Equatable {
   }
 }
 
+/// Thrown by `PlayerController.loadEpisode` when the app took the episode over itself (for example it opened
+/// the extension picker because the remembered source failed): the player shows no error and stays paused.
+struct PlayerEpisodeHandedOff: Error {}
+
 /// Short message shown at the top of the player (replaces svelte-sonner toasts).
 struct PlayerNotice: Identifiable, Equatable {
   let id = UUID()
@@ -233,12 +242,43 @@ enum PlayerChapterSource: String, CaseIterable, Identifiable {
   }
 }
 
+/// Corner where the in-app miniplayer docks (Miniplayer.svelte `position`: "top left", "bottom right"...).
+enum PlayerMiniPlayerCorner: String, CaseIterable {
+  case topLeading
+  case topTrailing
+  case bottomLeading
+  case bottomTrailing
+
+  var isTop: Bool { self == .topLeading || self == .topTrailing }
+  var isLeading: Bool { self == .topLeading || self == .bottomLeading }
+
+  static func nearest(top: Bool, leading: Bool) -> PlayerMiniPlayerCorner {
+    switch (top, leading) {
+    case (true, true): return .topLeading
+    case (true, false): return .topTrailing
+    case (false, true): return .bottomLeading
+    case (false, false): return .bottomTrailing
+    }
+  }
+}
+
 /// Player-only preferences that are not part of Core `SettingsValues` (stored in UserDefaults).
 /// The settings screen can bind to these static properties directly.
 enum PlayerPreferences {
   private static let chapterSourceKey = "tsumi.player.chapterSource"
   private static let autoPictureInPictureKey = "tsumi.player.autoPictureInPicture"
   private static let lastSubtitleKey = "tsumi.player.lastSubtitle"
+  private static let playbackRateKey = "tsumi.player.playbackRate"
+  private static let miniPlayerCornerKey = "tsumi.player.miniPlayerCorner"
+
+  /// Settings reset: removes the chapter source, auto Picture in Picture, last subtitle per media and playback
+  /// rate keys, so every value falls back to its default. The miniplayer position is a cache, not a setting.
+  static func resetAll() {
+    let defaults = UserDefaults.standard
+    for key in [chapterSourceKey, autoPictureInPictureKey, lastSubtitleKey, playbackRateKey] {
+      defaults.removeObject(forKey: key)
+    }
+  }
 
   /// playerChapterSkip ('embedded' | 'aniskip'), default 'embedded' like common/modules/util.js.
   static var chapterSource: PlayerChapterSource {
@@ -250,9 +290,37 @@ enum PlayerPreferences {
   }
 
   /// Start Picture in Picture automatically when the app goes to background while playing.
+  /// Off by default so "Pause On Lost Focus" (`playerPause`, on by default) behaves like the Svelte app:
+  /// leaving the app pauses, unless Picture in Picture runs (handleVisibility skips the pause in PiP).
   static var autoPictureInPicture: Bool {
-    get { UserDefaults.standard.object(forKey: autoPictureInPictureKey) as? Bool ?? true }
+    get { UserDefaults.standard.object(forKey: autoPictureInPictureKey) as? Bool ?? false }
     set { UserDefaults.standard.set(newValue, forKey: autoPictureInPictureKey) }
+  }
+
+  /// Playback speed kept between episodes (PlayerPage.svelte keeps `playbackRate` for the app session).
+  static var playbackRate: Float {
+    get {
+      guard let stored = UserDefaults.standard.object(forKey: playbackRateKey) as? Double,
+            stored.isFinite, stored >= 0.1, stored <= 4 else { return 1 }
+      return Float(stored)
+    }
+    set {
+      guard newValue.isFinite else { return }
+      if newValue == 1 {
+        UserDefaults.standard.removeObject(forKey: playbackRateKey)
+      } else {
+        UserDefaults.standard.set(Double(newValue), forKey: playbackRateKey)
+      }
+    }
+  }
+
+  /// Corner of the in-app miniplayer (cache 'posMiniplayer' in Miniplayer.svelte), "bottom right" by default.
+  static var miniPlayerCorner: PlayerMiniPlayerCorner {
+    get {
+      guard let raw = UserDefaults.standard.string(forKey: miniPlayerCornerKey) else { return .bottomTrailing }
+      return PlayerMiniPlayerCorner(rawValue: raw) ?? .bottomTrailing
+    }
+    set { UserDefaults.standard.set(newValue.rawValue, forKey: miniPlayerCornerKey) }
   }
 
   /// Last subtitle track picked per media ("OFF" or the track name), like caches.HISTORY 'lastSubtitle'.

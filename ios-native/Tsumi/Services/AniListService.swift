@@ -155,7 +155,8 @@ final class AniListService: @unchecked Sendable {
 
   // MARK: - Queries
 
-  static let mediaFields = """
+  /// queryObjects of anilist.js.
+  static let baseMediaFields = """
   id, idMal, title { romaji, english, native, userPreferred }, description(asHtml: false), \
   endDate { year, month, day }, startDate { year, month, day }, season, seasonYear, format, status, episodes, \
   duration, averageScore, genres, tags { name, rank }, isFavourite, coverImage { extraLarge, medium, color }, \
@@ -164,12 +165,31 @@ final class AniListService: @unchecked Sendable {
   mediaListEntry { id, progress, repeat, status, customLists(asArray: true), score(format: POINT_10), updatedAt, \
   startedAt { year, month, day }, completedAt { year, month, day } }, \
   airingSchedule(page: 1, perPage: 1000) { nodes { episode, airingAt } }, \
-  relations { edges { relationType(version: 2), node { id, type, format, genres, isAdult, seasonYear } } }, \
+  relations { edges { relationType(version: 2), node { id, type, format, genres, isAdult, seasonYear } } }
+  """
+
+  /// queryComplexObjects of anilist.js.
+  static let complexMediaFields = """
   studios(sort: NAME, isMain: true) { nodes { name } }, \
   recommendations { edges { node { rating, mediaRecommendation { id, genres, isAdult } } } }
   """
 
-  static let searchQuery = """
+  /// settings.queryComplexity: "Complex" (default) adds the studios and recommendations to every media query,
+  /// "Simple" leaves them out (recommendations are then fetched on demand by `recommendationIds(id:)`).
+  static var usesComplexQueries: Bool {
+    AppSettings.shared.values.queryComplexity != "Simple"
+  }
+
+  static var mediaFields: String {
+    usesComplexQueries ? baseMediaFields + ", " + complexMediaFields : baseMediaFields
+  }
+
+  /// Cache key suffix, so results without the complex fields are not reused once Complex is back on.
+  private static var complexityKeySuffix: String {
+    usesComplexQueries ? "" : ".simple"
+  }
+
+  static var searchQuery: String { """
   query($page: Int, $perPage: Int, $sort: [MediaSort], $search: String, $onList: Boolean, $status: [MediaStatus], \
   $status_not: [MediaStatus], $season: MediaSeason, $year: Int, $genre: [String], $genre_not: [String], $tag: [String], \
   $tag_not: [String], $format: [MediaFormat], $format_not: [MediaFormat], $id_not: [Int], $idMal_not: [Int], $id: [Int], \
@@ -184,9 +204,9 @@ final class AniListService: @unchecked Sendable {
       }
     }
   }
-  """
+  """ }
 
-  static let idsQuery = """
+  static var idsQuery: String { """
   query($id: [Int], $idMal: [Int], $id_not: [Int], $page: Int, $perPage: Int, $status: [MediaStatus], $onList: Boolean, \
   $sort: [MediaSort], $search: String, $season: MediaSeason, $year: Int, $genre: [String], $genre_not: [String], \
   $tag: [String], $tag_not: [String], $format: [MediaFormat], $isAdult: Boolean) {
@@ -199,15 +219,15 @@ final class AniListService: @unchecked Sendable {
       }
     }
   }
-  """
+  """ }
 
-  static let singleQuery = """
+  static var singleQuery: String { """
   query($id: Int, $idMal: Int) {
     Media(id: $id, idMal: $idMal, type: ANIME) {
       \(mediaFields)
     }
   }
-  """
+  """ }
 
   static let viewerQuery = """
   query {
@@ -239,7 +259,7 @@ final class AniListService: @unchecked Sendable {
   }
   """
 
-  static let userListsQuery = """
+  static var userListsQuery: String { """
   query($id: Int, $sort: [MediaListSort]) {
     MediaListCollection(userId: $id, type: ANIME, sort: $sort, forceSingleCompletedList: true) {
       lists {
@@ -252,7 +272,7 @@ final class AniListService: @unchecked Sendable {
       }
     }
   }
-  """
+  """ }
 
   static let saveEntryMutation = """
   mutation($id: Int, $status: MediaListStatus, $episode: Int, $repeat: Int, $score: Int, $startedAt: FuzzyDateInput, \
@@ -327,27 +347,61 @@ final class AniListService: @unchecked Sendable {
       attempt += 1
       await limiter.acquire()
       let (data, response) = try await HTTP.data(Self.endpoint, method: "POST", headers: headers, body: body, timeout: 60, allowErrorStatus: true)
+      let outage = AniListOutageMonitor.shared
       if response.statusCode == 429 || response.statusCode == 500 {
         if attempt >= 4 {
-          ServiceMessages.send(.error, "Search Failed", "Failed making request to Anilist!\nTry again in a minute.")
+          // printError is muted while AniList is down (networking.js isAnilistDown).
+          if !outage.isDown {
+            ServiceMessages.send(.error, "Search Failed", "Failed making request to Anilist!\nTry again in a minute.")
+          }
           throw ServiceError.rateLimited
         }
         let retryAfter = Double(response.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 60
         await limiter.pause(for: response.statusCode == 500 ? 1 : retryAfter + 1)
         continue
       }
-      guard let json = ServiceJSON.object(data) else {
-        if (200..<300).contains(response.statusCode) {
+      let json = ServiceJSON.object(data)
+      if let message = Self.outageMessage(status: response.statusCode, data: data, json: json) {
+        // "temporarily disabled": one "AniList Outage" toast + status bar, later errors stay silent.
+        outage.report(message, status: response.statusCode)
+        if let json { return json }
+        throw HTTPError.status(response.statusCode, Self.endpoint)
+      }
+      if (200..<300).contains(response.statusCode) {
+        outage.markReachable()
+      }
+      guard let json else {
+        if (200..<300).contains(response.statusCode) && !outage.isDown {
           ServiceMessages.send(.error, "Search Failed", "Failed making request to Anilist!\nTry again in a minute.")
         }
         throw HTTPError.status(response.statusCode, Self.endpoint)
       }
-      if !(200..<300).contains(response.statusCode) && response.statusCode != 404 {
+      if !(200..<300).contains(response.statusCode) && response.statusCode != 404 && !outage.isDown {
         let message = ServiceJSON.errorMessage(json) ?? "HTTP \(response.statusCode)"
         ServiceMessages.send(.error, "Search Failed", "Failed making request to Anilist!\nTry again in a minute.\n" + message)
       }
       return json
     }
+  }
+
+  /// networking.js isAnilistError: a 403 whose message says the API is "temporarily disabled".
+  /// Returns that message, nil for any other response.
+  static func outageMessage(status: Int, data: Data, json: [String: Any]?) -> String? {
+    var messages: [(status: Int, text: String)] = []
+    if let errors = json?["errors"] as? [[String: Any]] {
+      for error in errors {
+        messages.append((status: error.int("status") ?? status, text: error.string("message") ?? ""))
+      }
+    }
+    if messages.isEmpty, status == 403, let text = String(data: data.prefix(4000), encoding: .utf8) {
+      messages.append((status: status, text: text))
+    }
+    for message in messages where message.status == 403 || status == 403 {
+      if message.text.range(of: "temporarily disabled", options: .caseInsensitive) != nil {
+        return message.text.count > 300 ? String(message.text.prefix(300)) : message.text
+      }
+    }
+    return nil
   }
 
   private func dataObject(_ json: [String: Any]) throws -> [String: Any] {
@@ -530,14 +584,14 @@ final class AniListService: @unchecked Sendable {
   /// anilistClient.search: discover / text search (cached 75-100 minutes).
   func search(_ input: AniListVariables) async throws -> MediaPage {
     let variables = input.withAdultFilters()
-    return try await cachedPage(cacheKey: "al.search." + variables.cacheKey, query: Self.searchQuery, variables: variables.graphQL(.search), ttl: Self.randomTTL(75...100), skipCache: false, fallback: variables)
+    return try await cachedPage(cacheKey: "al.search." + variables.cacheKey + Self.complexityKeySuffix, query: Self.searchQuery, variables: variables.graphQL(.search), ttl: Self.randomTTL(75...100), skipCache: false, fallback: variables)
   }
 
   /// anilistClient.searchIDS: one page of media by ids (cached 24-30 minutes). Sort defaults to OMIT.
   func searchIDs(_ input: AniListVariables, skipCache: Bool = false) async throws -> MediaPage {
     if let ids = input.id, ids.isEmpty, input.idMal == nil { return MediaPage.empty }
     let variables = input.withAdultFilters()
-    return try await cachedPage(cacheKey: "al.ids." + variables.cacheKey, query: Self.idsQuery, variables: variables.graphQL(.ids), ttl: Self.randomTTL(24...30), skipCache: skipCache, fallback: variables)
+    return try await cachedPage(cacheKey: "al.ids." + variables.cacheKey + Self.complexityKeySuffix, query: Self.idsQuery, variables: variables.graphQL(.ids), ttl: Self.randomTTL(24...30), skipCache: skipCache, fallback: variables)
   }
 
   /// anilistClient.searchAllIDS: every page of an id search.
@@ -575,12 +629,12 @@ final class AniListService: @unchecked Sendable {
 
   /// anilistClient.searchIDSingle by AniList id (cached 80-100 minutes).
   func media(id: Int) async throws -> Media? {
-    try await single(variables: ["id": id], cacheKey: "al.single.id.\(id)", fallback: MediaStore.shared.anilist(id))
+    try await single(variables: ["id": id], cacheKey: "al.single.id.\(id)" + Self.complexityKeySuffix, fallback: MediaStore.shared.anilist(id))
   }
 
   /// anilistClient.searchIDSingle by MyAnimeList id (tsumi://malanime/<id>).
   func media(malId: Int) async throws -> Media? {
-    try await single(variables: ["idMal": malId], cacheKey: "al.single.mal.\(malId)", fallback: MediaStore.shared.anilist(malId: malId))
+    try await single(variables: ["idMal": malId], cacheKey: "al.single.mal.\(malId)" + Self.complexityKeySuffix, fallback: MediaStore.shared.anilist(malId: malId))
   }
 
   private func single(variables: [String: Any], cacheKey: String, fallback: Media?) async throws -> Media? {
@@ -747,7 +801,8 @@ final class AniListService: @unchecked Sendable {
     }
   }
 
-  /// Recommendation ids of a media (complex queries are always used, so they usually come from the store).
+  /// Recommendation ids of a media (with Complex queries they usually come from the store; with Simple
+  /// queries they are requested here, like anilist.js `recommendations`).
   func recommendationIds(id: Int) async throws -> [Int] {
     if let extras = MediaStore.shared.extras(Media.anilistKey(id)), !extras.recommendationIds.isEmpty {
       return extras.recommendationIds
@@ -815,6 +870,69 @@ final class AniListService: @unchecked Sendable {
     let formatter = NumberFormatter()
     formatter.numberStyle = .decimal
     return formatter.string(from: NSNumber(value: count)) ?? String(count)
+  }
+}
+
+// MARK: - Outage detection (networking.js isAnilistDown)
+
+/// AniList "temporarily disabled" outages: the first detection shows one "AniList Outage" toast and the
+/// outage status bar (`ServiceNetworkMonitor.isAniListDown`), AniList error toasts stay muted while it lasts,
+/// and the API is pinged every 15-25 s until it answers again (then "Connection Restored").
+final class AniListOutageMonitor: @unchecked Sendable {
+  static let shared = AniListOutageMonitor()
+
+  private let pinging = ServiceLocked<Bool>(false)
+
+  private init() {}
+
+  var isDown: Bool { ServiceNetworkMonitor.shared.isAniListDown }
+
+  /// A response said the API is disabled.
+  func report(_ message: String, status: Int) {
+    guard ServiceNetworkMonitor.shared.setAniListDown(true) else { return }
+    ServiceMessages.send(.error, "AniList Outage", "\(status) - \(message)")
+    startPinging()
+  }
+
+  /// A request succeeded: the outage (if any) is over.
+  func markReachable() {
+    ServiceNetworkMonitor.shared.setAniListDown(false)
+  }
+
+  private func startPinging() {
+    let start = pinging.update { running -> Bool in
+      if running { return false }
+      running = true
+      return true
+    }
+    guard start else { return }
+    Task.detached(priority: .utility) { [self] in
+      while ServiceNetworkMonitor.shared.isAniListDown {
+        let seconds = UInt64(Int.random(in: 15...25))
+        try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+        if await Self.ping() {
+          ServiceNetworkMonitor.shared.setAniListDown(false)
+        }
+      }
+      self.pinging.set(false)
+      // A new outage reported while this loop was ending.
+      if ServiceNetworkMonitor.shared.isAniListDown { self.startPinging() }
+    }
+  }
+
+  /// pingWith of networking.js: a one item query that must not answer "temporarily disabled".
+  private static func ping() async -> Bool {
+    guard ServiceNetworkMonitor.shared.isOnline else { return false }
+    let query = ["query": "query { Page(page: 1, perPage: 1) { media { id } } }"]
+    guard let body = try? JSONSerialization.data(withJSONObject: query) else { return false }
+    let headers = ["Content-Type": "application/json", "Accept": "application/json"]
+    guard let result = try? await HTTP.data(AniListService.endpoint, method: "POST", headers: headers, body: body, timeout: 10, allowErrorStatus: true) else {
+      return false
+    }
+    let data = result.0
+    let response = result.1
+    guard (200..<300).contains(response.statusCode) else { return false }
+    return AniListService.outageMessage(status: response.statusCode, data: data, json: ServiceJSON.object(data)) == nil
   }
 }
 

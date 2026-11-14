@@ -16,7 +16,9 @@ Swift files (all in `ios-native/Tsumi/WatchTogether/`):
 
 Package: `stasel/WebRTC` `exactVersion: 156.0.0` (binary xcframework of Google libwebrtc M156, product `WebRTC`), declared in `ios-native/project.yml`.
 
-Status legend: **Done** = same behavior; **Partial** = works with a documented difference; **App** = API exposed, the app must wire it (other agents own player/navigation); **N/A** = not applicable on iOS.
+Status legend: **Done** = same behavior; **Partial** = works with a documented difference; **N/A** = not applicable on iOS. The hooks that used to be marked **App** are wired by the app (see "Wiring" below), so those rows are Done.
+
+Updated 2026-11-14: audit L56 (multi-line composer), stale wiring notes, title helper.
 
 ## Feature table
 
@@ -27,21 +29,21 @@ Status legend: **Done** = same behavior; **Partial** = works with a documented d
 | 3 | Join lobby by code (w2g.js constructor `code`) | `join(code:)` | Done |
 | 4 | `isHost = !code` (w2g.js) | `isHost` | Done |
 | 5 | `inviteLink` = `tsumi://w2g/CODE` (w2g.js) | `inviteLink` | Done |
-| 6 | Self user = `Helper.getUser()` or `{ id: <16 hex> }` (w2g.js) | `currentUser` closure → `W2GUser(viewer:)` / `W2GUser.anonymous()` | Done (App: set `currentUser`) |
+| 6 | Self user = `Helper.getUser()` or `{ id: <16 hex> }` (w2g.js) | `currentUser` closure → `W2GUser(viewer:)` / `W2GUser.anonymous()` | Done (`currentUser` = `ProfilesService.shared.viewer`, AppWiring) |
 | 7 | AniList viewer `{ id, name, avatar: { medium, large } }`, MAL viewer `{ id, name, picture }` as `init` payload (al/mal clients) | `W2GUser.json` | Done (default AniList avatar / MAL kaomoji when missing, like the JS clients) |
 | 8 | Peers store keyed by id, self included (w2g.js `peers`) | `members` (self first, remote by P2PT peer id) | Done |
 | 9 | Messages store `{ message, user, type, date }` (w2g.js) | `messages: [W2GChatMessage]` | Done |
 | 10 | `shareMedia({ media, episode })` with `mediaKey` dedupe (w2g.js) | `shareMedia(media:episode:)`, `W2GMediaPayload.key` | Done (+ semantic dedupe by AniList/TMDB id so a re-share after a remote start never echoes) |
 | 11 | `mediaKey`: `${media.id}:${ep}` with `ep = season:localEpisode??number` for objects (w2g.js) | `W2GMediaPayload.key(mediaId:episode:)` | Done (JS template-string semantics, incl. `undefined`/`null`) |
-| 12 | `mediaIndexChanged({ index })` only when changed (w2g.js) | `mediaIndexChanged(_:)` | Done (App: player calls it) |
-| 13 | `playerStateChanged({ paused, time })` with change detection (w2g.js `_playerStateChanged`) | `playerStateChanged(paused:time:)` | Done (time floored like PlayerPage `Math.floor(currentTime)`; App: call on play/pause/seeked) |
+| 12 | `mediaIndexChanged({ index })` only when changed (w2g.js) | `mediaIndexChanged(_:)` | Done (player `onIndexChange`, ShellPlayback) |
+| 13 | `playerStateChanged({ paused, time })` with change detection (w2g.js `_playerStateChanged`) | `playerStateChanged(paused:time:)` | Done (time floored like PlayerPage `Math.floor(currentTime)`; player `onLocalStateChange`, ShellPlayback) |
 | 14 | `message(text)`: append outgoing + broadcast (w2g.js) | `sendMessage(_:)` | Done (trimmed, max 2048) |
 | 15 | On peer connect: send `init` with self; host also sends media (if any), index, player (w2g.js `#onPeerconnect`, `#sendInitialSessionState`) | `peerConnected`, `sendInitialSessionState` | Done |
 | 16 | Incoming data: parse string JSON, ignore malformed (w2g.js `#onMsg`) | `received(_:from:)` | Done |
 | 17 | `init` → peers[peer.id] = { user } (w2g.js) | `receivedInit` | Done |
-| 18 | `media` → ignore without `media.id` or same key; store with recomputed key; emit (w2g.js) | `receivedMedia` → `onRemoteMedia(Media, EpisodeRef)` | Done (App: start playback) |
-| 19 | `index` → ignore null, emit when changed (w2g.js) | `onRemoteIndex(Int)` | Done (App) |
-| 20 | `player` → ignore null time, emit when changed (w2g.js) | `onRemotePlayer(Bool, Double)` | Done (App) |
+| 18 | `media` → ignore without `media.id` or same key; store with recomputed key; emit (w2g.js) | `receivedMedia` → `onRemoteMedia(Media, EpisodeRef)` | Done (→ `ShellPlayback.playRemote`, AppWiring) |
+| 19 | `index` → ignore null, emit when changed (w2g.js) | `onRemoteIndex(Int)` | Done (→ `ShellPlayback.applyRemoteIndex`, AppWiring) |
+| 20 | `player` → ignore null time, emit when changed (w2g.js) | `onRemotePlayer(Bool, Double)` | Done (→ `PlayerController.applyRemoteState`, AppWiring) |
 | 21 | `message` → incoming, user fallback `{ id: peer.id }` (w2g.js) | `receivedChat` | Done |
 | 22 | Unknown event types ignored (w2g.js) | `received` default | Done |
 | 23 | Peer close → removed from peers (w2g.js `#onPeerclose`) | `peerClosed` | Done |
@@ -51,20 +53,20 @@ Status legend: **Done** = same behavior; **Partial** = works with a documented d
 | 27 | `SHARED_MEDIA_FIELDS` + `pickMedia` (session.js) | `W2GMediaPayload.json(from:)` | Done (fields built from Core `Media`; fields Core does not model are omitted, like `undefined`) |
 | 28 | `shareNowPlaying` guard (media id + lobby open) (session.js) | `shareMedia` guard | Done |
 | 29 | Lobby state shared app-wide (session.js `state`) | `WatchTogetherClient.shared` | Done |
-| 30 | Player ↔ lobby emitter: `player`/`index` in, `playerupdate`/`setindex` out (session.js `w2gEmitter`, PlayerPage.svelte) | closures + `playerStateChanged` / `mediaIndexChanged` | App |
+| 30 | Player ↔ lobby emitter: `player`/`index` in, `playerupdate`/`setindex` out (session.js `w2gEmitter`, PlayerPage.svelte) | closures + `playerStateChanged` / `mediaIndexChanged`, wired in AppWiring / ShellPlayback (Watch Together episode switches are not shared back, `suppressShareUntil`) | Done |
 | 31 | Received payload → native `Media` (AniList id → `Media.anilistKey`, `tmdb-<id>` → `Media.tmdbKey(id, format TV/MOVIE)`, idMal, idTmdb, title, cover, banner, format, status, season, genres...) | `W2GMediaPayload.media(from:)` | Done |
 | 32 | Outgoing id like tmdb.js `normalizeMedia`: AniList id if any, else `"tmdb-<id>"`; episode number or `{ number, season, localEpisode }` | `payloadId(for:)`, `episodeJSON` | Done |
 | 33 | `joinLobby`: destroy previous lobby, create client, wire events (WatchTogetherPage.svelte) | `start(code:)` | Done |
-| 34 | Remote `media` → toast "Starting <title> - Episode N" + `w2g-play` (WatchTogetherPage.svelte, ExtensionModal.svelte) | `notice` banner + `onNotice` + `onRemoteMedia` | Done (App: route `onRemoteMedia` to the extension/play flow) |
+| 34 | Remote `media` → toast "Starting <title> - Episode N" + `w2g-play` (WatchTogetherPage.svelte, ExtensionModal.svelte) | `notice` banner + `onNotice` (app toast unless the lobby is on screen) + `onRemoteMedia`; title from `AniListService.title` (anilistClient.title) | Done |
 | 35 | Auto-copy invite on create (`if (!code) invite()`) | `start` → `copyInvite()` | Done |
 | 36 | Invite: copy `tsumi://w2g/CODE` to clipboard (WatchTogetherPage.svelte `invite`) | `copyInvite()` (UIPasteboard) + header `ShareLink` | Done (+ share sheet) |
-| 37 | Deep link `tsumi://w2g/CODE` → join + navigate (IPC `w2glink`, electron/capacitor protocol.js) | `handle(url:)`, `join(link:)`, `onShowLobby` | Done (App: call from `.onOpenURL`; `shiru://` accepted like Capacitor) |
+| 37 | Deep link `tsumi://w2g/CODE` → join + navigate (IPC `w2glink`, electron/capacitor protocol.js) | `handle(url:)`, `join(link:)`, `onShowLobby` | Done (`ShellDeepLinks.handle`; `shiru://` accepted like Capacitor) |
 | 38 | Join input "Lobby Code or Link", regex `/([A-z0-9]{16})/i`, joins as soon as it matches (WatchTogetherPage.svelte `checkInvite`) | `W2GStartView`, `WatchTogetherClient.lobbyCode(in:)` | Done (+ Paste button) |
 | 39 | Create Lobby card/button (WatchTogetherPage.svelte) | `W2GStartView.createCard` | Done |
 | 40 | "Watch Together" title, start page vs lobby (WatchTogetherPage.svelte) | `WatchTogetherView` | Done |
 | 41 | Leave button (Lobby.svelte `cleanup`) | `W2GLobbyView.inputBar` | Done |
 | 42 | Invite button (Lobby.svelte) | `W2GLobbyView.inputBar` | Done |
-| 43 | Message textarea, max 2048, Enter sends / Shift+Enter newline, auto rows (Lobby.svelte) | single-line `TextField`, return sends, 2048 cap | Partial (no multi-line composer; received multi-line messages display fine) |
+| 43 | Message textarea, max 2048, Enter sends / Shift+Enter newline, auto rows (Lobby.svelte) | `TextField(axis: .vertical)` growing to 6 lines, 2048 cap; Return sends (the line break a vertical field types is caught in the draft observer and the text before it is sent); Shift+Return keeps the line break (`onKeyPress`, hardware keyboard); pasted line breaks are kept | Done (device check: if the field swallows Shift+Return before `onKeyPress`, it sends like Return) |
 | 44 | Send button (Lobby.svelte) | `W2GLobbyView.inputBar` | Done |
 | 45 | `groupMessages`: last 50, grouped while sender unchanged (Lobby.svelte) | `W2GMessageGroup.group` | Done |
 | 46 | "N Member(s)" + member list (Lobby.svelte) | `W2GMemberStrip` (compact) / `W2GMemberList` (regular) | Done |
@@ -76,7 +78,7 @@ Status legend: **Done** = same behavior; **Partial** = works with a documented d
 | 52 | P2PT `responseWaiting` (reply-to messages) | – | N/A (W2G never uses replies; see protocol note 8 for the interop guard) |
 | 53 | Tracker status (P2PT `trackerconnect` / `getTrackerStats`) | `connectedTrackers`, `totalTrackers`, header status badge | Done (UI extra) |
 
-Counts: **53 items: 49 Done, 1 Partial, 1 App, 2 N/A.** 8 of the Done rows (6, 12, 13, 18, 19, 20, 34, 37) are complete on the Watch Together side and only need the app/player to set a closure or call the API.
+Counts: **53 items: 51 Done, 0 Partial, 2 N/A.** Rows 6, 12, 13, 18, 19, 20, 30, 34 and 37 depend on the app hooks, which are wired (see below).
 
 ## Wire protocol implemented (verified against the JS sources; signaling round-trip checked live on 2026-11-14 against tracker.openwebtorrent.com and tracker.webtorrent.dev; tracker.files.fm:7073 refused the WebSocket that day, same for the JS app)
 
@@ -99,10 +101,11 @@ Counts: **53 items: 49 Done, 1 Partial, 1 App, 2 N/A.** 8 of the Done rows (6, 1
 9. **Peers and backups.** Several links to the same peer id are kept (one per tracker/offer pair); `peerconnect` fires when the first link opens, `peerclose` when the last one closes; sends use any open link. iOS stops answering new offers from a peer that already has 3 open/connecting links (refusing an offer is invisible to P2PT), but never kills a link the remote side already answered. Known P2PT quirk: its one-time `peerconnect` is bound to the first `peer` object of an id, so if that one fails while a later one connects, the JS side never sends `init`; iOS lists such a connected-but-silent peer as Anonymous after 8 s so lobby events still reach it.
 10. **W2G events** (`{"payload": …, "type": …}`): `init` → viewer object or `{ id }`; `media` → `{ media: <trimmed media>, episode: <number | {number, season?, localEpisode?}>, key: "<media.id>:<ep>" }`; `index` → `{ index }`; `player` → `{ time, paused }` (time in whole seconds from the JS player); `message` → string.
 
-## Wiring left to the app
+## Wiring (done by the app)
 
-- `WatchTogetherClient.shared.currentUser = { … }` (signed-in `Viewer`).
-- `onRemoteMedia`, `onRemotePlayer`, `onRemoteIndex`, `onNotice`, `onShowLobby` closures.
-- Player: `shareMedia(media:episode:)` when an episode starts (shareNowPlaying), `playerStateChanged(paused:time:)` on play/pause/seeked, `mediaIndexChanged(_:)` on file change.
-- `.onOpenURL { WatchTogetherClient.shared.handle(url: $0) }` and `appBecameActive()` on `scenePhase == .active`.
-- Info.plist (not owned here): add `NSLocalNetworkUsageDescription` (WebRTC host candidates/LAN checks trigger the iOS local network prompt).
+All hooks are set in `UI/Shell/AppWiring.swift` (`configureWatchTogether`, lines 28-50) and the shell:
+
+- `currentUser` = `ProfilesService.shared.viewer`; `onRemoteMedia` → `ShellPlayback.playRemote`; `onRemotePlayer` → `PlayerPresentation.shared.controller?.applyRemoteState`; `onRemoteIndex` → `ShellPlayback.applyRemoteIndex`; `onNotice` → `ShellPlayback.showWatchTogetherNotice` (toast unless the lobby is visible, where the in-screen banner shows); `onShowLobby` → `ShellNavigation.showTab(.watchTogether)`.
+- Player (`UI/Shell/ShellPlayback.swift`): `onEpisodeStarted` → `shareMedia(media:episode:)` (skipped for an episode a peer asked for), `onLocalStateChange` → `playerStateChanged(paused:time:)`, `onIndexChange` → `mediaIndexChanged(_:)`, `isWatchTogetherActive` → `isInLobby`.
+- Deep links (`UI/Shell/ShellNavigation.swift` `ShellDeepLinks`): `tsumi://w2g/…` → `handle(url:)`, routed `watchTogether` links → `join(link:)`; `scenePhase == .active` → `appBecameActive()` (`ShellLifecycle`).
+- `Info.plist` has `NSLocalNetworkUsageDescription`.

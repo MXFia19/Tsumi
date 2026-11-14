@@ -193,10 +193,13 @@ final class HomeSectionsService {
 
   /// Visible sections in the order of settings.homeSections.
   private(set) var sections: [HomeSection] = []
-  /// Incremented when sections must reload (lists / feeds / settings changed).
+  /// Incremented when every section must reload (lists / settings changed).
   private(set) var revision = 0
   /// Feeds whose content changed at the last update (ReleaseFeed raw values).
   private(set) var changedFeeds: [String] = []
+  /// Number of content changes of each episode feed (ReleaseFeed raw value): only the rows of these feeds
+  /// reload when the AniSchedule feeds change (feedChanged listener of HomePage.svelte).
+  private(set) var feedRevisions: [String: Int] = [:]
 
   @ObservationIgnored private var observers: [NSObjectProtocol] = []
   @ObservationIgnored private var settingsDebounce: Task<Void, Never>?
@@ -206,11 +209,23 @@ final class HomeSectionsService {
     observers.append(NotificationCenter.default.addObserver(forName: AnimeScheduleService.feedsChanged, object: nil, queue: .main) { [weak self] note in
       let feeds = note.userInfo?["feeds"] as? [String] ?? []
       Task { @MainActor in
-        self?.changedFeeds = feeds
-        self?.revision += 1
+        self?.feedsDidChange(feeds)
       }
     })
     observeSettings()
+  }
+
+  private func feedsDidChange(_ feeds: [String]) {
+    changedFeeds = feeds
+    for feed in feeds {
+      feedRevisions[feed, default: 0] += 1
+    }
+  }
+
+  /// Feed revision of a home section ("Anime - Recent Subs" -> Sub feed), 0 for the other sections.
+  func feedRevision(forSection title: String) -> Int {
+    guard let feed = ReleaseFeed.allCases.first(where: { $0.sectionTitle == title }) else { return 0 }
+    return feedRevisions[feed.rawValue] ?? 0
   }
 
   /// Called by MediaListService when the lists change (refreshSections of HomePage.svelte).

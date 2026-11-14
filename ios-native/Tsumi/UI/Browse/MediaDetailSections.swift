@@ -1,14 +1,16 @@
 import SwiftUI
 
 // Bottom of DetailsModal.svelte: Relations and Recommendations (ToggleList.svelte rows of SmallCards with
-// the relation type), characters and staff (TMDB / AniList details), external links.
+// the relation type, or the recommendation likes sorted by rating), characters and staff (TMDB / AniList
+// details), external links. The Expandable Lists setting (toggleList) wraps the lists and collapses them to
+// one row with a Show More toggle.
 
 @MainActor
 struct BrowseDetailBottom: View {
   let model: BrowseDetailModel
 
   var body: some View {
-    let media = model.media
+    let media = model.live
     VStack(alignment: .leading, spacing: 22) {
       relationsSection(media)
       recommendationsSection(media)
@@ -38,10 +40,8 @@ struct BrowseDetailBottom: View {
   private func relationsSection(_ media: Media) -> some View {
     let items = relations(media)
     if !items.isEmpty {
-      BrowseToggleList(title: "Relations") {
-        ForEach(items) { relation in
-          BrowseMediaCard(media: relation.media, style: .small, typeLabel: relation.relationType, width: 128)
-        }
+      BrowseExpandableList(title: "Relations", items: items) { relation in
+        BrowseMediaCard(media: relation.media, style: .small, typeLabel: relation.relationType, width: 128)
       }
     } else if !model.detailsLoaded && media.source == .anilist {
       BrowseToggleList(title: "Relations") {
@@ -52,15 +52,107 @@ struct BrowseDetailBottom: View {
     }
   }
 
+  /// Recommendations, highest rating first once the ratings are known.
+  private func recommendations(_ media: Media, likes: [String: Int]) -> [Media] {
+    let items = BrowseSectionRowModel.unique(media.recommendations.filter { BrowseMediaInfo.passesAdultFilter($0) && $0.id != media.id })
+    if likes.isEmpty { return items }
+    return items.enumerated().sorted { lhs, rhs in
+      let left = likes[lhs.element.id] ?? Int.min
+      let right = likes[rhs.element.id] ?? Int.min
+      return left != right ? left > right : lhs.offset < rhs.offset
+    }.map { $0.element }
+  }
+
   @ViewBuilder
   private func recommendationsSection(_ media: Media) -> some View {
-    let items = BrowseSectionRowModel.unique(media.recommendations.filter { BrowseMediaInfo.passesAdultFilter($0) && $0.id != media.id })
+    let likes = model.recommendationLikes
+    let items = recommendations(media, likes: likes)
     if !items.isEmpty {
-      BrowseToggleList(title: "Recommendations") {
+      BrowseExpandableList(title: "Recommendations", items: items) { item in
+        BrowseMediaCard(media: item, style: .small, width: 128, likes: likes[item.id])
+      }
+    }
+  }
+}
+
+/// ToggleList.svelte: one horizontal row, or with the Expandable Lists setting (toggleList) a wrapping list
+/// collapsed to its first row, opened and closed from the title or the round button under it.
+@MainActor
+struct BrowseExpandableList<Item: Identifiable, Card: View>: View {
+  let title: String
+  let items: [Item]
+  var itemWidth: CGFloat = 128
+  @ViewBuilder let card: (Item) -> Card
+  @State private var expanded = false
+  @State private var width: CGFloat = 0
+
+  private var spacing: CGFloat { 14 }
+
+  var body: some View {
+    if AppSettings.shared.values.toggleList {
+      wrapped
+    } else {
+      BrowseToggleList(title: title) {
         ForEach(items) { item in
-          BrowseMediaCard(media: item, style: .small, width: 128)
+          card(item)
         }
       }
+    }
+  }
+
+  /// previewLength: the cards that fit in one row.
+  private var rowLength: Int {
+    guard width > 0 else { return 4 }
+    return max(Int((width + spacing) / (itemWidth + spacing)), 1)
+  }
+
+  private var wrapped: some View {
+    let canToggle = items.count > rowLength
+    let shown: [Item] = (expanded || !canToggle) ? items : Array(items.prefix(rowLength))
+    return VStack(alignment: .leading, spacing: 12) {
+      Button {
+        toggle()
+      } label: {
+        BrowseSectionDivider(title: title)
+      }
+      .buttonStyle(.plain)
+      .disabled(!canToggle)
+      .padding(.horizontal, 16)
+      BrowseFlowLayout(spacing: spacing, lineSpacing: 18) {
+        ForEach(shown) { item in
+          card(item)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background {
+        GeometryReader { proxy in
+          Color.clear
+            .onAppear { width = proxy.size.width }
+            .onChange(of: proxy.size.width) { _, value in width = value }
+        }
+      }
+      .padding(.horizontal, 16)
+      if canToggle {
+        Button {
+          toggle()
+        } label: {
+          Image(systemName: expanded ? "chevron.up" : "chevron.down")
+            .font(.system(size: 15, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 40, height: 40)
+            .background(BrowsePalette.cardStrong, in: Circle())
+            .overlay(Circle().stroke(Color.white.opacity(0.6), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .accessibilityLabel(expanded ? "Show Less" : "Show More")
+      }
+    }
+  }
+
+  private func toggle() {
+    withAnimation(.easeInOut(duration: 0.2)) {
+      expanded.toggle()
     }
   }
 }

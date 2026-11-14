@@ -146,7 +146,9 @@ struct BrowseBannerIndicators: View {
 
 struct BrowseBannerIndicator: View {
   let active: Bool
-  @State private var fill: CGFloat = 0
+  /// Start of the 15 second fill. The fill is computed from a timeline instead of a 15 second
+  /// `withAnimation` started in onAppear (that transaction also animated the layout of the page).
+  @State private var start = Date()
 
   var body: some View {
     Capsule()
@@ -154,22 +156,17 @@ struct BrowseBannerIndicator: View {
       .frame(width: active ? 50 : 27, height: 3)
       .overlay(alignment: .leading) {
         if active {
-          Capsule()
-            .fill(Color.white)
-            .frame(width: 50 * fill, height: 3)
+          TimelineView(.periodic(from: start, by: 0.1)) { context in
+            let progress = min(max(context.date.timeIntervalSince(start) / 15, 0), 1)
+            Capsule()
+              .fill(Color.white)
+              .frame(width: CGFloat(50 * progress), height: 3)
+          }
         }
       }
       .animation(.easeInOut(duration: 0.8), value: active)
-      .onAppear { restart() }
-      .onChange(of: active) { _, _ in restart() }
-  }
-
-  private func restart() {
-    fill = 0
-    guard active else { return }
-    withAnimation(.linear(duration: 15)) {
-      fill = 1
-    }
+      .onAppear { start = Date() }
+      .onChange(of: active) { _, _ in start = Date() }
   }
 }
 
@@ -180,8 +177,15 @@ struct BrowseBannerPage: View {
 
   var body: some View {
     let current = BrowseMediaInfo.current(media)
+    let settings = AppSettings.shared.values
+    // FullBanner rotated: no banner and no trailer, adult "hentai" with the hentai banner setting.
+    let rotated = current.images.banner == nil && current.trailerYouTubeId == nil && settings.adult == "hentai" && settings.hentaiBanner
     ZStack(alignment: .bottomLeading) {
-      BrowseImage(BrowseMediaInfo.bannerURLs(current), placeholder: Color.black)
+      if rotated {
+        BrowseRotatedCover(urls: BrowseMediaInfo.coverURLs(current), placeholder: Color.black)
+      } else {
+        BrowseImage(BrowseMediaInfo.bannerURLs(current), placeholder: Color.black)
+      }
       LinearGradient(
         stops: [
           .init(color: Color.black.opacity(0.15), location: 0),
@@ -249,7 +253,7 @@ struct BrowseBannerInfo: View {
     if media.format != .unknown { parts.append(BrowseMediaInfo.formatText(media)) }
     if let episodes = BrowseMediaInfo.bannerEpisodesText(media, entry: media.listEntry) { parts.append(episodes) }
     if ServiceSettingsExtras.cardAudio && media.source == .anilist {
-      if Services.shared.dubs.isDubbed(malId: media.malId) {
+      if Services.shared.dubs.isFullyDubbed(malId: media.malId) {
         parts.append("Dub | Sub")
       } else if Services.shared.dubs.isIncomplete(malId: media.malId) {
         parts.append("Partial Dub | Sub")
@@ -310,13 +314,13 @@ struct BrowseBannerButtons: View {
 struct BrowseFavouriteButton: View {
   let media: Media
   var size: CGFloat = 44
-  @State private var favourite: Bool? = nil
 
   var body: some View {
-    let value = favourite ?? BrowseActions.isFavourite(media)
+    // Observable (BrowseFavouriteStore): every heart and menu entry of the media updates together.
+    let value = BrowseActions.isFavourite(media)
     let label: String = value ? "Unfavourite" : "Favourite"
     Button {
-      favourite = BrowseActions.toggleFavourite(media)
+      BrowseActions.toggleFavourite(media)
     } label: {
       Image(systemName: value ? "heart.fill" : "heart")
         .font(.system(size: size * 0.4, weight: .semibold))

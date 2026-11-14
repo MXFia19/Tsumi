@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import PhotosUI
 import Observation
 
@@ -53,8 +54,10 @@ final class BrowseSearchModel {
     RunKey(filters: filters, sectionTitle: sectionTitle, generation: generation)
   }
 
+  /// The section title badge is only shown for user-list sections (SearchBar.svelte filteredBadges:
+  /// `search.userList || badge.key !== 'title'`); Reset Filters still leaves any section.
   var badges: [BrowseFilterBadge] {
-    BrowseFilterBadge.badges(filters, sectionTitle: showsSectionBadge ? sectionTitle : nil)
+    BrowseFilterBadge.badges(filters, sectionTitle: (showsSectionBadge && context.userList) ? sectionTitle : nil)
   }
 
   var hasActiveFilters: Bool {
@@ -217,13 +220,47 @@ final class BrowseSearchModel {
     return HomeSectionPage(media: result.items, episodes: [], hasNextPage: result.hasNextPage)
   }
 
+  /// SearchPage.svelte onDestroy: leaving the page clears a feed section search (disableSearch), so the
+  /// Search tab does not reopen stuck on it.
+  func leavePage() {
+    guard section != nil, context.disableSearch else { return }
+    reset()
+  }
+
   // MARK: Image search (traceAnime)
 
   func trace(imageData: Data) async {
+    await trace { try await AnimeHelpers.traceAnime(imageData: imageData) }
+  }
+
+  /// traceAnime with an image URL (pasted link).
+  func trace(imageURL: URL) async {
+    await trace { try await AnimeHelpers.traceAnime(imageURL: imageURL) }
+  }
+
+  /// Paste of an image or an image URL (clipboard.js): image data first, then a URL or a link in the text.
+  func traceFromPasteboard() async {
+    let pasteboard = UIPasteboard.general
+    if let image = pasteboard.image, let data = image.jpegData(compressionQuality: 0.9) {
+      await trace(imageData: data)
+      return
+    }
+    if let url = pasteboard.url, url.scheme?.lowercased().hasPrefix("http") == true {
+      await trace(imageURL: url)
+      return
+    }
+    if let text = pasteboard.string?.trimmingCharacters(in: .whitespacesAndNewlines), let url = URL(string: text), url.scheme?.lowercased().hasPrefix("http") == true {
+      await trace(imageURL: url)
+      return
+    }
+    ServiceMessages.shared.post(.error, "Search Failed", "The clipboard has no image or image URL.")
+  }
+
+  private func trace(_ lookup: () async throws -> [TraceMoeMatch]) async {
     isTracing = true
-    ServiceMessages.shared.post(.info, "Looking up anime for image...", "You can also paste an URL to an image.")
+    ServiceMessages.shared.post(.info, "Looking up anime for image...", "You can also paste an image or an image URL: long press the image button.")
     do {
-      let matches = try await AnimeHelpers.traceAnime(imageData: imageData)
+      let matches = try await lookup()
       isTracing = false
       guard !matches.isEmpty else { throw ServiceError.invalidResponse }
       token += 1
@@ -258,11 +295,15 @@ struct SearchView: View {
   var body: some View {
     let router = AppRouter.shared
     ScrollView {
-      LazyVStack(alignment: .leading, spacing: 14) {
+      // Plain stack: the results grid is the only lazy container (no lazy stack around a lazy grid).
+      VStack(alignment: .leading, spacing: 14) {
         BrowseSearchHeader(model: model, showFilters: $showFilters, photoItem: $photoItem, cardMode: $cardMode)
         BrowseSearchResults(model: model, style: style)
       }
       .padding(.bottom, 24)
+    }
+    .onDisappear {
+      model.leavePage()
     }
     .background(BrowsePalette.background)
     .scrollDismissesKeyboard(.immediately)
@@ -354,6 +395,17 @@ struct BrowseSearchHeader: View {
         BrowseIconLabel(systemImage: model.isTracing ? "hourglass" : "photo.badge.arrow.down", active: model.isTraceMode)
       }
       .accessibilityLabel("Image Search")
+      .contextMenu {
+        // Paste of an image or an image URL (clipboard.js paste handler).
+        Button {
+          Task { await model.traceFromPasteboard() }
+        } label: {
+          Label("Paste Image or URL", systemImage: "doc.on.clipboard")
+        }
+      }
+      .accessibilityAction(named: "Paste Image or URL") {
+        Task { await model.traceFromPasteboard() }
+      }
       .disabled(model.isTracing)
       BrowseIconButton(systemImage: model.hasActiveFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle", active: model.hasActiveFilters, tint: BrowsePalette.danger, label: "Reset Filters") {
         model.reset()
@@ -367,6 +419,16 @@ struct BrowseSearchHeader: View {
   }
 
   private var cardModeButtons: some View {
+    BrowseCardModeButtons(cardMode: $cardMode)
+  }
+}
+
+/// Small / Large cards buttons (SearchBar.svelte), shared by the Search and Schedule headers.
+@MainActor
+struct BrowseCardModeButtons: View {
+  @Binding var cardMode: String
+
+  var body: some View {
     HStack(spacing: 4) {
       BrowseIconButton(systemImage: "square.grid.3x3", active: cardMode == BrowseCardMode.small.rawValue, label: "Small Cards") {
         cardMode = BrowseCardMode.small.rawValue

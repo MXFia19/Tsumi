@@ -81,6 +81,8 @@ final class StremioCatalogPageModel {
   var hasNextPage = false
   var loadingMore = false
   private var page = 0
+  /// Ids of the items as the addon returned them (before the AniList swap), to drop repeats.
+  @ObservationIgnored private var sourceIDs = Set<String>()
 
   init(section: StremioCatalogSection) {
     self.section = section
@@ -92,10 +94,12 @@ final class StremioCatalogPageModel {
     phase = .loading
     do {
       let result = try await section.load(page: 1)
-      items = result.items
+      sourceIDs = []
+      items = unseen(result.items)
       hasNextPage = result.hasNextPage
       page = 1
       phase = .loaded
+      showAnimeEntries()
     } catch {
       if PlaybackResolver.isCancellation(error) {
         phase = .idle
@@ -112,10 +116,10 @@ final class StremioCatalogPageModel {
     defer { loadingMore = false }
     do {
       let result = try await section.load(page: page + 1)
-      let known = Set(items.map(\.id))
-      items.append(contentsOf: result.items.filter { !known.contains($0.id) })
+      items.append(contentsOf: unseen(result.items))
       hasNextPage = result.hasNextPage
       page += 1
+      showAnimeEntries()
     } catch {
       hasNextPage = false
     }
@@ -125,13 +129,87 @@ final class StremioCatalogPageModel {
     phase = .idle
     await loadIfNeeded()
   }
+
+  /// Items not returned before (addons repeat items, and skip pages can overlap).
+  private func unseen(_ list: [Media]) -> [Media] {
+    var fresh: [Media] = []
+    for media in list where !sourceIDs.contains(media.id) {
+      sourceIDs.insert(media.id)
+      fresh.append(media)
+    }
+    return fresh
+  }
+
+  /// tmdb.js normalizeMedia gives a catalog item that maps to an AniList anime the AniList id, so its
+  /// card (mediaCache) and its details are the AniList entry (stremio.js metaToMedia). Entries already
+  /// stored are swapped in at once; the others are requested (batched AniList query) and swapped in
+  /// when they arrive. An anime already in the list is not added twice.
+  private func showAnimeEntries() {
+    var list = items
+    var present = Set(list.map(\.id))
+    var missing = Set<Int>()
+    var changed = false
+    for index in list.indices {
+      let item = list[index]
+      guard item.source == .tmdb, let anilistId = item.anilistId else { continue }
+      if let stored = MediaStore.shared.anilist(anilistId) {
+        guard !present.contains(stored.id) else { continue }
+        present.insert(stored.id)
+        list[index] = stored
+        changed = true
+      } else {
+        missing.insert(anilistId)
+      }
+    }
+    if changed { items = list }
+    guard !missing.isEmpty else { return }
+    let ids = Array(missing)
+    Task { [weak self] in
+      let found = await StremioCatalogPageModel.fetchAnime(ids)
+      self?.applyAnime(found)
+    }
+  }
+
+  private func applyAnime(_ found: [Int: Media]) {
+    guard !found.isEmpty else { return }
+    var list = items
+    var present = Set(list.map(\.id))
+    var changed = false
+    for index in list.indices {
+      let item = list[index]
+      guard item.source == .tmdb, let anilistId = item.anilistId, let anime = found[anilistId], !present.contains(anime.id) else { continue }
+      present.insert(anime.id)
+      list[index] = anime
+      changed = true
+    }
+    if changed { items = list }
+  }
+
+  /// requestMediaID: AniList entries by id, batched by AniListService.
+  private static func fetchAnime(_ ids: [Int]) async -> [Int: Media] {
+    await withTaskGroup(of: (Int, Media?).self, returning: [Int: Media].self) { group in
+      for id in ids {
+        group.addTask { (id, await AniListService.shared.requestMedia(id: id)) }
+      }
+      var found: [Int: Media] = [:]
+      for await (id, media) in group {
+        if let media { found[id] = media }
+      }
+      return found
+    }
+  }
 }
 
 /// Catalogs page (common/routes/catalogs/CatalogPage.svelte): one horizontal row per catalog of the
 /// enabled Stremio addons, search across addons (debounced 500 ms), empty states. Tapping a row title
-/// opens the whole catalog in a grid; tapping a poster calls `onSelect`.
+/// pushes the whole catalog as a grid (the Search page in the Svelte app). The cards are the standard
+/// browse cards (Card.svelte): tap opens the details, long press shows the preview with play, extension
+/// picker, list editor and favourite; list status and card type (small / full) follow the settings.
+/// Must be inside a NavigationStack (the shell tab stacks).
 @MainActor
 struct CatalogsView: View {
+  /// Kept for the callers; card taps now go through the standard card action (BrowseActions.open),
+  /// the same thing the shell passed here.
   var onSelect: (Media) -> Void
   /// "Open Settings" button of the "No Stremio addon" card (page.navigateTo(page.SETTINGS)).
   var onOpenSettings: (() -> Void)?
@@ -175,11 +253,10 @@ struct CatalogsView: View {
       .padding(.vertical, 15)
     }
     .background(Color.black)
-    .sheet(item: $gridSection) { section in
-      StremioCatalogGridView(section: section) { media in
-        gridSection = nil
-        onSelect(media)
-      }
+    // Pushed rather than presented: the details, playback dialogs and toasts are hosted by the root
+    // layer, which a sheet would cover.
+    .navigationDestination(item: $gridSection) { section in
+      StremioCatalogGridView(section: section, onSelect: onSelect)
     }
     .onDisappear { debounceTask?.cancel() }
   }
@@ -277,14 +354,26 @@ struct CatalogsView: View {
   }
 }
 
-/// One horizontal row (HomeSection equivalent): title (opens the full catalog), posters.
+/// One horizontal row (HomeSection equivalent): title (opens the full catalog), standard browse cards
+/// (HomeSection uses Card.svelte with the `cards` setting, like the home rows).
 @MainActor
 struct StremioCatalogRowView: View {
   let section: StremioCatalogSection
+  /// Kept for the callers; the cards use the standard card actions.
   var onSelect: (Media) -> Void
   var onOpenAll: () -> Void
 
   @State private var model: StremioCatalogPageModel? = nil
+  @AppStorage(BrowseCardMode.storageKey) private var cardMode = BrowseCardMode.small.rawValue
+
+  private var style: BrowseCardStyle {
+    cardMode == BrowseCardMode.full.rawValue ? .full : .small
+  }
+
+  /// Same card widths as the home rows.
+  private var cardWidth: CGFloat {
+    style == .full ? 330 : 128
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -303,7 +392,7 @@ struct StremioCatalogRowView: View {
       .padding(.horizontal, 20)
 
       ScrollView(.horizontal, showsIndicators: false) {
-        LazyHStack(alignment: .top, spacing: 12) {
+        LazyHStack(alignment: .top, spacing: 14) {
           rowContent
         }
         .padding(.horizontal, 20)
@@ -337,8 +426,7 @@ struct StremioCatalogRowView: View {
             .frame(height: 60)
         } else {
           ForEach(model.items) { media in
-            StremioCatalogCard(media: media) { onSelect(media) }
-              .frame(width: 112)
+            BrowseMediaCard(media: media, style: style, width: cardWidth)
           }
         }
       }
@@ -349,9 +437,11 @@ struct StremioCatalogRowView: View {
 
   private var placeholders: some View {
     ForEach(0..<6, id: \.self) { _ in
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .fill(Color.white.opacity(0.06))
-        .frame(width: 112, height: 168)
+      if style == .full {
+        BrowseFullCardSkeleton(width: cardWidth)
+      } else {
+        BrowseSmallCardSkeleton(width: cardWidth)
+      }
     }
   }
 
@@ -372,7 +462,7 @@ struct StremioCatalogRowView: View {
   }
 }
 
-/// Poster + title card.
+/// Poster + title card (no longer used by the catalog screens, which show BrowseMediaCard).
 struct StremioCatalogCard: View {
   let media: Media
   var action: () -> Void
@@ -394,32 +484,36 @@ struct StremioCatalogCard: View {
   }
 }
 
-/// Whole catalog in a grid with pagination (the Search page opened by a section title).
+/// Whole catalog in a grid with pagination (the Search page opened by a section title), pushed on the
+/// navigation stack of the catalogs screen. Standard browse cards, same columns as the Search grid.
 @MainActor
 struct StremioCatalogGridView: View {
   let section: StremioCatalogSection
+  /// Kept for the callers; the cards use the standard card actions.
   var onSelect: (Media) -> Void
 
-  @Environment(\.dismiss) private var dismiss
   @State private var model: StremioCatalogPageModel? = nil
+  @AppStorage(BrowseCardMode.storageKey) private var cardMode = BrowseCardMode.small.rawValue
 
-  private let columns = [GridItem(.adaptive(minimum: 104, maximum: 160), spacing: 14, alignment: .top)]
+  private var style: BrowseCardStyle {
+    cardMode == BrowseCardMode.full.rawValue ? .full : .small
+  }
+
+  private var columns: [GridItem] {
+    switch style {
+    case .small: return [GridItem(.adaptive(minimum: 105, maximum: 180), spacing: 12, alignment: .top)]
+    case .full: return [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)]
+    }
+  }
 
   var body: some View {
-    NavigationStack {
-      ScrollView {
-        content
-          .padding(16)
-      }
-      .background(Color.black)
-      .navigationTitle(section.title)
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button("Close") { dismiss() }
-        }
-      }
+    ScrollView {
+      content
+        .padding(16)
     }
+    .background(Color.black)
+    .navigationTitle(section.title)
+    .navigationBarTitleDisplayMode(.inline)
     .task {
       if model == nil {
         let created = StremioCatalogPageModel(section: section)
@@ -448,9 +542,9 @@ struct StremioCatalogGridView: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 60)
       case .loaded:
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
           ForEach(model.items) { media in
-            StremioCatalogCard(media: media) { onSelect(media) }
+            BrowseMediaCard(media: media, style: style)
               .onAppear {
                 if media.id == model.items.last?.id {
                   Task { await model.loadMore() }

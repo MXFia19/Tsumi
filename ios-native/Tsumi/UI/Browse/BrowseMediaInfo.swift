@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Observation
 
 // Display rules shared by the cards, the banner and the details (SmallCard / FullCard / PreviewCard /
 // FullBanner / DetailsModal labels) and the user actions (playMedia of anime.js, details, favourite).
@@ -203,19 +204,40 @@ enum BrowseActions {
     play(media, episode: EpisodeRef(number: episodeNumber, season: nil, localEpisode: nil), force: force)
   }
 
-  /// anilistClient.favourite: optimistic toggle, returns the new state.
+  /// anilistClient.favourite: optimistic toggle, returns the new state. Every view showing the
+  /// favourite state refreshes (BrowseFavouriteStore).
   @discardableResult
   static func toggleFavourite(_ media: Media) -> Bool {
-    Services.shared.details.toggleFavourite(media)
+    let value = Services.shared.details.toggleFavourite(media)
+    BrowseFavouriteStore.shared.changed()
+    return value
   }
 
+  /// Favourite state; reading it registers the view for favourite changes.
   static func isFavourite(_ media: Media) -> Bool {
-    Services.shared.details.isFavourite(media)
+    _ = BrowseFavouriteStore.shared.revision
+    return Services.shared.details.isFavourite(media)
   }
 
   /// copyToClipboard of clipboard.js.
   static func copy(_ url: URL, detail: String) {
     UIPasteboard.general.string = url.absoluteString
     ServiceMessages.shared.post(.info, "Copied to clipboard", "Copied \(detail) to clipboard")
+  }
+}
+
+/// Observable revision of the favourites (the favourite flags live in AniListService / MediaStore, which are
+/// not observable): bumped after a toggle and after fresh details, read by `BrowseActions.isFavourite`.
+@MainActor
+@Observable
+final class BrowseFavouriteStore {
+  static let shared = BrowseFavouriteStore()
+
+  private(set) var revision = 0
+
+  private init() {}
+
+  func changed() {
+    revision &+= 1
   }
 }

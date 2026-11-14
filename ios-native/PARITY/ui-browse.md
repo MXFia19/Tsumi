@@ -33,9 +33,9 @@ Swift code: `ios-native/Tsumi/UI/Browse/`
 
 | File | Types |
 |---|---|
-| `BrowseStyle.swift` | `BrowsePalette` (css.css colors, status colors), `BrowseText` (HTML cleanup, synopsis markdown, entities, dates), `BrowseImageCache` + `BrowseImage` (SmartImage: first URL that loads, memory cache), `BrowseShimmer`, `BrowseSkeletonBar`, `BrowseChip`, `BrowseListStatusDot`, `BrowseProgressBar`, `BrowseSectionDivider`, `BrowsePressableStyle`, `BrowseFlowLayout`, `BrowseCardMode`, `BrowseGenreIcons` |
-| `BrowseMediaInfo.swift` | `BrowseMediaInfo` (labels: title, year, season, episodes, play text, images, links, adult filter), `BrowseExternalLink`, `BrowseActions` (open details, playMedia, play episode, favourite, copy link) |
-| `BrowseCards.swift` | `BrowseCardStyle`, `BrowseMediaCard` (Card), `BrowseMediaMenuItems`, `BrowseFavouriteMenuButton`, `BrowseAiringLine`, `BrowseAiringBadge`, `BrowseAudioLabel`, `BrowseSmallCard`, `BrowseFullCard`, `BrowseMediaChips`, `BrowsePreviewCard` |
+| `BrowseStyle.swift` | `BrowsePalette` (css.css colors, status colors), `BrowseText` (HTML cleanup, synopsis markdown, entities, dates), `BrowseImageCache` + `BrowseImage` (SmartImage: first URL that loads, memory cache), `BrowseShimmer`, `BrowseSkeletonBar`, `BrowseChip`, `BrowseListStatusDot`, `BrowseProgressBar`, `BrowseSectionDivider`, `BrowsePressableStyle`, `BrowseFlowLayout`, `BrowseCardMode`, `BrowseGenreIcons`, `BrowseMarkdownBlock`, `BrowseRotatedCover`, `BrowseDiagonalStripes` |
+| `BrowseMediaInfo.swift` | `BrowseMediaInfo` (labels: title, year, season, episodes, play text, images, links, adult filter), `BrowseExternalLink`, `BrowseActions` (open details, playMedia, play episode, favourite, copy link), `BrowseFavouriteStore` (observable favourite revision) |
+| `BrowseCards.swift` | `BrowseCardStyle`, `BrowseMediaCard` (Card), `BrowseMediaMenuItems`, `BrowseFavouriteMenuButton`, `BrowseAiringLine`, `BrowseAiringBadge`, `BrowseDubFeed`, `BrowseAudioLabel`, `BrowseSmallCard`, `BrowseFullCard`, `BrowseMediaChips`, `BrowsePreviewCard` |
 | `BrowseEpisodeCards.swift` | `BrowseEpisodeCardData` (feed item or trace.moe match), `BrowseEpisodeCardState`, `BrowseEpisodeCard`, `BrowseEpisodeCardContent`, `BrowseEpisodeMetaLine`, `BrowseEpisodeThumbnail`, `BrowseEpisodePreviewCard` |
 | `BrowseSkeletons.swift` | `BrowseSmallCardSkeleton`, `BrowseFullCardSkeleton`, `BrowseEpisodeCardSkeleton`, `BrowseBannerSkeleton`, `BrowseEpisodeRowSkeleton`, `BrowseErrorCard` |
 | `BrowseListEditor.swift` | `BrowseListEditorButton`, `BrowseListEditor` (Scoring) |
@@ -43,17 +43,17 @@ Swift code: `ios-native/Tsumi/UI/Browse/`
 | `BrowseFilters.swift` | `BrowseSearchFilters` (search object, persistence, loader variables), `BrowseOption`, `BrowseFilterOptions`, `BrowseFilterContext`, `BrowseFilterBadge`, `BrowseFilterBadgesView`, `BrowseTriState`, `BrowseTriStateRow`, `BrowseTagPicker`, `BrowseFilterSheet` |
 | `HomeView.swift` | **`HomeView`**, `BrowseHomeModel`, `BrowseSectionRowModel`, `BrowseHomeSectionRow` |
 | `HomeBanner.swift` | `BrowseBannerModel`, `BrowseHeroBanner`, `BrowseBannerIndicators`, `BrowseBannerIndicator`, `BrowseBannerPage`, `BrowseBannerInfo`, `BrowseBannerButtons`, `BrowseFavouriteButton` |
-| `SearchView.swift` | **`SearchView`**, `BrowseSearchModel`, `BrowseSearchHeader`, `BrowseSourceMenu`, `BrowseSearchField`, `BrowseIconButton`, `BrowseIconLabel`, `BrowseSearchResults` |
+| `SearchView.swift` | **`SearchView`**, `BrowseSearchModel`, `BrowseSearchHeader`, `BrowseSourceMenu`, `BrowseSearchField`, `BrowseCardModeButtons`, `BrowseIconButton`, `BrowseIconLabel`, `BrowseSearchResults` |
 | `ScheduleView.swift` | **`ScheduleView`**, `BrowseScheduleModel`, `BrowseScheduleHeader`, `BrowseScheduleContent`, `BrowseScheduleDayHeader` |
 | `MediaDetailView.swift` | **`MediaDetailView(media:)`**, `BrowseDetailModel`, `BrowseDetailScreen`, `BrowseDetailTop` |
-| `MediaDetailHeader.swift` | `BrowseDetailHeader`, `BrowseDetailStats`, `BrowseDetailActions`, `BrowseShareLinkButton`, `BrowseFollowingRow`, `BrowseUserAvatar`, `BrowseUserCard`, `BrowseDetailInfoStrip`, `BrowseNextAiringLine`, `BrowseDetailChips`, `BrowseDetailSynopsis` |
+| `MediaDetailHeader.swift` | `BrowseDetailHeader`, `BrowseDetailStats`, `BrowseDetailActions`, `BrowseShareLinkButton`, `BrowseFollowingRow`, `BrowseUserAvatar`, `BrowseUserCard`, `BrowseDetailInfoStrip`, `BrowseNextAiringLine`, `BrowseDetailChips`, `BrowseDetailSynopsis`, `BrowseMarkdownBlocksView` |
 | `MediaDetailEpisodes.swift` | `BrowseDetailEpisodes`, `BrowseEpisodeRow` |
-| `MediaDetailSections.swift` | `BrowseDetailBottom`, `BrowseToggleList`, `BrowseCharacterRow`, `BrowseStaffRow`, `BrowsePersonCard`, `BrowseExternalLinks` |
+| `MediaDetailSections.swift` | `BrowseDetailBottom`, `BrowseExpandableList`, `BrowseToggleList`, `BrowseCharacterRow`, `BrowseStaffRow`, `BrowsePersonCard`, `BrowseExternalLinks` |
 
 Status: **done** = same behavior; **partial** = works, gap described; **n.a.** = not applicable on iOS (reason given);
 **extra** = not in the Svelte files, asked for the native app.
 Settings that Core `SettingsValues` does not model: `cards` (small / full) is stored with `@AppStorage("tsumi.browse.cards")`;
-`cardAudio` is read from `ServiceSettingsExtras.cardAudio`; `toggleList` is not stored (mobile layout used).
+`cardAudio` is read from `ServiceSettingsExtras.cardAudio`; `toggleList` is read from `AppSettings.shared.values.toggleList`.
 
 ## 1. Home page (HP, HS)
 
@@ -64,13 +64,13 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | 1.3 | Banner and sections rebuilt when the settings change | HP 259-263 | `.task(id: BrowseBannerModel.settingsKey)`; sections from `HomeSectionsService.sections` (rebuilt by the service) | done |
 | 1.4 | Sections in settings.homeSections order (mapSections, remap-sections) | HP 104-121 | `ForEach(Services.shared.sections.sections)` | done |
 | 1.5 | Hidden sections skipped (logged out / MAL "missed" sections) | HP 272 | the service only lists visible sections | done |
-| 1.6 | refreshSections when the user lists change (list sections) and when episode feeds change (RSS + Continue Watching) | HP 145-185 | `HomeSectionsService.revision` in each row's `.task(id:)` | done |
-| 1.7 | feedChanged: reload a feed section only when its feed changed | HP 187-219 | revision bump reloads every row; services return cached pages for unchanged feeds | done |
+| 1.6 | refreshSections when the user lists change (list sections) and when episode feeds change (RSS + Continue Watching) | HP 145-185 | `HomeSectionsService.revision` (lists, settings) in the `.task(id:)` key of each row; feed changes use the per-feed key of 1.7 | done |
+| 1.7 | feedChanged: reload a feed section only when its feed changed | HP 187-219 | `HomeSectionsService.feedRevisions` / `feedRevision(forSection:)` (bumped from `changedFeeds`) appended to the row key: only the Recent Subs / Dubs / Hentai row of the changed feed reloads | done |
 | 1.8 | resolveData comparison: keep the rendered cards when the reloaded first page is the same | HP 128-142 | `BrowseSectionRowModel.applyFirstPage` (ids compared, loaded pages kept) | done |
 | 1.9 | hideBanner: banner layer fades after 100 px of scroll | HP 236-251 | the banner scrolls with the content | n.a. (no fixed background layer on iOS) |
 | 1.10 | isPreviousRSS: negative margin after episode rows | HP 221-228 | rows are stacked normally | n.a. (desktop overlap layout) |
 | 1.11 | Section title click → Search page with the section loader, variables and title (clearNext) | HS 33-36 | `AppRouter.shared.showAll(sectionTitle:)` → `BrowseSearchModel.openSection` | done |
-| 1.12 | deferredLoad: first page loaded when the row becomes visible | HS 22-31 | `LazyVStack` + row `.task(id:)` | done |
+| 1.12 | deferredLoad: first page loaded when the row becomes visible | HS 22-31 | rows in a plain `VStack` (an outer `LazyVStack` of heterogeneous rows mis-estimated the height and let the page scroll into empty space), row `.task(id:)` | partial: every row loads its first page when Home appears |
 | 1.13 | 50 items loaded, 15 rendered, more rendered while scrolling | HS 1-4, 74-77 | `LazyHStack` renders lazily; next pages are loaded at the end of the row (`loadMore`) | done (also loads pages after the first 50, asked for the native app) |
 | 1.14 | Skeleton cards while loading (fakecards) | HS 4, 144 | `BrowseSmallCardSkeleton` / `BrowseFullCardSkeleton` / `BrowseEpisodeCardSkeleton` | done |
 | 1.15 | ErrorCard when the section is empty or failed | HS 147-149 | `BrowseErrorCard` (+ Retry button) | done |
@@ -90,7 +90,7 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | 2.3 | shuffleAndFilter: titles with a banner or a trailer (cover with hentaiBanner), first 20 shuffled, 10 kept | BN 8-30 | `BrowseBannerModel.shuffleAndFilter` | done |
 | 2.4 | Height 70vh (80vh on wide screens) | BN 50-58 | fixed 540 pt | done |
 | 2.5 | Banner image fallbacks: banner, YouTube maxres / hq thumbnails, cover, 404 image | FB 20-36 | `BrowseImage(BrowseMediaInfo.bannerURLs)` (dark placeholder instead of the 404 image) | done |
-| 2.6 | Rotated cover for the hentai banner without banner | FB 32-35 | cover shown unrotated | partial: no rotation |
+| 2.6 | Rotated cover for the hentai banner without banner | FB 32-35 | `BrowseBannerPage` → `BrowseRotatedCover` (no banner, no trailer, adult = hentai, hentaiBanner) | done |
 | 2.7 | App icon in the top corner (mobile) | FB 96-104 | — | n.a. (the shell navigation bar shows the app chrome) |
 | 2.8 | mediaCache subscription (list entry / favourite updates) | FB 40-50 | `BrowseMediaInfo.current` (MediaStore + list revision) | done |
 | 2.9 | Auto-advance every 15 s, timer restarted on manual selection | FB 60-79 | `.task(id: model.index)` | done |
@@ -103,7 +103,7 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | 2.16 | View Details | FB 189-195 | `BrowseActions.open` | done |
 | 2.17 | Scoring when logged in (AniList media) | FB 196-198 | `BrowseListEditorButton` | done |
 | 2.18 | Favourite heart (AniList account) | FB 199-224 | `BrowseFavouriteButton` | done |
-| 2.19 | Progress badges (active one fills in 15 s, click selects) | FB 226-245 | `BrowseBannerIndicators` | done |
+| 2.19 | Progress badges (active one fills in 15 s, click selects) | FB 226-245 | `BrowseBannerIndicators` (fill computed from a `TimelineView`, no 15 s `withAnimation` in `onAppear`) | done |
 | 2.20 | Radial gradient, fade-in animation | FB 251-378 | linear gradient, page transition | done (cosmetic difference) |
 
 ## 3. Media cards (CA, SC, FC, PC, AU)
@@ -113,12 +113,12 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | 3.1 | Card dispatch: episode / full / small (card.type or settings.cards) | CA 1-46 | `BrowseMediaCard(style:)`, `BrowseEpisodeCard` | done |
 | 3.2 | Click opens the details (fileEdit variant for torrents) | SC 25-28, FC 22-25 | `AppRouter.shared.open(media)` | done (fileEdit n.a.: no torrent file editing in the native app) |
 | 3.3 | Preview on hover / focus (cardPreview setting), click when previews are off | SC 30-77 | long press: context menu with `BrowsePreviewCard` (menu without preview when cardPreview is off) | done |
-| 3.4 | Focus / blur / outside click handling | SC 37-76 | context menu dismissal | n.a. (keyboard / pointer focus) |
-| 3.5 | Airing line "Episode N in 1d 2h" (scheduleList), refreshed every minute | SC 79-89, 111-118 | `BrowseAiringLine` (`TimelineView` 30 s) + air time | done |
-| 3.6 | AIRING badge when "out for", pulse animation | SC 108, 159-174 | `BrowseAiringBadge` | partial: no pulse animation |
+| 3.4 | Focus / blur / outside click handling | SC 37-76 | context menu dismissal; hardware keyboard: cards are `.focusable()` and Return opens the details (`onKeyPress`) | n.a. (keyboard / pointer focus preview) |
+| 3.5 | Airing line "Episode N in 1d 2h" (scheduleList), refreshed every minute | SC 79-89, 111-118 | `BrowseAiringLine` (`TimelineView` 30 s) + air time; "Episode a ~ b" ranges, "Episode N is Suspended" | done |
+| 3.6 | AIRING badge when "out for", pulse animation | SC 108, 159-174 | `BrowseAiringBadge` with a pulsing ring (`phaseAnimator`, scoped to the ring) | done (pulse on the badge instead of the whole card) |
 | 3.7 | Cover with cover color placeholder and 404 fallback | SC 121, FC 42 | `BrowseImage(coverURLs, placeholder: coverColor)` | done |
-| 3.8 | AudioLabel on covers (cardAudio): sub episodes, dub / partial dub, progress, adult | AU 76-119 | `BrowseAudioLabel` | partial: dub episode counts from the dub feeds are not computed (icon only) |
-| 3.9 | context-type: relation type or "N likes" of recommendations | SC 126-135 | `typeLabel` (relation type) | partial: no likes (recommendation ratings are not provided by `MediaDetailsService`) |
+| 3.8 | AudioLabel on covers (cardAudio): sub episodes, dub / partial dub, progress, adult | AU 76-119 | `BrowseAudioLabel`: aired dub episode count (`AnimeScheduleService.loadedDubAiredCount`), dubEpisodes rules, partial label, sub count max(playable, dub) | done |
+| 3.9 | context-type: relation type or "N likes" of recommendations | SC 126-135 | `typeLabel` (relation type) or `likes` (thumb up / down + "N likes", ratings from `MediaDetailsService.recommendationRatings`) | done |
 | 3.10 | List status circle (statusColorMap colors) | SC 136-139 | `BrowseListStatusDot` + `BrowsePalette.status` | done |
 | 3.11 | Title (title language / AniList userPreferred), 2 lines | SC 136-141 | `BrowseMediaInfo.title` | done |
 | 3.12 | Year: seasonYear, TBA, Kitsu start year, current year when releasing, N/A | SC 142-148 | `BrowseMediaInfo.yearText` | partial: Kitsu fallback replaced by `startDate` year |
@@ -140,15 +140,15 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | # | Svelte feature | Source | Swift | Status |
 |---|---|---|---|---|
 | 4.1 | Thumbnail rule: episode image hidden while the list progress is behind (spoilers), banner / cover fallback | EC 40, EPC 23 | `BrowseEpisodeCardState.thumbnailURLs` | done |
-| 4.2 | Rotated cover for hentai titles without image | EC 166 | — | partial: cover shown unrotated |
+| 4.2 | Rotated cover for hentai titles without image | EC 166 | `BrowseEpisodeThumbnail` → `BrowseRotatedCover` (no episode image, no banner, Hentai genre) | done |
 | 4.3 | Failed resolve icon (data.failed) | EC 167-171 | — | n.a. (feed entries come resolved from the services; file resolution is not in the native app) |
-| 4.4 | Play icon, duration (× episode range for batches) | EC 172-184 | `BrowseEpisodeThumbnail` | done (batch ranges n.a.: no file batches) |
+| 4.4 | Play icon, duration (× episode range for batches) | EC 172-184 | `BrowseEpisodeThumbnail` (`durationMinutes` × range of batch feed entries) | done |
 | 4.5 | Progress bar (completed = full, live watch progress) | EC 185-194 | `BrowseProgressBar` + `AnimeProgressService.episodeProgress` | done |
 | 4.6 | Completed episodes dimmed | EC 162, 216 | opacity 0.3 | done |
 | 4.7 | Title with status circle | EC 197-203 | `BrowseEpisodeCardContent.titleRow` | done |
 | 4.8 | Episode title (episode metadata, Kitsu fallback) | EC 204-214 | `EpisodeFeedItem.episodeTitle` (metadata resolved by the services) | done |
-| 4.9 | "Episode N" / "Episodes a ~ b" / "Movie" / "Season N" / "Batch" | EC 218-234 | `BrowseEpisodeCardState.episodeLabel` | partial: ranges / seasons parsed from file names n.a. |
-| 4.10 | Audio text (Sub / Dub / Partial Dub, cardAudio) | EC 235-238, AU 123-126 | `BrowseEpisodeCardState.audioLabel` | done (shown regardless of cardAudio) |
+| 4.9 | "Episode N" / "Episodes a ~ b" / "Movie" / "Season N" / "Batch" | EC 218-234 | `BrowseEpisodeCardState.episodeLabel` (ranges from `EpisodeFeedItem.lastEpisode` / `AiredEpisode.airedLast`, "Season N" from `BrowseEpisodeCardData.releaseTitle`) | done |
+| 4.10 | Audio text (Sub / Dub / Partial Dub, cardAudio) | EC 235-238, AU 123-126 | `BrowseEpisodeCardState.audioLabel`, only with `ServiceSettingsExtras.cardAudio` | done |
 | 4.11 | since(date), refreshed every minute | EC 141-149, 239-247 | `BrowseEpisodeMetaLine` (`TimelineView` 60 s) | done |
 | 4.12 | "Confidence: N%" of image search results | EC 248-256 | `secondaryText` | done |
 | 4.13 | Click: prompt when earlier episodes are not watched ("You Haven't Watched Any Episodes Yet!" / "Your Current Progress Is At Episode N", "Continue Anyway?") | EC 47-53, EPC 199-213 | `.alert` with Continue Anyway? / View Details | done |
@@ -157,7 +157,7 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | 4.16 | EpisodePreviewCard: thumbnail, progress, duration | EPC 29-58 | `BrowseEpisodePreviewCard` | done |
 | 4.17 | EpisodePreviewCard: trace.moe video preview | EPC 31-40 | — | n.a. (static context menu preview) |
 | 4.18 | EpisodePreviewCard: title, episode title, label, audio, since | EPC 60-118 | `BrowseEpisodePreviewCard.header` | done |
-| 4.19 | EpisodePreviewCard summary (episode summary, Kitsu synopsis, media description) | EPC 120-131 | media description | partial: `EpisodeFeedItem` has no episode summary |
+| 4.19 | EpisodePreviewCard summary (episode summary, Kitsu synopsis, media description) | EPC 120-131 | `EpisodeFeedItem.summary` (ani.zip / Kitsu metadata, TMDB / TVmaze overview), media description fallback | done |
 | 4.20 | EpisodePreviewCard year / format footer | EPC 132-144 | footer | done |
 
 ## 5. Error card and skeletons (ERR, SK)
@@ -181,7 +181,7 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | 6.4 | ErrorCard after the results / empty / failed states | SP 159-161 | `BrowseErrorCard` (+ Retry) | done |
 | 6.5 | Grid sizes for small / full / episode cards | SP 165-190 | adaptive `LazyVGrid` columns | done |
 | 6.6 | Row markers for the previews | SP 24-47 | — | n.a. (web preview positioning) |
-| 6.7 | onDestroy: RSS section search (disableSearch) reset when leaving the page | SP 114-118 | the section stays until the title badge or Reset Filters | partial: kept across tab switches |
+| 6.7 | onDestroy: RSS section search (disableSearch) reset when leaving the page | SP 114-118 | `SearchView.onDisappear` → `BrowseSearchModel.leavePage()` | done |
 | 6.8 | Offline margin (Status bar) | SP 124 | — | n.a. (shell) |
 | 6.9 | AppRouter pending search: section "see all" | — | `SearchView.consumePendingSearch` → `openSection` | done |
 | 6.10 | AppRouter pending search: preset query (genre / tag chips; `onList` mapped to Show / Hide My Anime) | — | `apply(query:)` → `BrowseSearchFilters(query:)` | done |
@@ -197,11 +197,11 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | 6.20 | Advanced search toggle (small screens) | SB 277-287 | filter sheet (`slider.horizontal.3` button with a count badge) | done |
 | 6.21 | Hide My Anime (click) / Show My Anime (right click), 5 statuses, disabled when logged out or for list sections | SB 113-128, 289-298 | icon button + context menu, toggles in the sheet | done |
 | 6.22 | Dubbed Audio (hideSubs) | SB 128-131, 299-307 | icon button / sheet toggle | done |
-| 6.23 | Image Search (file → traceAnime, toasts, results as episode cards) | SB 144-157, 308-317, anime.js 56-103 | `PhotosPicker` → `AnimeHelpers.traceAnime(imageData:)` → episode cards with Confidence | done |
+| 6.23 | Image Search (file, pasted image or image URL → traceAnime, toasts, results as episode cards) | SB 144-157, 308-317, anime.js 24-103 | `PhotosPicker` → `traceAnime(imageData:)`; long press "Paste Image or URL" → `traceFromPasteboard` (`traceAnime(imageURL:)`) | done |
 | 6.24 | Reset Filters (enabled with filters / section, FilterX icon) | SB 63-80, 319-330 | `BrowseSearchModel.reset` | done |
-| 6.25 | Filter badges in badgeKeys order, genre icons, exclusions in red, display names | SB 1-3, 332-352 | `BrowseFilterBadge.badges`, `BrowseFilterBadgesView` | done |
+| 6.25 | Filter badges in badgeKeys order, genre icons, exclusions in red, display names; section title badge only for user-list sections | SB 1-3, 332-352 | `BrowseFilterBadge.badges`, `BrowseFilterBadgesView`, `BrowseSearchModel.badges` (title gated on `context.userList`) | done |
 | 6.26 | removeBadge (title leaves the section and resets user sorts; genre / tag edits hide the title; hide / show statuses) | SB 90-112 | `BrowseSearchModel.remove` | done |
-| 6.27 | Small / large card mode (settings.cards), hidden for sections | SB 158-161, 356-357 | `cardModeButtons` + `@AppStorage` | done (stored outside Core settings) |
+| 6.27 | Small / large card mode (settings.cards), hidden for sections, also on Schedule | SB 158-161, 356-357, 371-372 | `BrowseCardModeButtons` + `@AppStorage` (Search and Schedule headers) | done (stored outside Core settings) |
 | 6.28 | scheduleList hides season / status / sort / image search | SB 208, 237, 246, 312 | `BrowseFilterContext.isSchedule` | done |
 | 6.29 | disableSearch locks every input (RSS sections) | SB 188-330 | `context.disableSearch` | done |
 | 6.30 | lastSearched persistence | sections.js 12-23 | UserDefaults `tsumi.browse.lastSearched` (normal searches only) | done |
@@ -214,13 +214,13 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | # | Svelte feature | Source | Swift | Status |
 |---|---|---|---|---|
 | 7.1 | lastSchedule persisted filters (default: anime, TV) | SCH 11-18 | UserDefaults `tsumi.browse.lastSchedule`, `BrowseSearchFilters.scheduleDefault` | done |
-| 7.2 | fetchAllScheduleEntries: sub / dub schedule, hide / show my anime, AniList filters, dub rules, western pages, dedup, sort | SCH 20-115 | `HomeSectionsService.schedule(_:page:)` with `BrowseSearchFilters.scheduleFilter` | done |
+| 7.2 | fetchAllScheduleEntries: sub / dub schedule, hide / show my anime, AniList filters, dub rules, western pages, dedup, sort; suspended dubs and episode ranges | SCH 20-115, anime.js 848-878 | `HomeSectionsService.schedule(_:page:)`; `AiringEpisode.lastEpisode` / `delayedIndefinitely` | done |
 | 7.3 | Title search (AniList `search` variable of the schedule ids) | SCH 41 | local title / synonym match | partial: filtered locally (ScheduleFilter has no text) |
 | 7.4 | Excluded formats | SCH 41 | local exclusion (`formatsNot`) | done |
 | 7.5 | Anime only on page 1, western pages after | SCH 87-96 | `BrowseScheduleModel.loadMore` | done |
-| 7.6 | Search bar subset: source, title, genres / tags, format, hide / show my anime, dubbed audio, reset | SB with scheduleList | `BrowseScheduleHeader` + `BrowseFilterSheet(context: isSchedule)` | done |
-| 7.7 | Cards with the airing countdown (scheduleList) | SC 79-89 | `BrowseMediaCard(airing:)` | done |
-| 7.8 | Entries grouped by day with their time | — | `BrowseScheduleModel.days`, pinned day headers | extra |
+| 7.6 | Search bar subset: source, title, genres / tags, format, hide / show my anime, dubbed audio, reset, card size | SB with scheduleList | `BrowseScheduleHeader` (+ `BrowseCardModeButtons`) + `BrowseFilterSheet(context: isSchedule)` | done |
+| 7.7 | Cards with the airing countdown (scheduleList), "Suspended" for suspended dubs | SC 79-89, anime.js 847-850 | `BrowseMediaCard(airing:)`; suspended entries in a last "Suspended" group | done |
+| 7.8 | Entries grouped by day with their time | — | `BrowseScheduleModel.days`, one `LazyVGrid` with pinned day headers | extra |
 | 7.9 | Tap opens the details | SC 25 | `BrowseMediaCard` | done |
 | 7.10 | Pull to refresh | — | `.refreshable` → `retry()` | extra |
 
@@ -228,8 +228,8 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 
 | # | Svelte feature | Source | Swift | Status |
 |---|---|---|---|---|
-| 8.1 | Opened from the modal store, media taken from mediaCache | DM 28-41 | `MediaDetailView(media:)` → `BrowseDetailModel` (MediaStore copy shown at once) | done |
-| 8.2 | Close button (×), Escape | DM 191-196, 365-367 | close overlay → `AppRouter.closeDetails()` + `dismiss()` | done (Escape n.a.) |
+| 8.1 | Opened from the modal store, media taken from mediaCache (refreshed after list edits) | DM 28-44 | `MediaDetailView(media:)` → `BrowseDetailModel`; header, actions, episodes and bottom read `BrowseDetailModel.live` (MediaStore copy + list revision) | done |
+| 8.2 | Close button (×), Escape | DM 191-196, 365-367 | close overlay → `AppRouter.closeDetails()` + `dismiss()`, `.keyboardShortcut(.cancelAction)` (Esc) | done |
 | 8.3 | Scroll to top / focus when another title opens | DM 176-187 | `.id(media.id)` recreates the screen | done |
 | 8.4 | Banner layer with fallbacks, fading after 100 px | DM 397-411, 892-918 | `BrowseDetailHeader` banner (scrolls with the content) | done (fade n.a.) |
 | 8.5 | Cover with color and AudioLabel | DM 418-434 | `BrowseDetailHeader.cover` | done |
@@ -238,22 +238,22 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | 8.8 | Rating %, Format, Episodes (max or ?) or Length, Reviews | DM 441-494 | `BrowseDetailStats` | done |
 | 8.9 | Play button (Watch / Continue / Rewatch Now), disabled when not released | DM 495-504, 198-212 | `BrowseDetailActions` → `playMedia` (+ long press: Choose Extension) | done |
 | 8.10 | Scoring (logged in, AniList media) | DM 506-508 | `BrowseListEditorButton` | done |
-| 8.11 | Favourite (AniList account) | DM 509-533 | `BrowseFavouriteButton` | done |
+| 8.11 | Favourite (AniList account) | DM 509-533 | `BrowseFavouriteButton`; every heart / menu item observes `BrowseFavouriteStore` | done |
 | 8.12 | Trailer button + TrailerModal | DM 534 | `trailerButton` → `BrowseTrailerSheet` | done |
 | 8.13 | Share AniList / TMDB / MyAnimeList (clipboard, right click opens) | DM 535-597 | `BrowseShareLinkButton` (Share to Clipboard, Share sheet, Open in Browser) | done |
-| 8.14 | Following | DM 599 | `BrowseFollowingRow` | done |
+| 8.14 | Following | DM 599 | `BrowseFollowingRow` (profiles loaded when a popover opens) | done |
 | 8.15 | Details strip | DM 603 | `BrowseDetailInfoStrip` | done |
 | 8.16 | Tags with rank (AniList), horizontal | DM 604-617 | `BrowseDetailChips` (tap → search the tag) | done |
 | 8.17 | Genres with icons, horizontal | DM 618-635 | `BrowseDetailChips` (tap → search the genre) | done |
-| 8.18 | Synopsis (marked + DOMPurify) | DM 236-321, 636-652 | `BrowseText.attributed` (line breaks, bold, italic, links) + Show More | partial: headings / lists / tables rendered as plain text |
+| 8.18 | Synopsis (marked + DOMPurify) | DM 236-321, 636-652 | `BrowseText.markdownBlocks` → `BrowseMarkdownBlocksView` (headings, lists, quotes, rules, tables) when the text has blocks, else `BrowseText.attributed`; Show More | done |
 | 8.19 | Episodes title with Reverse (mobile) / order button (desktop) | DM 653-678, 847-866 | `BrowseDetailEpisodes.header` | done |
 | 8.20 | Relations (no CHARACTER / non anime / MUSIC / filtered adult / missing ids, by season year) | DM 692-731 | `BrowseDetailBottom.relations` | done |
-| 8.21 | Recommendations (adult filters, sorted by rating, likes label) | DM 732-771 | `recommendationsSection` | partial: AniList order, no likes (no ratings in `Media.recommendations`) |
+| 8.21 | Recommendations (adult filters, sorted by rating, likes label) | DM 732-771 | `recommendationsSection` sorted by `BrowseDetailModel.recommendationLikes` (`MediaDetailsService.recommendationRatings`), "N likes" on the cards | done |
 | 8.22 | TMDB relations (collection) | DM 773-797 | same rows (`Media.relations` from TMDB) | done |
 | 8.23 | TMDB recommendations | DM 798-818 | same row | done |
 | 8.24 | TMDB enrichment (genres, tags, description, status, trailer, banner, studios, staff, characters, rating, external ids) | DM 92-160 | `MediaDetailsService.details`; content rating in the strip, studios / networks / providers, links | done |
 | 8.25 | 'play-anime' events (episode cards, IPC) → handlePlay | DM 214-234 | `BrowseActions.play` called directly | done |
-| 8.26 | Column height sync (desktop two columns) | DM 330-345 | single column | n.a. (phone layout) |
+| 8.26 | Column height sync (desktop two columns) | DM 330-345, 822-866 | regular width ≥ 700 pt: details and episode list side by side, each in its own scroll view (`BrowseDetailScreen.wideLayout`) | done |
 | 8.27 | Characters and staff rows | — | `BrowseCharacterRow`, `BrowseStaffRow` | extra |
 | 8.28 | Next airing countdown | — | `BrowseNextAiringLine` | extra |
 | 8.29 | Popularity and episode duration | — | details strip | extra |
@@ -266,22 +266,22 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 
 | # | Svelte feature | Source | Swift | Status |
 |---|---|---|---|---|
-| 9.1 | AniList episode list (load) | EL 91-208 | `MediaDetailsService.episodes(for:)` | done |
+| 9.1 | AniList episode list (load) | EL 91-208 | `MediaDetailsService.quickEpisodes` (ani.zip / Kitsu / schedule behind 10 s timeouts, shown at once) then `enrichEpisodes` (Jikan titles, filler / recap, one request per Jikan page, pages kept for the session); 30 s limit → error card with Retry | done |
 | 9.2 | TMDB episodes (movie, every season with SxEy titles) | EL 210-258 | same service | done |
 | 9.3 | Skeletons while loading (episode count, max 15, 1 when not released) | EL 315-319 | `BrowseEpisodeRowSkeleton` (max 6) | done |
-| 9.4 | Incremental rendering (15 at a time on scroll) | EL 64-76, 276-299 | `LazyVStack` | done |
-| 9.5 | Visibility: aired episodes plus the next one (every episode when finished) | EL 329 | `BrowseDetailModel.displayedEpisodes` | done |
-| 9.6 | Unreleased episodes: blurred / striped, not clickable | EL 330, 337-339, 444-452 | dimmed + desaturated + clock icon, taps ignored | partial: no stripes / blur |
+| 9.4 | Incremental rendering (15 at a time on scroll) | EL 64-76, 276-299 | `LazyVStack` for the rows only (the rest of the details is a plain `VStack`) | done |
+| 9.5 | Visibility: aired episodes plus the next one (every episode when finished), same dub date as the previous one | EL 329 | `BrowseDetailModel.displayedEpisodes` | done |
+| 9.6 | Unreleased episodes: blurred / striped, not clickable | EL 330, 337-339, 444-452 | `BrowseDiagonalStripes` overlay, blur 0.6, 50 % saturation, taps ignored | done |
 | 9.7 | Completed episodes (progress ≥ episode, zero episode offset) | EL 331, 337 | opacity + full progress bar | done |
 | 9.8 | Next episode (target) border | EL 332, 337 | white border | done |
-| 9.9 | Filler / Recap badge and border | EL 333, 349-353 | "Filler" badge + border | partial: recap not provided by `EpisodeInfo` |
+| 9.9 | Filler / Recap badge and border | EL 333, 349-353 | "Filler" / "Recap" badge + border (`EpisodeInfo.isFiller` / `isRecap` from Jikan) | done |
 | 9.10 | Watch progress per episode (liveAnimeProgress) | EL 334, 365-372 | `AnimeProgressService.progress(mediaKey:)` | done |
-| 9.11 | Duplicate titles hidden (matchPhrase with earlier episodes) | EL 335 | `BrowseDetailModel.duplicateTitleIds` | partial: exact (case-insensitive) duplicates only |
+| 9.11 | Duplicate titles hidden (matchPhrase with earlier episodes) | EL 335 | `BrowseDetailModel.duplicateTitleIds` (strict matchPhrase 0.1 = same title after `ServiceText.clean`) | done |
 | 9.12 | "N. title" unless the number is in the title or single episode | EL 357-358 | `displayTitle` | done |
 | 9.13 | Length "Xm" | EL 359-363 | title row | done |
 | 9.14 | Summary without "(Source: …)", unreleased summary highlighted | EL 373-375, 455-457 | `BrowseText.episodeSummary` | done |
 | 9.15 | Date: since(airdate), In Production, season year, month year, Released, Unknown | EL 403-419 | `BrowseEpisodeRow.dateText` | done |
-| 9.16 | Dub / Sub airing rows (dubAiring, cardAudio) | EL 13-48, 376-402 | — | partial: not available (`MediaDetailsService` does not build `dubbedEpisode`, see services.md 12.7) |
+| 9.16 | Dub / Sub airing rows (dubAiring, cardAudio) | EL 13-48, 376-402 | `AnimeScheduleService.dubEpisodeAirings` / `dubbedEpisode` → "Dub: …" / "Sub: …" labels in `BrowseEpisodeRow`; an earlier dub date moves the sub date | done |
 | 9.17 | Click plays {number, season, localEpisode} | EL 337 | `BrowseActions.play(media, episode: episode.ref)` | done |
 | 9.18 | Right click → extension picker (force) | EL 337 | long press (haptic) / accessibility action "Choose Extension" | done |
 | 9.19 | Reverse order | DM 653-678 | `model.reversed` | done |
@@ -294,7 +294,7 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 |---|---|---|---|---|
 | 10.1 | ToggleTitle (title between lines) | TL ToggleTitle | `BrowseSectionDivider` | done |
 | 10.2 | ToggleList horizontal row (toggleList off, the Android default) | TL 79-90 | `BrowseToggleList` | done |
-| 10.3 | ToggleList wrapped grid with Show More / Show Less (toggleList on, desktop default) + ToggleFooter | TL 23-90, ToggleFooter | — | n.a. (phone layout; the toggleList setting is not in Core settings) |
+| 10.3 | ToggleList wrapped grid with Show More / Show Less (toggleList on) + ToggleFooter | TL 23-90, ToggleFooter | `BrowseExpandableList` (Relations, Recommendations): `AppSettings.values.toggleList` wraps the cards, first row shown, title / round button toggle | done |
 | 10.4 | Following only with an AniList viewer | FO Following 9 | `BrowseDetailModel.loadFollowing` | done |
 | 10.5 | Following: viewer excluded, deduplicated by name | FO Following 13 | `AniListService.following` | done |
 | 10.6 | 11 overlapping avatars then "+N" | FO Following 14-28 | `BrowseFollowingRow` | done |
@@ -302,7 +302,7 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | 10.8 | User popover (hover / focus) | FO User 24-50, 62-133 | tap shows `BrowseUserCard` | done |
 | 10.9 | Popover: status name or "Not on List", Progress, Score | FO User 93-103 | `BrowseUserCard` chips | done |
 | 10.10 | Popover: share / open the profile URL | FO User 72-75 | menu (Share to Clipboard, Open in Browser) | done |
-| 10.11 | Popover: banner, profile color, "Following You", join date, BLOCKED, moderator roles, donator badge, statistics | FO User 59-131 | — | partial: these fields are not provided by `AniListFollowingEntry` |
+| 10.11 | Popover: banner, profile color, "Following You", join date, BLOCKED, moderator roles, donator badge, statistics | FO User 59-131 | `BrowseUserCard(profile:)` with `MediaDetailsService.followingProfiles` (user fields of the anilist.js following query, requested on first popover) | done |
 | 10.12 | Scoring button (Bookmark / PencilLine), disabled when logged out | SCO 207-215 | `BrowseListEditorButton` | done |
 | 10.13 | Status select ("Not on List" hidden once a status is chosen) | SCO 225-237 | `BrowseListEditor.statusSection` | done |
 | 10.14 | Episode input capped to the episode count (12 for releasing titles without count), "/ total" | SCO 176-191, 238-247 | `episodeSection` (field + stepper) | done |
@@ -320,9 +320,9 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 
 | Status | Rows |
 |---|---|
-| done | 162 |
-| partial | 19 |
-| n.a. | 20 |
+| done | 178 |
+| partial | 5 |
+| n.a. | 18 |
 | extra | 10 |
 | **total** | **211** |
 

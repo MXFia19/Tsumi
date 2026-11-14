@@ -2,7 +2,8 @@ import SwiftUI
 import Observation
 
 // routes/home/HomePage.svelte: hero banner, then every section of settings.homeSections in order,
-// reloaded when HomeSectionsService.revision changes (lists, feeds, settings) and on pull to refresh.
+// reloaded when HomeSectionsService.revision changes (lists, settings) and on pull to refresh; an episode
+// feed row also reloads when its own feed changed (feedRevision), the other rows do not.
 
 @MainActor
 @Observable
@@ -37,10 +38,12 @@ struct HomeView: View {
     let service = Services.shared.sections
     let reloadKey = "\(service.revision)-\(model.refreshToken)"
     ScrollView {
-      LazyVStack(alignment: .leading, spacing: 26) {
+      // Plain stack of the rows (each row scrolls horizontally in its own lazy stack): an outer lazy stack of
+      // heterogeneous sections mis-estimated the content height.
+      VStack(alignment: .leading, spacing: 26) {
         BrowseHeroBanner(model: model.banner)
         ForEach(service.sections) { section in
-          BrowseHomeSectionRow(row: model.row(for: section), reloadKey: reloadKey)
+          BrowseHomeSectionRow(row: model.row(for: section), reloadKey: reloadKey + "-\(service.feedRevision(forSection: section.title))")
         }
         if service.sections.isEmpty {
           BrowseErrorCard(kind: .empty)

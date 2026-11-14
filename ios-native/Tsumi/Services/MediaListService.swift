@@ -323,7 +323,7 @@ final class MediaListService {
     } else {
       ServiceMessages.shared.post(.error, "Failed to Update List", description)
     }
-    await syncProfiles(current, status: status, progress: progress, score: score, repeatCount: repeatValue, delete: false, description: description)
+    await syncProfiles(current, status: status, progress: progress, score: score, repeatCount: repeatValue, delete: false, description: description, startedAt: input.startedAt, completedAt: input.completedAt)
     return success
   }
 
@@ -408,7 +408,7 @@ final class MediaListService {
     } else {
       ServiceMessages.shared.post(.error, "Failed to Update List", description)
     }
-    await syncProfiles(cached, status: status, progress: videoEpisode, score: score, repeatCount: repeatCount, delete: false, description: description)
+    await syncProfiles(cached, status: status, progress: videoEpisode, score: score, repeatCount: repeatCount, delete: false, description: description, startedAt: input.startedAt, completedAt: input.completedAt)
   }
 
   /// playMedia: episode to start from (continues after the progress, zero episode aware).
@@ -472,8 +472,10 @@ final class MediaListService {
     }
   }
 
-  /// Syncs a change to the other profiles whose "Sync List Entries" switch is on.
-  private func syncProfiles(_ media: Media, status: ListStatus, progress: Int, score: Double, repeatCount: Int, delete: Bool, description: String) async {
+  /// Syncs a change to the other profiles whose "Sync List Entries" switch is on. The entry's dates are the
+  /// ones sent for the current account (Scoring.svelte / helper.js `...variables`), so a synced profile keeps
+  /// the real start / completion dates instead of getting today.
+  private func syncProfiles(_ media: Media, status: ListStatus, progress: Int, score: Double, repeatCount: Int, delete: Bool, description: String, startedAt: FuzzyDate? = nil, completedAt: FuzzyDate? = nil) async {
     let store = AccountStore.shared
     let targets = store.others.filter { store.syncIds.contains($0.viewer.id) && !$0.reauth }
     for profile in targets {
@@ -488,7 +490,7 @@ final class MediaListService {
               continue
             }
           } else {
-            let dates = Self.fuzzyDates(startedAt: nil, completedAt: nil, status: status)
+            let dates = Self.fuzzyDates(startedAt: startedAt, completedAt: completedAt, status: status)
             let input = ListEntryInput(anilistId: media.anilistId, malId: media.malId, status: status, progress: progress, scoreRaw: Int((score * 10).rounded()), repeatCount: repeatCount, startedAt: dates.startedAt, completedAt: dates.completedAt)
             _ = try await AniListService.shared.saveEntry(input, token: profile.token)
             success = true
@@ -497,7 +499,7 @@ final class MediaListService {
           if delete {
             success = try await MyAnimeListService.shared.deleteEntry(malId: malId, profile: profile)
           } else {
-            let dates = Self.fuzzyDates(startedAt: nil, completedAt: nil, status: status)
+            let dates = Self.fuzzyDates(startedAt: startedAt, completedAt: completedAt, status: status)
             let input = ListEntryInput(anilistId: media.anilistId, malId: malId, status: status, progress: progress, scoreRaw: Int(score.rounded()), repeatCount: repeatCount, startedAt: dates.startedAt, completedAt: dates.completedAt)
             success = try await MyAnimeListService.shared.saveEntry(malId: malId, input: input, profile: profile)
           }

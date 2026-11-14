@@ -53,6 +53,16 @@ enum BrowsePalette {
   }
 }
 
+/// Block of the synopsis markdown (BrowseText.markdownBlocks).
+enum BrowseMarkdownBlock: Hashable {
+  case paragraph(String)
+  case heading(level: Int, text: String)
+  case listItem(marker: String, text: String, indent: Int)
+  case quote(String)
+  case rule
+  case table(header: [String], rows: [[String]])
+}
+
 /// Text helpers (description cleanup of the cards and the details synopsis).
 enum BrowseText {
   /// `.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()` of the cards.
@@ -90,6 +100,137 @@ enum BrowseText {
     }
     let fallback = text.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "*", with: "")
     return AttributedString(fallback)
+  }
+
+  /// One block of inline markdown (bold / italic / links / code), whitespace kept.
+  static func inlineMarkdown(_ text: String) -> AttributedString {
+    let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+    if let parsed = try? AttributedString(markdown: text, options: options) {
+      return parsed
+    }
+    return AttributedString(text.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "*", with: ""))
+  }
+
+  /// sanitize() of DetailsModal.svelte (marked with gfm + breaks) as blocks: headings, bullet / numbered
+  /// lists, quotes, rules, tables and paragraphs. HTML headings, list items and rules become markdown first.
+  static func markdownBlocks(_ html: String?) -> [BrowseMarkdownBlock] {
+    guard let html, !html.isEmpty else { return [] }
+    var text = html.trimmingCharacters(in: .whitespacesAndNewlines)
+    text = text.replacingOccurrences(of: "\r\n", with: "\n")
+    text = text.replacingOccurrences(of: "\\.\\.+(?=\\s*$)", with: ".", options: .regularExpression)
+    text = text.replacingOccurrences(of: "\n", with: "<br>")
+    text = text.replacingOccurrences(of: "(?i)<br\\s*/?>", with: "\n", options: .regularExpression)
+    for level in 1...6 {
+      let hashes = String(repeating: "#", count: level)
+      text = text.replacingOccurrences(of: "(?is)<h\(level)[^>]*>(.*?)</h\(level)>", with: "\n\(hashes) $1\n", options: .regularExpression)
+    }
+    text = text.replacingOccurrences(of: "(?i)<li[^>]*>\\s*", with: "\n- ", options: .regularExpression)
+    text = text.replacingOccurrences(of: "(?i)</li>|</?ul[^>]*>|</?ol[^>]*>|</p>", with: "\n", options: .regularExpression)
+    text = text.replacingOccurrences(of: "(?i)<hr\\s*/?>", with: "\n---\n", options: .regularExpression)
+    text = text.replacingOccurrences(of: "(?i)<(b|strong)>\\s*", with: "**", options: .regularExpression)
+    text = text.replacingOccurrences(of: "(?i)\\s*</(b|strong)>", with: "**", options: .regularExpression)
+    text = text.replacingOccurrences(of: "(?i)<(i|em)>\\s*", with: "*", options: .regularExpression)
+    text = text.replacingOccurrences(of: "(?i)\\s*</(i|em)>", with: "*", options: .regularExpression)
+    text = text.replacingOccurrences(of: "(?i)<a[^>]*href=\"([^\"]*)\"[^>]*>(.*?)</a>", with: "[$2]($1)", options: .regularExpression)
+    text = text.replacingOccurrences(of: "<[^>]*>", with: "", options: .regularExpression)
+    text = decodeEntities(text)
+    text = text.replacingOccurrences(of: "~!", with: "").replacingOccurrences(of: "!~", with: "")
+    text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if text.isEmpty { return [] }
+
+    let lines = text.components(separatedBy: "\n")
+    var blocks: [BrowseMarkdownBlock] = []
+    var paragraph: [String] = []
+    func flush() {
+      if !paragraph.isEmpty {
+        blocks.append(.paragraph(paragraph.joined(separator: "\n")))
+        paragraph = []
+      }
+    }
+    var index = 0
+    while index < lines.count {
+      let line = lines[index]
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.isEmpty {
+        flush()
+        index += 1
+        continue
+      }
+      if trimmed.contains("|"), index + 1 < lines.count, isTableSeparator(lines[index + 1]) {
+        flush()
+        let header = tableCells(trimmed)
+        var rows: [[String]] = []
+        index += 2
+        while index < lines.count {
+          let row = lines[index].trimmingCharacters(in: .whitespaces)
+          if row.isEmpty || !row.contains("|") { break }
+          rows.append(tableCells(row))
+          index += 1
+        }
+        blocks.append(.table(header: header, rows: rows))
+        continue
+      }
+      if let groups = captures(trimmed, "^(#{1,6})\\s+(.*)$") {
+        flush()
+        blocks.append(.heading(level: groups[0].count, text: groups[1]))
+      } else if captures(trimmed, "^(-{3,}|\\*{3,}|_{3,})$") != nil {
+        flush()
+        blocks.append(.rule)
+      } else if let groups = captures(line, "^(\\s*)[-*+]\\s+(.*)$") {
+        flush()
+        blocks.append(.listItem(marker: "\u{2022}", text: groups[1], indent: groups[0].count / 2))
+      } else if let groups = captures(line, "^(\\s*)(\\d+)[.)]\\s+(.*)$") {
+        flush()
+        blocks.append(.listItem(marker: groups[1] + ".", text: groups[2], indent: groups[0].count / 2))
+      } else if let groups = captures(trimmed, "^>\\s?(.*)$") {
+        flush()
+        blocks.append(.quote(groups[0]))
+      } else {
+        paragraph.append(line)
+      }
+      index += 1
+    }
+    flush()
+    return blocks
+  }
+
+  /// True when the blocks hold more than plain paragraphs.
+  static func hasStructure(_ blocks: [BrowseMarkdownBlock]) -> Bool {
+    blocks.contains { block in
+      if case .paragraph = block { return false }
+      return true
+    }
+  }
+
+  private static func isTableSeparator(_ line: String) -> Bool {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    guard trimmed.contains("-") else { return false }
+    return captures(trimmed, "^\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)*\\|?$") != nil
+  }
+
+  private static func tableCells(_ line: String) -> [String] {
+    var row = line.trimmingCharacters(in: .whitespaces)
+    if row.hasPrefix("|") { row.removeFirst() }
+    if row.hasSuffix("|") { row.removeLast() }
+    return row.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+  }
+
+  /// Capture groups of the first match (unmatched groups as ""), nil without a match.
+  private static func captures(_ text: String, _ pattern: String) -> [String]? {
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+    guard let match = regex.firstMatch(in: text, range: range) else { return nil }
+    var groups: [String] = []
+    if match.numberOfRanges > 1 {
+      for position in 1..<match.numberOfRanges {
+        if let groupRange = Range(match.range(at: position), in: text) {
+          groups.append(String(text[groupRange]))
+        } else {
+          groups.append("")
+        }
+      }
+    }
+    return groups
   }
 
   /// Episode summaries: removes the trailing "(Source: ...)".
@@ -262,19 +403,58 @@ struct BrowseImage: View {
   }
 }
 
+/// Cover turned 90 degrees to fill a wide frame (cover-rotated of css.css: hentai titles without a banner).
+@MainActor
+struct BrowseRotatedCover: View {
+  let urls: [URL?]
+  var placeholder: Color = BrowsePalette.skeleton
+
+  var body: some View {
+    GeometryReader { proxy in
+      BrowseImage(urls, placeholder: placeholder)
+        .frame(width: proxy.size.height, height: proxy.size.width)
+        .rotationEffect(.degrees(-90))
+        .frame(width: proxy.size.width, height: proxy.size.height)
+    }
+    .clipped()
+  }
+}
+
+/// Diagonal bands (repeating-linear-gradient(-45deg) of the unreleased episodes).
+struct BrowseDiagonalStripes: Shape {
+  var spacing: CGFloat = 12
+
+  func path(in rect: CGRect) -> Path {
+    var path = Path()
+    let step = max(spacing, 2)
+    var x = rect.minX - rect.height
+    while x < rect.maxX {
+      path.move(to: CGPoint(x: x, y: rect.maxY))
+      path.addLine(to: CGPoint(x: x + rect.height, y: rect.minY))
+      path.addLine(to: CGPoint(x: x + rect.height + step, y: rect.minY))
+      path.addLine(to: CGPoint(x: x + step, y: rect.maxY))
+      path.closeSubpath()
+      x += step * 2
+    }
+    return path
+  }
+}
+
 // MARK: - Small building blocks
 
-/// Pulsing placeholder (skeloader).
+/// Pulsing placeholder (skeloader). The repeating animation is scoped to the opacity only: a
+/// `withAnimation(.repeatForever)` in onAppear also captured the initial layout of the screen, which then
+/// moved up and down forever.
 struct BrowseShimmer: ViewModifier {
   @State private var dimmed = false
 
   func body(content: Content) -> some View {
     content
-      .opacity(dimmed ? 0.45 : 1)
+      .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { view in
+        view.opacity(dimmed ? 0.45 : 1)
+      }
       .onAppear {
-        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-          dimmed = true
-        }
+        dimmed = true
       }
   }
 }

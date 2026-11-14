@@ -1,8 +1,12 @@
 import SwiftUI
+import UIKit
+import WebKit
 
 // Profiles modal (common/components/Profiles.svelte): current profile, other profiles (switch, sync list
 // entries, authenticate, logout), AniList / MyAnimeList login, "Add Profile" (at most 5 other profiles),
 // "Authenticate" for an expired MyAnimeList session and "Sign Out".
+// Logins open in a web view sheet (Electron 'open-auth' window) that catches the token / code in the URLs it
+// loads; a "Paste token" field (settings.js paste handler) is the fallback and also routes pasted links.
 
 @MainActor
 struct ProfilesView: View {
@@ -11,6 +15,8 @@ struct ProfilesView: View {
 
   var body: some View {
     let service = ProfilesService.shared
+    // Read here so the sheet binding below is re-evaluated when a login page opens or closes.
+    _ = service.webLogin
     return NavigationStack {
       ScrollView {
         VStack(spacing: 18) {
@@ -45,6 +51,154 @@ struct ProfilesView: View {
       }
     }
     .presentationDragIndicator(.visible)
+    .sheet(item: webLoginBinding) { request in
+      ShellWebLoginSheet(request: request)
+    }
+  }
+
+  /// The login page of ProfilesService (closing the sheet cancels the login).
+  private var webLoginBinding: Binding<TsumiWebLoginRequest?> {
+    Binding(
+      get: { ProfilesService.shared.webLogin },
+      set: { value in
+        if value == nil {
+          let service = ProfilesService.shared
+          service.finishWebLogin(nil, request: service.webLogin?.id)
+        }
+      }
+    )
+  }
+}
+
+// MARK: - Web view login
+
+/// Login page in a web view (Electron 'open-auth' window). Cancel closes it without an error toast.
+@MainActor
+struct ShellWebLoginSheet: View {
+  let request: TsumiWebLoginRequest
+
+  var body: some View {
+    let id = request.id
+    return NavigationStack {
+      ShellWebLoginView(request: request)
+        .ignoresSafeArea(edges: .bottom)
+        .navigationTitle("Log in to \(request.title)")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+          ToolbarItem(placement: .cancellationAction) {
+            Button("Cancel") {
+              ProfilesService.shared.finishWebLogin(nil, request: id)
+            }
+          }
+        }
+    }
+    .onDisappear {
+      ProfilesService.shared.finishWebLogin(nil, request: id)
+    }
+  }
+}
+
+/// WKWebView with the default (persistent) website data store, so the next login is remembered.
+struct ShellWebLoginView: UIViewRepresentable {
+  let request: TsumiWebLoginRequest
+
+  func makeCoordinator() -> ShellWebLoginCoordinator {
+    ShellWebLoginCoordinator(requestID: request.id, malState: request.malState)
+  }
+
+  func makeUIView(context: Context) -> WKWebView {
+    let configuration = WKWebViewConfiguration()
+    configuration.websiteDataStore = WKWebsiteDataStore.default()
+    let webView = WKWebView(frame: .zero, configuration: configuration)
+    webView.navigationDelegate = context.coordinator
+    context.coordinator.attach(webView)
+    webView.load(URLRequest(url: request.url))
+    return webView
+  }
+
+  func updateUIView(_ webView: WKWebView, context: Context) {}
+
+  static func dismantleUIView(_ webView: WKWebView, coordinator: ShellWebLoginCoordinator) {
+    coordinator.detach()
+    webView.stopLoading()
+    webView.navigationDelegate = nil
+  }
+}
+
+/// Inspects every URL of the login web view: navigation requests, redirects, commits, failed loads of
+/// custom schemes (tsumi:// / shiru://) and, through KVO on `url`, fragment-only changes (the AniList pin page
+/// gets `#access_token=...`). The first URL carrying the login result ends the web login.
+final class ShellWebLoginCoordinator: NSObject, WKNavigationDelegate {
+  private let requestID: UUID
+  private let malState: String?
+  private var observation: NSKeyValueObservation?
+  private var finished = false
+
+  init(requestID: UUID, malState: String?) {
+    self.requestID = requestID
+    self.malState = malState
+  }
+
+  @MainActor
+  func attach(_ webView: WKWebView) {
+    observation = webView.observe(\.url, options: [.new]) { [weak self] observed, _ in
+      MainActor.assumeIsolated {
+        _ = self?.inspect(observed.url)
+      }
+    }
+  }
+
+  @MainActor
+  func detach() {
+    observation?.invalidate()
+    observation = nil
+  }
+
+  /// Ends the login when `url` carries its result; returns true in that case (the navigation is cancelled).
+  @MainActor
+  func inspect(_ url: URL?) -> Bool {
+    guard let url, let callback = ProfilesService.loginCallbackURL(url, malState: malState) else { return false }
+    if !finished {
+      finished = true
+      ProfilesService.shared.finishWebLogin(callback, request: requestID)
+    }
+    return true
+  }
+
+  func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+    let blocked: Bool = MainActor.assumeIsolated {
+      let url = navigationAction.request.url
+      if self.inspect(url) { return true }
+      // Only web pages load here (other schemes would leave the app or fail).
+      let scheme = url?.scheme?.lowercased() ?? "https"
+      return !["http", "https", "about", "data", "blob"].contains(scheme)
+    }
+    decisionHandler(blocked ? .cancel : .allow)
+  }
+
+  func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+    MainActor.assumeIsolated {
+      _ = self.inspect(webView.url)
+    }
+  }
+
+  func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+    MainActor.assumeIsolated {
+      _ = self.inspect(webView.url)
+    }
+  }
+
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    MainActor.assumeIsolated {
+      _ = self.inspect(webView.url)
+    }
+  }
+
+  func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+    let failingURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL
+    MainActor.assumeIsolated {
+      _ = self.inspect(failingURL)
+    }
   }
 }
 
@@ -232,10 +386,59 @@ struct ShellLoginBox: View {
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Log in with MyAnimeList")
+      ShellPasteTokenField(onSuccess: onSuccess)
+        .padding(.top, 4)
     }
     .padding(.vertical, 16)
     .frame(maxWidth: .infinity)
     .background(ShellPalette.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+  }
+}
+
+/// "Paste token" fallback (settings.js paste handler): an AniList token or pin page URL, a MyAnimeList
+/// `code=...&state=...` redirect, or an AniList / MyAnimeList / tsumi:// link (`ShellPasteHandler`).
+@MainActor
+struct ShellPasteTokenField: View {
+  let onSuccess: () -> Void
+  @State private var text = ""
+
+  var body: some View {
+    let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    return VStack(alignment: .leading, spacing: 6) {
+      Text("Or paste the token AniList shows, or a link")
+        .font(.footnote)
+        .foregroundStyle(Color.secondary)
+      HStack(spacing: 8) {
+        TextField("Paste token", text: $text)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .textFieldStyle(.roundedBorder)
+          .submitLabel(.go)
+          .onSubmit { submit() }
+        Button {
+          if let value = UIPasteboard.general.string { text = value }
+        } label: {
+          Image(systemName: "doc.on.clipboard")
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("Paste from Clipboard")
+        Button("Log In") { submit() }
+          .buttonStyle(.bordered)
+          .disabled(isEmpty)
+      }
+    }
+    .padding(.horizontal, 16)
+  }
+
+  private func submit() {
+    let value = text
+    guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    Task { @MainActor in
+      if await ShellPasteHandler.handle(value) {
+        text = ""
+        onSuccess()
+      }
+    }
   }
 }
 

@@ -11,6 +11,8 @@ struct ExtensionSettingsView: View {
   @State private var failedSource: String? = nil
   @State private var dragOverDefault = false
   @State private var confirmingDelete: String? = nil
+  /// Extension whose "Delete Extension" context-menu item asks for confirmation.
+  @State private var menuDeleteKey: String? = nil
 
   private var manager: ExtensionManager { ExtensionManager.shared }
 
@@ -68,12 +70,41 @@ struct ExtensionSettingsView: View {
       .padding(20)
     }
     .background(Color.black)
-    .refreshable { await ExtensionManager.shared.refreshAll() }
+    .refreshable {
+      // Keeps the spinner until the extensions are loaded again.
+      await ExtensionManager.shared.refreshAll()
+      await ExtensionManager.shared.awaitPendingLoads()
+    }
     .sheet(isPresented: $showAddDialog) {
       addDialog
         .presentationDetents([.medium])
         .presentationDragIndicator(.visible)
     }
+    .confirmationDialog(
+      menuDeleteTitle,
+      isPresented: Binding(
+        get: { menuDeleteKey != nil },
+        set: { if !$0 { menuDeleteKey = nil } }
+      ),
+      titleVisibility: .visible,
+      presenting: menuDeleteKey
+    ) { key in
+      Button("Delete", role: .destructive) {
+        menuDeleteKey = nil
+        removeSource(key)
+      }
+      Button("Cancel", role: .cancel) {
+        menuDeleteKey = nil
+      }
+    } message: { _ in
+      Text("The extension is removed from this device. You can add it again from its URL.")
+    }
+  }
+
+  /// Title of the context-menu delete confirmation (ConfirmButton of ExtensionTab.svelte).
+  private var menuDeleteTitle: String {
+    guard let key = menuDeleteKey, let ext = manager.installedExtension(key) else { return "Delete Extension?" }
+    return "Delete \(ext.displayName)?"
   }
 
   // MARK: Empty state
@@ -227,7 +258,7 @@ struct ExtensionSettingsView: View {
         Label(isStarred ? "Unstar" : "Star", systemImage: isStarred ? "star.slash" : "star")
       }
       Button(role: .destructive) {
-        removeSource(ext.key)
+        menuDeleteKey = ext.key
       } label: {
         Label("Delete Extension", systemImage: "trash")
       }

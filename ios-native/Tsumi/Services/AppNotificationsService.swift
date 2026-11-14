@@ -141,7 +141,35 @@ final class ReleaseNotifyStore: @unchecked Sendable {
   }
 }
 
-/// UNUserNotificationCenter delegate: shows banners in foreground and forwards taps.
+/// Action buttons of the system notifications (capacitor/src/main/app.js `notifyTypes`): "View Anime" opens
+/// the details (tsumi://anime/<id>), "Start Watching" / "Resume" / "Watch" play (tsumi://search/<id>).
+enum TsumiNotificationCategory {
+  static let viewAnime = "view_anime"
+  static let startWatching = "start_watching"
+  static let continueWatching = "continue_watching"
+  static let watchNow = "watch_now"
+
+  /// Action identifiers (app.js `actionId`).
+  static let viewAction = "view_anime"
+  static let watchAction = "watch_anime"
+
+  static func register() {
+    let view = UNNotificationAction(identifier: viewAction, title: "View Anime", options: [.foreground])
+    let start = UNNotificationAction(identifier: watchAction, title: "Start Watching", options: [.foreground])
+    let resume = UNNotificationAction(identifier: watchAction, title: "Resume", options: [.foreground])
+    let watch = UNNotificationAction(identifier: watchAction, title: "Watch", options: [.foreground])
+    let categories: Set<UNNotificationCategory> = [
+      UNNotificationCategory(identifier: viewAnime, actions: [view], intentIdentifiers: [], options: []),
+      UNNotificationCategory(identifier: startWatching, actions: [start, view], intentIdentifiers: [], options: []),
+      UNNotificationCategory(identifier: continueWatching, actions: [resume, view], intentIdentifiers: [], options: []),
+      UNNotificationCategory(identifier: watchNow, actions: [watch, view], intentIdentifiers: [], options: [])
+    ]
+    UNUserNotificationCenter.current().setNotificationCategories(categories)
+  }
+}
+
+/// UNUserNotificationCenter delegate: shows banners in foreground and forwards taps / action buttons
+/// (app.js localNotificationActionPerformed: the watch action opens the play link, the others the details).
 final class TsumiNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
   var onOpenURL: ((URL) -> Void)?
 
@@ -150,7 +178,16 @@ final class TsumiNotificationDelegate: NSObject, UNUserNotificationCenterDelegat
   }
 
   func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-    let link = response.notification.request.content.userInfo["url"] as? String
+    let info = response.notification.request.content.userInfo
+    let link: String?
+    switch response.actionIdentifier {
+    case TsumiNotificationCategory.watchAction:
+      link = (info["watchURL"] as? String) ?? (info["url"] as? String)
+    case UNNotificationDismissActionIdentifier:
+      link = nil
+    default:
+      link = info["url"] as? String
+    }
     let handler = onOpenURL
     if let link, let url = URL(string: link) {
       DispatchQueue.main.async {
@@ -184,6 +221,8 @@ final class AppNotificationsService {
   @ObservationIgnored private var debounceTask: Task<Void, Never>?
   @ObservationIgnored private var pollTask: Task<Void, Never>?
   @ObservationIgnored private var saveTask: Task<Void, Never>?
+  /// System notifications being handed to iOS (image download + add), awaited by `flushAndWait()`.
+  @ObservationIgnored private var deliveries: [UUID: Task<Void, Never>] = [:]
 
   private init() {
     let url = Self.fileURL
@@ -210,6 +249,7 @@ final class AppNotificationsService {
   /// Installs the notification delegate, asks for permission (systemNotify) and starts the AniList polling.
   func start() {
     UNUserNotificationCenter.current().delegate = delegate
+    TsumiNotificationCategory.register()
     if AppSettings.shared.values.systemNotify {
       Task { _ = await requestAuthorization() }
     }
@@ -302,6 +342,15 @@ final class AppNotificationsService {
   func flush() {
     debounceTask?.cancel()
     processIncoming()
+  }
+
+  /// Processes the queue and waits until its system notifications were handed to iOS (background refresh).
+  func flushAndWait() async {
+    flush()
+    let pending = Array(deliveries.values)
+    for task in pending {
+      await task.value
+    }
   }
 
   private func processIncoming() {
@@ -448,18 +497,41 @@ final class AppNotificationsService {
     content.body = notification.message
     content.sound = .default
     content.threadIdentifier = notification.mediaKey
+    content.categoryIdentifier = Self.category(for: notification)
     if let link = notification.deepLink?.absoluteString {
-      content.userInfo = ["url": link, "mediaKey": notification.mediaKey]
+      var info: [String: Any] = ["url": link, "mediaKey": notification.mediaKey]
+      if let watch = Self.watchLink(for: notification) { info["watchURL"] = watch.absoluteString }
+      content.userInfo = info
     }
     let identifier = notification.id
-    let imageURL = notification.iconXL ?? notification.icon
-    Task {
+    // app.js attachments: heroImg || iconXL || icon.
+    let imageURL = notification.heroImage ?? notification.iconXL ?? notification.icon
+    let token = UUID()
+    deliveries[token] = Task {
       if let imageURL, let attachment = await Self.attachment(from: imageURL, identifier: identifier) {
         content.attachments = [attachment]
       }
       let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
       try? await UNUserNotificationCenter.current().add(request)
+      self.deliveries[token] = nil
     }
+  }
+
+  /// tsumi://search/<id> (play) for AniList episodes; nil for announcements and other sources.
+  private static func watchLink(for notification: MediaNotification) -> URL? {
+    guard notification.clickAction == .play, !notification.delayed, notification.episode != nil,
+          notification.mediaKey == Media.anilistKey(notification.mediaId) else { return nil }
+    return URL(string: "tsumi://search/\(notification.mediaId)")
+  }
+
+  /// app.js actionTypeId: "View Anime" only for announcements; otherwise Start Watching (nothing watched
+  /// yet), Resume (some progress) or Watch, each with "View Anime".
+  private static func category(for notification: MediaNotification) -> String {
+    guard watchLink(for: notification) != nil else { return TsumiNotificationCategory.viewAnime }
+    let progress = MediaStore.shared.media(notification.mediaKey)?.listEntry?.progress ?? 0
+    if progress > 0 { return TsumiNotificationCategory.continueWatching }
+    if (notification.episode ?? 0) <= 1 { return TsumiNotificationCategory.startWatching }
+    return TsumiNotificationCategory.watchNow
   }
 
   /// Downloads the cover so that it shows in the system notification.

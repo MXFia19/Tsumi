@@ -236,6 +236,8 @@ struct EpisodeInfo: Identifiable, Codable, Hashable {
   var airDate: Date?
   var durationMinutes: Int?
   var isFiller: Bool = false
+  /// Jikan "recap" flag (EpisodeList.svelte "Recap" badge).
+  var isRecap: Bool = false
 
   var ref: EpisodeRef { EpisodeRef(number: number, season: season, localEpisode: localEpisode) }
 }
@@ -249,6 +251,10 @@ struct EpisodeFeedItem: Identifiable, Hashable {
   var dub: Bool = false
   var episodeTitle: String?
   var thumbnail: URL?
+  /// Episode summary (episodeData.summary / overview), shown by the episode preview card.
+  var summary: String? = nil
+  /// Last episode of a batch release ("Episodes 1 ~ 3"), nil for a single episode.
+  var lastEpisode: Int? = nil
 }
 
 /// Airing schedule entry (Schedule page).
@@ -257,6 +263,16 @@ struct AiringEpisode: Identifiable, Hashable {
   var media: Media
   var episode: Int
   var airingAt: Date
+  /// Last episode airing at the same time ("Episode 5 ~ 7"), nil for a single episode.
+  var lastEpisode: Int? = nil
+  /// Dub production suspended (delayedIndefinitely): shown as "Suspended" instead of a countdown.
+  var delayedIndefinitely: Bool = false
+
+  /// "Episode 5" / "Episode 5 ~ 7" (episode() of anime.js).
+  var episodeText: String {
+    if let lastEpisode, lastEpisode > episode { return "Episode \(episode) ~ \(lastEpisode)" }
+    return "Episode \(episode)"
+  }
 }
 
 /// A playable link returned by an extension.

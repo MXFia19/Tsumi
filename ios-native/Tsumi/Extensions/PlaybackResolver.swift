@@ -24,6 +24,21 @@ enum PlaybackResolutionError: LocalizedError, Equatable {
   }
 }
 
+/// Search result a playback came from (extension + result href). The next / previous episode is resolved
+/// from this exact result, so a result picked by hand (a dub, another season or variant) is kept.
+struct PlaybackSource: Hashable {
+  var extensionKey: String
+  var href: String
+  var title: String?
+}
+
+/// Stream of one episode of one search result, with the episode actually played.
+struct PlaybackSourceStream {
+  var stream: ExtensionStream
+  var episode: EpisodeRef
+  var source: PlaybackSource
+}
+
 /// Next step once a stream is found.
 enum PlaybackResolutionStep {
   case ready(ResolvedPlayback)
@@ -109,6 +124,19 @@ enum PlaybackResolver {
     return episodes.first { $0.number == target }
   }
 
+  /// Episode reported to the player. Without a season in the request, the matched episode's number is used
+  /// (launchPlayer gets `targetEp.number || capturedEpisode` in DefaultLoadingModal / ExtensionResults), so a
+  /// fallback to the first episode is shown and saved as the episode that really plays.
+  static func playedEpisode(_ matched: ExtensionEpisode, requested: EpisodeRef) -> EpisodeRef {
+    guard requested.season == nil else { return requested }
+    let number = matched.number
+    // 0 / NaN are falsy in `targetEp.number || capturedEpisode`.
+    guard number.isFinite, number > 0, number == number.rounded(), number < 1_000_000 else { return requested }
+    let value = Int(number)
+    if value == requested.number { return requested }
+    return EpisodeRef(number: value, season: nil, localEpisode: nil)
+  }
+
   // MARK: Extension steps
 
   /// searchResults of one extension, scored against the title and sorted (best first, stable).
@@ -139,10 +167,29 @@ enum PlaybackResolver {
 
   /// extractEpisodes + episode pick + extractStreamUrl + parseStreamResponse for one search result.
   static func resolveStream(_ ext: LoadedExtension, href: String, episode: EpisodeRef) async throws -> ExtensionStream {
+    try await resolveSourceStream(ext, href: href, episode: episode).stream
+  }
+
+  /// Same as `resolveStream`, keeping the result and the episode that plays. `strict` (next / previous episode
+  /// from a remembered result) refuses the first-episode fallback when the result lists several episodes.
+  static func resolveSourceStream(
+    _ ext: LoadedExtension,
+    href: String,
+    episode: EpisodeRef,
+    title: String? = nil,
+    strict: Bool = false
+  ) async throws -> PlaybackSourceStream {
     let episodes = try await ExtensionCalls.extractEpisodes(ext, href: href)
     guard let first = episodes.first else { throw PlaybackResolutionError.noEpisodes }
-    let target = matchEpisode(episodes, for: episode) ?? first
-    return try await fetchStream(ext, episodeHref: target.href)
+    let match = matchEpisode(episodes, for: episode)
+    if strict && match == nil && episodes.count > 1 { throw PlaybackResolutionError.noEpisodes }
+    let target = match ?? first
+    let stream = try await fetchStream(ext, episodeHref: target.href)
+    return PlaybackSourceStream(
+      stream: stream,
+      episode: playedEpisode(target, requested: episode),
+      source: PlaybackSource(extensionKey: ext.key, href: href, title: title)
+    )
   }
 
   /// extractStreamUrl + parseStreamResponse (+ fallback) for one episode href.
@@ -157,6 +204,13 @@ enum PlaybackResolver {
   /// Auto-play with the default extension (DefaultLoadingModal.autoPlay), reporting the status texts.
   @MainActor
   static func resolveWithDefault(media: Media, episode: EpisodeRef, onStatus: @escaping (String) -> Void) async throws -> (stream: ExtensionStream, extensionKey: String) {
+    let found = try await resolveWithDefaultSource(media: media, episode: episode, onStatus: onStatus)
+    return (found.stream, found.source.extensionKey)
+  }
+
+  /// `resolveWithDefault` keeping the chosen result and the episode that plays.
+  @MainActor
+  static func resolveWithDefaultSource(media: Media, episode: EpisodeRef, onStatus: @escaping (String) -> Void) async throws -> PlaybackSourceStream {
     onStatus("Connecting to extension...")
     let manager = ExtensionManager.shared
     await manager.awaitPendingLoads()
@@ -177,7 +231,11 @@ enum PlaybackResolver {
 
     onStatus("Loading stream...")
     let found = try await fetchStream(ext, episodeHref: target.href)
-    return (found, ext.key)
+    return PlaybackSourceStream(
+      stream: found,
+      episode: playedEpisode(target, requested: episode),
+      source: PlaybackSource(extensionKey: ext.key, href: best.href, title: best.title)
+    )
   }
 
   /// After a stream is found: remembered server, server choice or direct playback.

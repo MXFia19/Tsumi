@@ -3,10 +3,12 @@ import SwiftUI
 // Presentation hosts of the shell. App.svelte stacks DetailsModal, ExtensionModal, DefaultLoadingModal,
 // ServerSelectorModal, NotificationsModal, Profiles and the player layer; on iOS each layer presents only
 // from the controller on top, so the playback dialogs (PlaybackRequestSheetView) and the toasts are hosted
-// by whichever layer is currently the top one (see ShellLayers).
+// by whichever layer is currently the top one (see ShellLayers). The in-app miniplayer (Miniplayer.svelte)
+// floats over the root view, or over the details sheet when one is open.
 
 /// Playback dialogs (default extension loading, extension results, server selector) on one layer.
-/// Same binding and dismissal semantics as `.playbackRequestPresenter()`, restricted to the top layer.
+/// Binds `PlaybackRequestCoordinator.presentation` (a sheet on the top layer only); closing the sheet stops
+/// the running resolution (`sheetDidDismiss`).
 @MainActor
 struct ShellPlaybackDialogHost: ViewModifier {
   let layer: ShellLayer
@@ -70,8 +72,50 @@ struct ShellRootSheetContent: View {
         ProfilesView()
       }
     }
+    .overlay {
+      ShellMiniPlayerOverlay(layer: .rootSheet)
+    }
     .modifier(ShellPlaybackDialogHost(layer: .rootSheet))
     .modifier(ShellToastHost(layer: .rootSheet))
+  }
+}
+
+/// In-app miniplayer (App.svelte `miniplayer`): shown while the player is minimized and not in Picture in
+/// Picture, across every tab. It sits on the root view, or on the details sheet while one is open (Svelte keeps
+/// it above the details modal); other sheets cover it. Tap restores the full player, X closes it.
+@MainActor
+struct ShellMiniPlayerOverlay: View {
+  let layer: ShellLayer
+
+  /// Layer hosting the miniplayer: the details sheet when shown, else the root view.
+  static var hostLayer: ShellLayer {
+    if case .some(.details) = ShellLayers.rootSheet { return .rootSheet }
+    return .root
+  }
+
+  var body: some View {
+    ShellLayers.track()
+    let controller = PlayerPresentation.shared.miniPlayerController
+    let visible = controller != nil && ShellMiniPlayerOverlay.hostLayer == layer
+    return ZStack {
+      if let controller, visible {
+        PlayerMiniPlayerDock(
+          controller: controller,
+          insets: insets,
+          onExpand: { ShellPlayback.restorePlayer() },
+          onClose: { PlayerPresentation.shared.dismiss() }
+        )
+        .id(ObjectIdentifier(controller))
+      }
+    }
+    .animation(.easeInOut(duration: 0.2), value: visible)
+  }
+
+  /// Root: clear of the navigation bar and the tab bar. Sheet: small margins.
+  private var insets: EdgeInsets {
+    layer == .root
+      ? EdgeInsets(top: 60, leading: 12, bottom: 60, trailing: 12)
+      : EdgeInsets(top: 56, leading: 12, bottom: 16, trailing: 12)
   }
 }
 
@@ -87,8 +131,8 @@ struct ShellDetailsContainer: View {
   }
 }
 
-/// Full screen player (replaces `.playerPresentationHost()`): same `PlayerPresentation` state, plus the
-/// details sheet over the player and the dialogs / toasts of the player layers.
+/// Full screen player: `PlayerPresentation.isPresented` / `controller`, plus the details sheet over the player
+/// and the dialogs / toasts of the player layers. Minimizing dismisses it; the miniplayer takes over.
 @MainActor
 struct ShellPlayerHost: ViewModifier {
   func body(content: Content) -> some View {
@@ -125,7 +169,7 @@ struct ShellPlayerCover: View {
         }
       ),
       onDismiss: {
-        // pagePause: resume the player when the details close (unless it is being replaced).
+        // The details closed: the player gets its keyboard focus back (unless it is being replaced).
         if !ShellState.shared.replacingPlayer {
           PlayerPresentation.shared.controller?.setExternalOverlay(presented: false)
         }
@@ -138,7 +182,8 @@ struct ShellPlayerCover: View {
   }
 }
 
-/// Details shown over the player ("Now Playing" details): the player pauses while it is open.
+/// Details shown over the player ("Now Playing" details). The player keeps playing underneath, like the
+/// Svelte app (details over the player do not pause it).
 @MainActor
 struct ShellPlayerDetailsSheet: View {
   let media: Media

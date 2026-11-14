@@ -8,16 +8,12 @@ import UIKit
 // (W2GSwarm, P2PT protocol) and exchange small JSON events over WebRTC data channels:
 //   {"payload": …, "type": "init" | "media" | "index" | "player" | "message"}
 //
-// Wiring (done by the app):
-//   WatchTogetherClient.shared.currentUser = { /* signed-in Viewer or nil */ }
-//   WatchTogetherClient.shared.onRemoteMedia = { media, episode in /* start playback */ }
-//   WatchTogetherClient.shared.onRemotePlayer = { paused, time in /* seek + play/pause */ }
-//   WatchTogetherClient.shared.onRemoteIndex = { index in /* select file `index` */ }
-//   WatchTogetherClient.shared.onNotice = { title, message in /* toast */ }
-//   WatchTogetherClient.shared.onShowLobby = { /* navigate to the Watch Together screen */ }
-//   .onOpenURL { url in _ = WatchTogetherClient.shared.handle(url: url) }
-// and from the player: shareMedia(media:episode:) when an episode starts,
-// playerStateChanged(paused:time:) on play/pause/seeked, mediaIndexChanged(_:) on file change.
+// Wiring (done in UI/Shell/AppWiring.swift configureWatchTogether, UI/Shell/ShellPlayback.swift and
+// UI/Shell/ShellNavigation.swift):
+//   currentUser, onRemoteMedia, onRemotePlayer, onRemoteIndex, onNotice, onShowLobby closures;
+//   deep links → handle(url:) / join(link:); scenePhase .active → appBecameActive();
+//   player: shareMedia(media:episode:) when an episode starts, playerStateChanged(paused:time:) on
+//   play/pause/seeked, mediaIndexChanged(_:) on file change.
 
 @MainActor
 @Observable
@@ -82,7 +78,7 @@ final class WatchTogetherClient {
 
   var nowPlayingTitle: String? {
     guard let media = sharedMedia?.media, !media.title.all.isEmpty else { return nil }
-    return media.title.display(AppSettings.shared.values.titleLang)
+    return AniListService.shared.title(media)
   }
 
   // MARK: Lobby lifecycle
@@ -356,10 +352,11 @@ final class WatchTogetherClient {
     let episode = W2GMediaPayload.episodeRef(from: episodeValue) ?? EpisodeRef(number: 1)
     sharedMedia = W2GSharedMedia(key: key, mediaJSON: mediaJSON, episodeJSON: episodeValue ?? W2GJSON.null, media: media, episode: episode)
 
-    // WatchTogetherPage.svelte toast: "Starting <title> - Episode N"
+    // WatchTogetherPage.svelte toast: "Starting <anilistClient.title(media) || 'the shared title'> - Episode N"
     var title = "the shared title"
     if let media, !media.title.all.isEmpty {
-      title = media.title.display(AppSettings.shared.values.titleLang)
+      let display = AniListService.shared.title(media)
+      if !display.isEmpty { title = display }
     }
     var episodeNumber: Int?
     if let episodeValue {

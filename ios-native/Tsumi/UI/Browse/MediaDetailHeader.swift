@@ -124,7 +124,7 @@ struct BrowseDetailActions: View {
   @State private var showTrailer = false
 
   var body: some View {
-    let media = model.media
+    let media = model.live
     let entry = BrowseMediaInfo.entry(media)
     VStack(alignment: .leading, spacing: 10) {
       Button {
@@ -232,6 +232,10 @@ struct BrowseShareLinkButton: View {
 @MainActor
 struct BrowseFollowingRow: View {
   let entries: [AniListFollowingEntry]
+  /// Extended profiles of the users (banner, colour, join date, statistics), keyed by user id.
+  var profiles: [Int: FollowingUserProfile] = [:]
+  /// Called when a popover opens (the profiles are requested on first use).
+  var onOpen: (() -> Void)? = nil
   @State private var selectedId: Int? = nil
 
   var body: some View {
@@ -240,6 +244,7 @@ struct BrowseFollowingRow: View {
         ForEach(Array(entries.prefix(11))) { entry in
           Button {
             selectedId = selectedId == entry.id ? nil : entry.id
+            if selectedId != nil { onOpen?() }
           } label: {
             BrowseUserAvatar(entry: entry, size: 44)
           }
@@ -256,7 +261,7 @@ struct BrowseFollowingRow: View {
         }
       }
       if let selected = entries.first(where: { $0.id == selectedId }) {
-        BrowseUserCard(entry: selected)
+        BrowseUserCard(entry: selected, profile: profiles[selected.userId])
       }
     }
   }
@@ -288,56 +293,163 @@ struct BrowseUserAvatar: View {
   }
 }
 
-/// User.svelte popover: name, list status, progress, score and profile link.
+/// User.svelte popover: banner and profile colour, name, "Following You", join date, list status, progress,
+/// score, moderator roles, donator badge, anime statistics and profile link. The extended fields appear once
+/// `profile` is loaded.
 @MainActor
 struct BrowseUserCard: View {
   let entry: AniListFollowingEntry
+  var profile: FollowingUserProfile? = nil
   @Environment(\.openURL) private var openURL
 
+  private var themeColor: Color {
+    Self.profileColor(profile?.profileColor) ?? BrowsePalette.cardStrong
+  }
+
   var body: some View {
-    HStack(spacing: 12) {
-      BrowseUserAvatar(entry: entry, size: 56)
-      VStack(alignment: .leading, spacing: 6) {
-        Text(entry.name)
-          .font(.headline)
-          .foregroundStyle(.white)
-          .lineLimit(1)
-        HStack(spacing: 6) {
-          BrowseChip(text: entry.status?.label ?? "Not on List")
-          if let status = entry.status, status != .completed, status != .planning, entry.progress > 0 {
-            BrowseChip(text: "Progress: \(entry.progress)")
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(alignment: .bottom, spacing: 12) {
+        avatar
+        VStack(alignment: .leading, spacing: 4) {
+          Text(entry.name)
+            .font(.headline)
+            .foregroundStyle(.white)
+            .lineLimit(1)
+          if profile?.isFollower == true {
+            Text("Following You")
+              .font(.footnote)
+              .foregroundStyle(BrowsePalette.muted)
           }
-          if entry.status != .current, entry.score > 0 {
-            BrowseChip(text: "Score: \(scoreText)")
+          if let created = profile?.createdAt {
+            Text("Joined " + ServiceText.since(created))
+              .font(.caption)
+              .foregroundStyle(BrowsePalette.muted)
           }
+          BrowseFlowLayout(spacing: 6, lineSpacing: 6) {
+            BrowseChip(text: entry.status?.label ?? "Not on List")
+            if let status = entry.status, status != .completed, status != .planning, entry.progress > 0 {
+              BrowseChip(text: "Progress: \(entry.progress)")
+            }
+            if entry.status != .current, entry.score > 0 {
+              BrowseChip(text: "Score: \(scoreText)")
+            }
+            ForEach(profile?.moderatorRoles ?? [], id: \.self) { role in
+              BrowseChip(text: BrowseText.capitalizedWords(role), background: themeColor)
+            }
+          }
+        }
+        Spacer(minLength: 0)
+        linkMenu
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background {
+        if let banner = profile?.bannerImage {
+          BrowseImage([banner], placeholder: themeColor.opacity(0.25))
+            .opacity(0.55)
+        } else {
+          themeColor.opacity(0.25)
         }
       }
-      Spacer(minLength: 0)
-      if let url = entry.siteURL {
-        Menu {
-          Button {
-            BrowseActions.copy(url, detail: "user URL")
-          } label: {
-            Label("Share to Clipboard", systemImage: "doc.on.doc")
-          }
-          Button {
-            openURL(url)
-          } label: {
-            Label("Open in Browser", systemImage: "safari")
-          }
-        } label: {
-          Image(systemName: "ellipsis.circle")
-            .font(.title3)
+      .overlay(alignment: .topTrailing) {
+        if let badge = profile?.donatorBadge, !badge.isEmpty, badge != "Donator" {
+          Text(badge.prefix(1).uppercased() + badge.dropFirst())
+            .font(.caption.weight(.semibold))
             .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(themeColor, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .padding(8)
         }
+      }
+      .clipped()
+      if let profile {
+        stats(profile)
       }
     }
-    .padding(12)
     .background(BrowsePalette.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(themeColor.opacity(0.7), lineWidth: 1)
+    }
+  }
+
+  private var avatar: some View {
+    BrowseUserAvatar(entry: entry, size: 64)
+      .overlay {
+        if profile?.isBlocked == true {
+          Text("BLOCKED")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 4)
+            .background(BrowsePalette.danger, in: Capsule())
+        }
+      }
+  }
+
+  @ViewBuilder
+  private var linkMenu: some View {
+    if let url = entry.siteURL {
+      Menu {
+        Button {
+          BrowseActions.copy(url, detail: "user URL")
+        } label: {
+          Label("Share to Clipboard", systemImage: "doc.on.doc")
+        }
+        Button {
+          openURL(url)
+        } label: {
+          Label("Open in Browser", systemImage: "safari")
+        }
+      } label: {
+        Image(systemName: "ellipsis.circle")
+          .font(.title3)
+          .foregroundStyle(.white)
+      }
+    }
+  }
+
+  /// "12 Anime • 300 Episodes • 78 Mean Score • 3 months watched".
+  private func stats(_ profile: FollowingUserProfile) -> some View {
+    let minutes = profile.minutesWatched ?? 1
+    var watched = ServiceText.since(Date().addingTimeInterval(-Double(minutes) * 60)).replacingOccurrences(of: "ago", with: "watched")
+    if let first = watched.first {
+      watched = first.uppercased() + watched.dropFirst()
+    }
+    let mean = profile.meanScore ?? 0
+    let meanText = mean.rounded() == mean ? String(Int(mean)) : String(format: "%.1f", mean)
+    return BrowseFlowLayout(spacing: 14, lineSpacing: 6) {
+      Text("\(profile.animeCount ?? 0) Anime")
+      Text("\(profile.episodesWatched ?? 0) Episodes")
+      Text("\(meanText) Mean Score")
+      Text(watched)
+    }
+    .font(.caption.weight(.semibold))
+    .foregroundStyle(.white)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   private var scoreText: String {
     entry.score.rounded() == entry.score ? String(Int(entry.score)) : String(entry.score)
+  }
+
+  /// AniList profile colours (named or hex).
+  static func profileColor(_ value: String?) -> Color? {
+    guard let value, !value.isEmpty else { return nil }
+    if let hex = BrowsePalette.color(hex: value) { return hex }
+    switch value.lowercased() {
+    case "blue": return Color(red: 0.239, green: 0.706, blue: 0.949)
+    case "purple": return Color(red: 0.753, green: 0.388, blue: 1.0)
+    case "pink": return Color(red: 0.988, green: 0.616, blue: 0.839)
+    case "orange": return Color(red: 0.937, green: 0.533, blue: 0.102)
+    case "red": return Color(red: 0.882, green: 0.2, blue: 0.2)
+    case "green": return Color(red: 0.298, green: 0.792, blue: 0.318)
+    case "gray": return Color(red: 0.404, green: 0.482, blue: 0.58)
+    default: return nil
+    }
   }
 }
 
@@ -553,7 +665,8 @@ struct BrowseDetailChips: View {
   }
 }
 
-/// "Synopsis" section (sanitized description with bold / italic / links).
+/// "Synopsis" section (sanitized description: bold / italic / links, plus headings, lists, quotes and tables
+/// like the marked rendering of DetailsModal.svelte).
 @MainActor
 struct BrowseDetailSynopsis: View {
   let media: Media
@@ -561,16 +674,27 @@ struct BrowseDetailSynopsis: View {
 
   var body: some View {
     let text = BrowseText.attributed(media.description)
+    let blocks = BrowseText.markdownBlocks(media.description)
     let toggleTitle: String = expanded ? "Show Less" : "Show More"
     if !text.characters.isEmpty {
       VStack(alignment: .leading, spacing: 12) {
         BrowseSectionDivider(title: "Synopsis")
-        Text(text)
-          .font(.callout)
-          .foregroundStyle(Color.white.opacity(0.88))
-          .lineLimit(expanded ? nil : 8)
-          .textSelection(.enabled)
-          .tint(BrowsePalette.tertiary)
+        if BrowseText.hasStructure(blocks) {
+          BrowseMarkdownBlocksView(blocks: blocks)
+            .font(.callout)
+            .foregroundStyle(Color.white.opacity(0.88))
+            .textSelection(.enabled)
+            .tint(BrowsePalette.tertiary)
+            .frame(maxHeight: expanded ? nil : 200, alignment: .top)
+            .clipped()
+        } else {
+          Text(text)
+            .font(.callout)
+            .foregroundStyle(Color.white.opacity(0.88))
+            .lineLimit(expanded ? nil : 8)
+            .textSelection(.enabled)
+            .tint(BrowsePalette.tertiary)
+        }
         Button(toggleTitle) {
           withAnimation(.easeInOut(duration: 0.2)) {
             expanded.toggle()
@@ -578,6 +702,72 @@ struct BrowseDetailSynopsis: View {
         }
         .font(.footnote.weight(.semibold))
         .foregroundStyle(BrowsePalette.muted)
+      }
+    }
+  }
+}
+
+/// Markdown blocks of the synopsis: headings, bullet / numbered lists, quotes, rules and tables.
+@MainActor
+struct BrowseMarkdownBlocksView: View {
+  let blocks: [BrowseMarkdownBlock]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      ForEach(Array(blocks.enumerated()), id: \.offset) { pair in
+        block(pair.element)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func block(_ block: BrowseMarkdownBlock) -> some View {
+    switch block {
+    case .paragraph(let text):
+      Text(BrowseText.inlineMarkdown(text))
+    case .heading(let level, let text):
+      Text(BrowseText.inlineMarkdown(text))
+        .font(level <= 2 ? Font.title3.bold() : Font.headline)
+        .foregroundStyle(.white)
+    case .listItem(let marker, let text, let indent):
+      HStack(alignment: .firstTextBaseline, spacing: 6) {
+        Text(marker)
+        Text(BrowseText.inlineMarkdown(text))
+      }
+      .padding(.leading, CGFloat(indent) * 14)
+    case .quote(let text):
+      Text(BrowseText.inlineMarkdown(text))
+        .italic()
+        .padding(.leading, 10)
+        .overlay(alignment: .leading) {
+          Rectangle()
+            .fill(BrowsePalette.dimmed)
+            .frame(width: 3)
+        }
+    case .rule:
+      Rectangle()
+        .fill(Color.white.opacity(0.15))
+        .frame(height: 1)
+    case .table(let header, let rows):
+      ScrollView(.horizontal, showsIndicators: false) {
+        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
+          GridRow {
+            ForEach(Array(header.enumerated()), id: \.offset) { cell in
+              Text(BrowseText.inlineMarkdown(cell.element))
+                .fontWeight(.bold)
+            }
+          }
+          Rectangle()
+            .fill(Color.white.opacity(0.15))
+            .frame(height: 1)
+          ForEach(Array(rows.enumerated()), id: \.offset) { row in
+            GridRow {
+              ForEach(Array(row.element.enumerated()), id: \.offset) { cell in
+                Text(BrowseText.inlineMarkdown(cell.element))
+              }
+            }
+          }
+        }
       }
     }
   }

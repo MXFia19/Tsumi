@@ -560,45 +560,83 @@ enum ServiceText {
 
 // MARK: - Network status (networking.js `status`)
 
+/// Network path and AniList outage status (networking.js `status`: online / offline / offline_anilist).
+/// The values are thread-safe; SwiftUI views reading them are refreshed on the main thread when they change.
+@Observable
 final class ServiceNetworkMonitor: @unchecked Sendable {
   static let shared = ServiceNetworkMonitor()
 
-  private let monitor = NWPathMonitor()
-  private let online = ServiceLocked<Bool>(true)
+  @ObservationIgnored private let monitor = NWPathMonitor()
+  @ObservationIgnored private let online = ServiceLocked<Bool>(true)
+  @ObservationIgnored private let anilistDown = ServiceLocked<Bool>(false)
 
-  var isOnline: Bool { online.get() }
+  var isOnline: Bool {
+    access(keyPath: \.isOnline)
+    return online.get()
+  }
+
+  /// AniList answers "temporarily disabled" (networking.js isAnilistDown / 'offline_anilist').
+  var isAniListDown: Bool {
+    access(keyPath: \.isAniListDown)
+    return anilistDown.get()
+  }
 
   private init() {
-    let box = online
-    monitor.pathUpdateHandler = { path in
-      box.set(path.status == .satisfied)
+    monitor.pathUpdateHandler = { [weak self] path in
+      self?.setOnline(path.status == .satisfied)
     }
     monitor.start(queue: DispatchQueue(label: "org.tsumi.services.network"))
+  }
+
+  private func setOnline(_ value: Bool) {
+    if Self.change(online, to: value) { notifyChange(\.isOnline) }
+  }
+
+  /// Sets the AniList outage state; returns true when it changed.
+  @discardableResult
+  func setAniListDown(_ value: Bool) -> Bool {
+    let changed = Self.change(anilistDown, to: value)
+    if changed { notifyChange(\.isAniListDown) }
+    return changed
+  }
+
+  private static func change(_ box: ServiceLocked<Bool>, to value: Bool) -> Bool {
+    box.update { current -> Bool in
+      guard current != value else { return false }
+      current = value
+      return true
+    }
+  }
+
+  /// Observers (SwiftUI) are told on the main thread; the stored value is already readable everywhere.
+  private func notifyChange(_ keyPath: KeyPath<ServiceNetworkMonitor, Bool>) {
+    DispatchQueue.main.async {
+      self.withMutation(keyPath: keyPath) {}
+    }
   }
 }
 
 // MARK: - Extra settings not present in Core SettingsValues
 
-/// Settings used by the Svelte modules that Core/Settings.swift does not define (stored in UserDefaults).
+/// Settings used by the Svelte modules. They now live in Core `SettingsValues` (so they are exported,
+/// imported and reset with the other settings); these accessors are kept for their readers.
 enum ServiceSettingsExtras {
-  private static let defaults = UserDefaults.standard
-
   /// releasesNotify 'NOTONLIST' option (notify for media that are not on the user's list).
   static var releasesNotifyNotOnList: Bool {
-    get { defaults.bool(forKey: "tsumi.services.releasesNotify.notOnList") }
-    set { defaults.set(newValue, forKey: "tsumi.services.releasesNotify.notOnList") }
+    get { AppSettings.shared.values.releasesNotifyNotOnList }
+    set { AppSettings.shared.values.releasesNotifyNotOnList = newValue }
   }
 
-  /// hentaiAnnounce: none | limited | all.
+  /// hentaiAnnounce: all | following | none.
   static var hentaiAnnounce: String {
-    get { defaults.string(forKey: "tsumi.services.hentaiAnnounce") ?? "none" }
-    set { defaults.set(newValue, forKey: "tsumi.services.hentaiAnnounce") }
+    get { AppSettings.shared.values.hentaiAnnounce }
+    set { AppSettings.shared.values.hentaiAnnounce = newValue }
   }
 
   /// cardAudio: shows dub airing info in episode lists.
   static var cardAudio: Bool {
-    get { defaults.bool(forKey: "tsumi.services.cardAudio") }
-    set { defaults.set(newValue, forKey: "tsumi.services.cardAudio") }
+    get { AppSettings.shared.values.cardAudio }
+    set { AppSettings.shared.values.cardAudio = newValue }
   }
 }
 

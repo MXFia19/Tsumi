@@ -19,6 +19,8 @@ struct BrowseMediaCard: View {
   /// Airing countdown (Schedule page, SmallCard `scheduleList`).
   var airing: AiringEpisode?
   var width: CGFloat?
+  /// Recommendation rating ("12 likes" with a thumb, SmallCard numeric `type`).
+  var likes: Int? = nil
   @State private var showEditor = false
 
   var body: some View {
@@ -36,13 +38,19 @@ struct BrowseMediaCard: View {
       label(current)
     }
     .buttonStyle(BrowsePressableStyle())
+    // Hardware keyboard: Return on the focused card opens the details.
+    .focusable()
+    .onKeyPress(.return) {
+      BrowseActions.open(current)
+      return .handled
+    }
   }
 
   @ViewBuilder
   private func label(_ current: Media) -> some View {
     switch style {
     case .small:
-      BrowseSmallCard(media: current, typeLabel: typeLabel, airing: airing, width: width)
+      BrowseSmallCard(media: current, typeLabel: typeLabel, airing: airing, width: width, likes: likes)
     case .full:
       BrowseFullCard(media: current, airing: airing, width: width)
     }
@@ -120,28 +128,34 @@ struct BrowseFavouriteMenuButton: View {
   }
 }
 
-/// "Episode 5 in 2d 3h 4m" (getAiringInfo), green and "out for" once aired.
+/// "Episode 5 in 2d 3h 4m" (getAiringInfo), green and "out for" once aired; "Episode 5 ~ 7" when several
+/// episodes air at once; "Episode 5 is Suspended" for a suspended dub.
 @MainActor
 struct BrowseAiringLine: View {
   let episode: Int
   let airingAt: Date
   var showTime = false
   var alignment: HorizontalAlignment = .center
+  /// Last episode airing at the same time (range "Episode 5 ~ 7").
+  var lastEpisode: Int? = nil
+  /// Dub production suspended (delayedIndefinitely): "Suspended" instead of a countdown.
+  var suspended = false
 
   var body: some View {
     TimelineView(.periodic(from: .now, by: 30)) { context in
       let seconds = airingAt.timeIntervalSince(context.date)
-      let aired = seconds <= 0
-      let prefix = "Episode \(episode) " + (aired ? "out for" : "in")
+      let aired = !suspended && seconds <= 0
+      let range = (lastEpisode ?? 0) > episode ? "Episode \(episode) ~ \(lastEpisode ?? episode)" : "Episode \(episode)"
+      let prefix = range + " " + (suspended ? "is" : (aired ? "out for" : "in"))
       VStack(alignment: alignment, spacing: 2) {
         HStack(spacing: 4) {
           Text(prefix)
             .foregroundStyle(BrowsePalette.muted)
-          Text(ServiceText.countdown(seconds))
+          Text(suspended ? "Suspended" : ServiceText.countdown(seconds))
             .fontWeight(.bold)
             .foregroundStyle(aired ? BrowsePalette.success : Color.white)
         }
-        if showTime {
+        if showTime && !suspended {
           Text(BrowseText.time(airingAt))
             .foregroundStyle(BrowsePalette.dimmed)
         }
@@ -153,7 +167,8 @@ struct BrowseAiringLine: View {
   }
 }
 
-/// "AIRING" badge of the cards.
+/// "AIRING" badge of the cards, with the airing-pulse ring of SmallCard.svelte. The pulse is a
+/// PhaseAnimator scoped to the ring (no repeatForever transaction that could move the layout).
 struct BrowseAiringBadge: View {
   var body: some View {
     Text("AIRING")
@@ -162,33 +177,105 @@ struct BrowseAiringBadge: View {
       .padding(.horizontal, 7)
       .padding(.vertical, 3)
       .background(BrowsePalette.success, in: Capsule())
+      .background {
+        Capsule()
+          .stroke(BrowsePalette.success, lineWidth: 2)
+          .phaseAnimator([false, true]) { ring, expanded in
+            ring
+              .scaleEffect(expanded ? 1.6 : 1)
+              .opacity(expanded ? 0 : 0.9)
+          } animation: { expanded in
+            expanded ? Animation.easeOut(duration: 3.5) : nil
+          }
+          .allowsHitTesting(false)
+      }
   }
 }
 
-/// AudioLabel.svelte (cover mode, only with the cardAudio setting): playable episodes, dub, progress, adult.
+/// Loads the dub schedule and the dub episode feed once for every audio label (the dub episode counts).
+@MainActor
+enum BrowseDubFeed {
+  private static var task: Task<Void, Never>?
+
+  static func load() async {
+    if let existing = Self.task {
+      await existing.value
+      return
+    }
+    let created = Task {
+      _ = await AnimeScheduleService.shared.airedList(.dub)
+      _ = await AnimeScheduleService.shared.dubAiringList()
+    }
+    Self.task = created
+    await created.value
+  }
+}
+
+/// AudioLabel.svelte (cover mode, only with the cardAudio setting): playable / aired episodes, dub with the
+/// aired dub episode count, partial dub, progress, adult.
 @MainActor
 struct BrowseAudioLabel: View {
   let media: Media
+  /// Set once the dub feed is loaded so the counts refresh.
+  @State private var feedLoaded = false
 
   var body: some View {
     if ServiceSettingsExtras.cardAudio && media.source == .anilist {
-      let playable = (media.status != .notYetReleased && media.status != .cancelled) ? AnimeHelpers.maxEpisode(media, playable: media.status != .finished) : 0
-      let dubs = Services.shared.dubs
-      let dubbed = dubs.isDubbed(malId: media.malId)
-      let partial = dubs.isIncomplete(malId: media.malId)
-      HStack(spacing: 2) {
-        if media.isAdult {
-          label(systemImage: "exclamationmark.triangle.fill", text: nil, color: BrowsePalette.adult)
+      labels
+        .task(id: media.id) {
+          await loadDubFeed()
         }
-        if let progress = media.listEntry?.progress, progress > 0 {
-          label(systemImage: "clock", text: String(progress), color: BrowsePalette.status(.current))
-        }
-        if dubbed || partial {
-          label(systemImage: dubbed ? "mic.fill" : "mic.slash.fill", text: nil, color: partial ? BrowsePalette.partialDub : BrowsePalette.dub)
-        }
-        label(systemImage: "captions.bubble.fill", text: playable > 0 ? String(playable) : nil, color: BrowsePalette.sub)
-      }
     }
+  }
+
+  private var labels: some View {
+    let refreshed = feedLoaded
+    let dubs = Services.shared.dubs
+    let dubbed = dubs.isFullyDubbed(malId: media.malId)
+    let partial = dubs.isIncomplete(malId: media.malId)
+    let dubEpisodes = Self.dubEpisodes(media, dubbed: dubbed, partial: partial, refreshed: refreshed)
+    let playable = (media.status != .notYetReleased && media.status != .cancelled) ? AnimeHelpers.maxEpisode(media, playable: media.status != .finished) : 0
+    // subEpisodes falls back to the dub count, and the larger of the two is shown.
+    let subCount = max(playable, dubEpisodes)
+    return HStack(spacing: 2) {
+      if media.isAdult {
+        label(systemImage: "exclamationmark.triangle.fill", text: nil, color: BrowsePalette.adult)
+      }
+      if partial && dubEpisodes <= 0 {
+        label(systemImage: "mic.slash.fill", text: nil, color: BrowsePalette.partialDub)
+      }
+      if let progress = media.listEntry?.progress, progress > 0 {
+        label(systemImage: "clock", text: String(progress), color: BrowsePalette.status(.current))
+      }
+      if dubbed || (partial && dubEpisodes > 0) {
+        label(systemImage: dubbed ? "mic.fill" : "mic.slash.fill", text: dubEpisodes > 0 ? String(dubEpisodes) : nil, color: partial ? BrowsePalette.partialDub : BrowsePalette.dub)
+      }
+      label(systemImage: "captions.bubble.fill", text: subCount > 0 ? String(subCount) : nil, color: BrowsePalette.sub)
+    }
+  }
+
+  /// dubEpisodes of AudioLabel.svelte: aired dub episodes of a dubbed title, else the episode count of an
+  /// older finished title without an unaired dub entry; 0 when unknown.
+  static func dubEpisodes(_ media: Media, dubbed: Bool, partial: Bool, refreshed: Bool = false) -> Int {
+    guard media.malId != nil, let id = media.anilistId else { return 0 }
+    let schedule = AnimeScheduleService.shared
+    if dubbed || partial, let aired = schedule.loadedDubAiredCount(anilistId: id), aired > 0 {
+      return aired
+    }
+    let unaired = schedule.loadedDubAiringList()?.contains { $0.unaired == true && $0.anime?.id == id } ?? false
+    if !partial && media.status != .releasing && media.status != .notYetReleased && (media.seasonYear ?? 0) < 2025 && !unaired {
+      return AnimeHelpers.maxEpisode(media)
+    }
+    return 0
+  }
+
+  private func loadDubFeed() async {
+    guard media.malId != nil else { return }
+    let schedule = AnimeScheduleService.shared
+    if schedule.loadedAiredList(.dub) != nil && schedule.loadedDubAiringList() != nil { return }
+    await BrowseDubFeed.load()
+    if Task.isCancelled { return }
+    feedLoaded = true
   }
 
   private func label(systemImage: String, text: String?, color: Color) -> some View {
@@ -213,17 +300,21 @@ struct BrowseSmallCard: View {
   var typeLabel: String?
   var airing: AiringEpisode?
   var width: CGFloat?
+  /// Recommendation rating: thumb up (green, muted at 0) or down with "N likes".
+  var likes: Int? = nil
 
   static let coverRatio: CGFloat = 230.0 / 331.0
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       if let airing {
-        BrowseAiringLine(episode: airing.episode, airingAt: airing.airingAt, showTime: true)
+        BrowseAiringLine(episode: airing.episode, airingAt: airing.airingAt, showTime: true, lastEpisode: airing.lastEpisode, suspended: airing.delayedIndefinitely)
           .frame(maxWidth: .infinity)
       }
       cover
-      if let typeLabel {
+      if let likes {
+        likesRow(likes)
+      } else if let typeLabel {
         Text(BrowseText.capitalizedWords(typeLabel))
           .font(.caption.weight(.semibold))
           .foregroundStyle(BrowsePalette.success)
@@ -238,8 +329,23 @@ struct BrowseSmallCard: View {
   }
 
   private var aired: Bool {
-    guard let airing else { return false }
+    guard let airing, !airing.delayedIndefinitely else { return false }
     return airing.airingAt <= Date()
+  }
+
+  /// "12 likes" / "1 like" / "3 dislikes" (SmallCard numeric type).
+  private func likesRow(_ value: Int) -> some View {
+    let count = abs(value)
+    let word = value >= 0 ? "like" : "dislike"
+    let text = BrowseText.number(count) + " " + word + (count == 1 ? "" : "s")
+    return HStack(spacing: 4) {
+      Image(systemName: value >= 0 ? "hand.thumbsup.fill" : "hand.thumbsdown.fill")
+        .foregroundStyle(value > 0 ? BrowsePalette.success : (value == 0 ? BrowsePalette.muted : BrowsePalette.danger))
+      Text(text)
+        .foregroundStyle(.white)
+    }
+    .font(.caption.weight(.semibold))
+    .lineLimit(1)
   }
 
   private var cover: some View {
@@ -303,7 +409,7 @@ struct BrowseFullCard: View {
         titleRow
         BrowseMediaChips(media: media, showReviews: true)
         if let airing {
-          BrowseAiringLine(episode: airing.episode, airingAt: airing.airingAt, showTime: true, alignment: .leading)
+          BrowseAiringLine(episode: airing.episode, airingAt: airing.airingAt, showTime: true, alignment: .leading, lastEpisode: airing.lastEpisode, suspended: airing.delayedIndefinitely)
         }
         description
         Spacer(minLength: 0)
@@ -323,7 +429,7 @@ struct BrowseFullCard: View {
     BrowseImage(BrowseMediaInfo.coverURLs(media), placeholder: BrowseMediaInfo.coverColor(media))
       .frame(width: Self.height * 0.66, height: Self.height)
       .overlay(alignment: .topLeading) {
-        if let airing, airing.airingAt <= Date() {
+        if let airing, !airing.delayedIndefinitely, airing.airingAt <= Date() {
           BrowseAiringBadge().padding(4)
         }
       }

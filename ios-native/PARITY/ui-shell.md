@@ -29,10 +29,10 @@ Swift code: `ios-native/Tsumi/UI/Shell/` + `ios-native/Tsumi/App/TsumiApp.swift`
 
 | File | Types |
 |---|---|
-| `App/TsumiApp.swift` | `TsumiApp` (`@UIApplicationDelegateAdaptor(ShellAppDelegate.self)`) |
+| `App/TsumiApp.swift` | `TsumiApp` (`@UIApplicationDelegateAdaptor(ShellAppDelegate.self)`), `TsumiAppearance` (UI scale, accent colour), `TsumiAppearanceStyle` |
 | `App/RootView.swift` | `RootView` (tabs, banner, presenters, launch, toasts janitor, `onOpenURL`, `scenePhase`), `ShellTabs` |
-| `AppWiring.swift` | `AppWiring` (one-time wiring), `ShellExtensionBridge` (ExtensionContext closures), `ShellLaunch`, `ShellLifecycle`, `ShellAppDelegate` |
-| `ShellNavigation.swift` | `ShellLayer`, `ShellRootSheet`, `ShellMediaItem`, `ShellRoute`, `ShellState`, `ShellLayers`, `ShellNavigation`, `ShellDeepLinks`, `ShellPresentationTiming` |
+| `AppWiring.swift` | `AppWiring` (one-time wiring), `ShellExtensionBridge` (ExtensionContext closures), `ShellLaunch`, `ShellLifecycle`, `ShellAppDelegate`, `ShellBackgroundRefresh` |
+| `ShellNavigation.swift` | `ShellLayer`, `ShellRootSheet`, `ShellMediaItem`, `ShellRoute`, `ShellState`, `ShellLayers`, `ShellNavigation`, `ShellDeepLinks`, `ShellPasteHandler`, `ShellPresentationTiming` |
 | `ShellPresenters.swift` | `ShellPlaybackDialogHost`, `ShellRootPresenters`, `ShellRootSheetContent`, `ShellDetailsContainer`, `ShellPlayerHost`, `ShellPlayerCover`, `ShellPlayerDetailsSheet` |
 | `ShellPlayback.swift` | `ShellPlayback` (play entry points, player launch and hooks), `ShellEpisodeResolver`, `ShellEpisodeListLoader`, `ShellNotificationMedia` |
 | `ShellToolbar.swift` | `ShellTabStack`, `ShellRouteDestination`, `ShellCatalogsScreen`, `ShellMainToolbar`, `ShellNowPlayingButton`, `ShellCatalogsButton`, `ShellNotificationsButton`, `ShellProfileButton`, `ShellAvatar`, `ShellServiceBadge` |
@@ -41,11 +41,11 @@ Swift code: `ios-native/Tsumi/UI/Shell/` + `ios-native/Tsumi/App/TsumiApp.swift`
 | `ShellPlayerSettingsView.swift` | `ShellPlayerSettingsView`, `ShellPlaybackSettingsSection`, `ShellPictureInPictureSection` |
 | `ShellInterfaceSettingsView.swift` | `ShellInterfaceSettingsView`, `ShellInterfaceOptionsSection`, `ShellNotificationSettingsSection`, `ShellReleasesNotifyEditor`, `ShellHomeScreenSettingsSection` |
 | `ShellHomeSectionsSettings.swift` | `ShellHomeSectionCatalog`, `ShellHomeSectionsView`, `ShellHomeSectionRow`, `ShellAnimeSectionsView`, `ShellAnimeSectionEditor`, `ShellWesternSectionsView`, `ShellWesternSectionEditor`, `ShellMultiSelectView` |
-| `ShellAppSettingsView.swift` | `ShellAppSettingsView`, `ShellResetAction`, `ShellResetSection`, `ShellSettingsManagementSection`, `ShellNotificationPermissionSection`, `ShellDebugSettingsSection`, `ShellClipboard` |
-| `ProfilesView.swift` | `ProfilesView`, `ShellCurrentProfileHeader`, `ShellOtherProfilesList`, `ShellOtherProfileRow`, `ShellProfileActions`, `ShellLoginBox`, `ShellProfileBoxButton` |
+| `ShellAppSettingsView.swift` | `ShellAppSettingsView`, `ShellResetAction`, `ShellResetSection`, `ShellSettingsManagementSection`, `ShellNotificationPermissionSection`, `ShellDebugSettingsSection`, `ShellClipboard`, `ShellQueryComplexityRow`, `ShellSettingsTransfer` |
+| `ProfilesView.swift` | `ProfilesView`, `ShellCurrentProfileHeader`, `ShellOtherProfilesList`, `ShellOtherProfileRow`, `ShellProfileActions`, `ShellLoginBox`, `ShellProfileBoxButton`, `ShellPasteTokenField`, `ShellWebLoginSheet`, `ShellWebLoginView`, `ShellWebLoginCoordinator` |
 | `NotificationsView.swift` | `NotificationsView`, `ShellNotificationSort`, `ShellNotificationState`, `ShellNotificationRow`, `ShellNotificationCover`, `ShellNotificationContent`, `ShellNotificationBadges`, `ShellNotificationPrompt`, `ShellErrorCard` |
 
-Status: **done** = same behavior; **partial** = works, gap described; **n.a.** = not applicable on iOS (reason given).
+Status: **done** = same behavior; **partial** = works, gap described; **different** = intentional, documented difference; **n.a.** = not applicable on iOS (reason given).
 
 ## Presentation model (why the shell has its own hosts)
 
@@ -95,7 +95,7 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 |---|---|---|---|---|
 | 2.1 | "Offline" bar (WifiOff) while offline | ST | `ShellConnectionBanner` (`wifi.slash`) as a top safe-area inset, `ShellConnectionMonitor` (NWPathMonitor) | done |
 | 2.2 | "Connection Restored" (Earth, green) after reconnecting, hidden after a delay | ST, APP statusTransition 2.5 s | `showRestored` for 2.5 s (`globe`) | done |
-| 2.3 | "AniList Outage" (CloudAlert) | ST, networking.js | — | partial (the services expose online / offline only, see services 13.9) |
+| 2.3 | "AniList Outage" (CloudAlert) | ST, networking.js | `ShellConnectionBanner` (`exclamationmark.icloud`) from `ServiceNetworkMonitor.isAniListDown`; "Connection Restored" when it ends (`ShellConnectionMonitor.aniListStatusChanged`) | done |
 | 2.4 | Height / padding transitions | ST | Move + opacity transition | done |
 
 ## 3. Deep links and app events (PROT, APP)
@@ -111,8 +111,8 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | 3.7 | `schedule` → Schedule page (IPC 'schedule') | PROT 12, APP 19 | `ShellNavigation.showTab(.schedule)` | done |
 | 3.8 | `update` (quit and install), `show` (window-show) | PROT 14-15 | — | n.a. (desktop updater / window) |
 | 3.9 | Launch URL (`App.getLaunchUrl`, electron second-instance / command line) | PROT 19-27 | SwiftUI delivers the launch URL to `onOpenURL` | done |
-| 3.10 | Notification activation `tsumi://anime/<id>` | NM 83 | `AppNotificationsService.onOpenURL` → `ShellDeepLinks.handle` (set in `didFinishLaunching` so cold-start taps are routed) | done |
-| 3.11 | Clipboard paste handler: `access_token=` / `code=&state=` login fallback, anilist.co / myanimelist.net links | SET 85-123 | — | n.a. (iOS has no global paste event and reading the pasteboard in the background triggers the paste prompt; logins use ASWebAuthenticationSession, web links arrive through `onOpenURL` when shared to the app) |
+| 3.10 | Notification activation `tsumi://anime/<id>` and action buttons (View Anime / Start Watching / Resume / Watch) | NM 83, capacitor app.js 24-46, 113-129 | `AppNotificationsService.onOpenURL` → `ShellDeepLinks.handle` (set in `didFinishLaunching` so cold-start taps are routed); the watch actions open `tsumi://search/<id>` → `ShellPlayback.playFromLink` | done |
+| 3.11 | Clipboard paste handler: `access_token=` / `code=&state=` login fallback, anilist.co / myanimelist.net links | SET 85-123 | "Paste token" field of the login box (`ShellPasteTokenField` → `ShellPasteHandler`): tokens / pin URLs / MAL codes → `ProfilesService.login(pasted:)`, links → `Services.handle(url:)` → `ShellDeepLinks.route` | done (an explicit field: iOS has no global paste event and reading the pasteboard unasked shows the paste prompt) |
 | 3.12 | `IPC.on('handle-protocol')` (pasted protocol text) | PROT electron 68 | Covered by 3.1 | done |
 
 ## 4. Toasts (TO)
@@ -128,7 +128,7 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | 4.7 | Hidden while the player is fullscreen without modal | APP toastOptions | Not shown on the `player` layer, shown over the details on the `playerSheet` layer | done |
 | 4.8 | Extra top margin on the Settings page | APP toastOptions | — | n.a. (layout) |
 | 4.9 | Toasts shown above every modal | APP | Hosted by the top layer (root, root sheet, details over the player) | done |
-| 4.10 | Toast level setting (All / Warnings / Successes / Errors / None) | AT, helper.js | Setting UI done (§9.10); filtering is `ServiceMessages.post` | partial (see "Issues in other blocks": "Warnings / Successes" filters the wrong kinds) |
+| 4.10 | Toast level setting (All / Warnings / Successes / Errors / None) | AT, helper.js | Setting UI done (§9.13); filtering is `ServiceMessages.post` (`includes('Errors' / 'Successes' / 'Warnings')` like the Svelte checks) | done |
 | 4.11 | `copyToClipboard` toast "Copied to clipboard" / "Copied <detail> to clipboard" | clipboard.js | `ShellClipboard.copy` | done |
 | 4.12 | Watch Together toasts ("Starting <title> - Episode N", invite copied) | WatchTogetherPage | `onNotice` → toast, except while the lobby screen (which shows its own banner) is visible | done |
 
@@ -174,14 +174,14 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | # | Svelte feature | Source | Swift | Status |
 |---|---|---|---|---|
 | 7.1 | Discord Rich Presence | IT 20-29 | — | n.a. (desktop) |
-| 7.2 | Scale (UI scale slider + reset) | IT 33-42 | — | n.a. (Dynamic Type) |
-| 7.3 | CSS Variables + Open Devtools | IT 43-48 | — | n.a. (web theming) |
+| 7.2 | Scale (UI scale slider + reset) | IT 33-42 | "Scale" picker (50-200 %) → `uiScale`, applied by `TsumiAppearance` as a Dynamic Type size on the root (100 % keeps the iOS text size) | done (discrete steps; only Dynamic Type text and controls scale) |
+| 7.3 | CSS Variables + Open Devtools | IT 43-48 | "Accent Color" (`ColorPicker`, Reset) → `accentColor`, applied as `.tint` on the root | partial (accent colour only; no free-form variables or devtools) |
 | 7.4 | Expandable Sidebar | IT 49-54 | — | n.a. (no sidebar) |
-| 7.5 | Expandable Lists (Android) | IT 55-62 | — | n.a. (not in Core settings; lists scroll horizontally in the Browse block) |
+| 7.5 | Expandable Lists (mobile) | IT 55-62 | toggle → `SettingsValues.toggleList` (read by the Browse details lists) | done |
 | 7.6 | Preferred Title Language (Japanese / English), hidden when logged into AniList | IT 63-70 | `ShellInterfaceOptionsSection` picker → `titleLang` (romaji / english), hidden when `ProfilesService.isAniList` | done |
-| 7.7 | Card Type (Small / Full) | IT 71-76 | — | n.a. (not in Core settings; the Browse cards have one layout) |
-| 7.8 | Card Preview | IT 77-84 | toggle → `cardPreview` | done |
-| 7.9 | Card Audio | IT 85-90 | toggle → `ServiceSettingsExtras.cardAudio` | done |
+| 7.7 | Card Type (Small / Full) | IT 71-76 | picker → `@AppStorage(BrowseCardMode.storageKey)` (the key the Home / Search / Schedule card buttons use), reset with the settings | done |
+| 7.8 | Card Preview (mobile: only with small cards) | IT 77-84 | toggle → `cardPreview`, hidden with full cards | done |
+| 7.9 | Card Audio | IT 85-90 | toggle → `SettingsValues.cardAudio` (`ServiceSettingsExtras.cardAudio` forwards to it) | done |
 | 7.10 | Prefer Dubs (long description) | IT 91-96 | toggle → `preferDubs` | done |
 | 7.11 | Adult Content (None / Adult / Hentai) | IT 97-103 | picker → `adult` | done |
 | 7.12 | Hentai Banner (only with Hentai) | IT 104-111 | toggle → `hentaiBanner` | done |
@@ -189,9 +189,9 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | 7.14 | System Notifications | IT 130-135 | toggle → `systemNotify`; turning it on asks the iOS permission (`requestAuthorization`) | done |
 | 7.15 | AniList Notifications (All / Limited / None, AniList only) | IT 136-144 | picker → `aniNotify`, shown when `ProfilesService.isAniList` | done |
 | 7.16 | Sub / Dub Announcements (All / Following / None) | IT 145-156 | pickers → `subAnnounce`, `dubAnnounce` | done |
-| 7.17 | Hentai Announcements (only with Hentai) | IT 145-156 | picker → `ServiceSettingsExtras.hentaiAnnounce` | done |
+| 7.17 | Hentai Announcements (only with Hentai) | IT 145-156 | picker → `SettingsValues.hentaiAnnounce` | done |
 | 7.18 | Western Announcements | IT 145-156 | — | n.a. (`westernAnnounce` has no default and no reader in the Svelte modules; not in Core) |
-| 7.19 | Releases Notifications: list of statuses, change, remove, Add Status (disabled when all used), "Not on List" | IT 157-172 | `ShellReleasesNotifyEditor` → `releasesNotify` + `ServiceSettingsExtras.releasesNotifyNotOnList` | done (Add Status picks from a menu instead of adding an empty "Select a status" row) |
+| 7.19 | Releases Notifications: list of statuses, change, remove, Add Status (disabled when all used), "Not on List" | IT 157-172 | `ShellReleasesNotifyEditor` → `releasesNotify` + `SettingsValues.releasesNotifyNotOnList` | done (Add Status picks from a menu instead of adding an empty "Select a status" row) |
 | 7.20 | Hide My Anime (when logged in) | IT 175-182 | toggle → `hideMyAnime`, shown when authorized | done |
 | 7.21 | Hero Content (Balanced / Anime / Western) | IT 183-189 | picker → `bannerProvider` | done |
 | 7.22 | Anime Sections editor (name, genres, tags, delete, Add Section `['New Section', [], [], [], []]`) | IT 190-226 | `ShellAnimeSectionsView` + `ShellAnimeSectionEditor` (`AnimeCatalog.genres / tags`, Hentai items only with the Hentai setting) | done (new names are made unique: "New Section 2"...) |
@@ -223,13 +223,13 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | 9.1 | About This App (version, platform, description) | AT 90-96 | `ShellAppSettingsView` first card | done |
 | 9.2 | Update Downloading / Update Available buttons | AT 93-95 | — | n.a. (no updater) |
 | 9.3 | Exit Action (Prompt / Minimize / Exit) | AT 97-107 | — | n.a. (desktop window) |
-| 9.4 | Query Complexity (Complex / Simple) | AT 108-115 | — | n.a. (not in Core; the services always use the Complex default, services 1.4) |
+| 9.4 | Query Complexity (Complex / Simple) | AT 108-115 | `ShellQueryComplexityRow` → `queryComplexity` (services 1.4) | done |
 | 9.5 | Reset Notifications (confirm) → cache.resetNotifications | AT 116-121 | `AppNotificationsService.reset()` | done |
 | 9.6 | Reset History (confirm) → cache.resetHistory (progress, subtitle choices, volume boost) | AT 122-127 | `AnimeProgressService.reset()` + clears the player's last-subtitle store | done (volume boost n.a., player 2.18) |
 | 9.7 | Reset Caches (confirm) → cache.resetCaches + forced restart | AT 128-133 | `Services.clearCaches()` with a progress indicator; data reloads without a restart | done |
-| 9.8 | Import from Clipboard (JSON, reload; "Failed to import settings" toast) | AT 7-17, 136 | `ShellSettingsManagementSection.importSettings` (decodes `SettingsValues`) | partial (accepts the iOS export format; a desktop JSON export has another shape and is refused with the same toast) |
-| 9.9 | Export to Clipboard | AT 137 | JSON of `AppSettings.values` → `ShellClipboard.copy(…, "settings")` | done |
-| 9.10 | Reset to Defaults (confirm) → cache.resetSettings | AT 138-140, SET resetSettings | `ShellSettingsDefaults.resetAll()` (Core values with the Svelte layout, extras, player preferences) | done |
+| 9.8 | Import from Clipboard (JSON, reload; "Failed to import settings" toast) | AT 7-17, 136 | `ShellSettingsTransfer.importJSON`: tolerant `SettingsValues` decoding (missing keys keep their default, unknown keys ignored, Svelte array-shaped `homeSections` / `customSections` / `westernSections`, 'NOTONLIST' in `releasesNotify`), a `{ settings }` / `{ appInfo: { settings } }` wrapper, `cards`, `playerChapterSkip`, `autoPictureInPicture`, and `extensions` (iOS entries → `ExtensionManager.replaceInstalled`, Svelte entries → `addExtension(url)`); refused only when no known key is present | done |
+| 9.9 | Export to Clipboard | AT 137 | `ShellSettingsTransfer.exportJSON`: `SettingsValues` + `cards`, `playerChapterSkip`, `autoPictureInPicture`, `extensions` (`{ key: { url, enabled, manifest, kind, order } }`), 'NOTONLIST' folded into `releasesNotify` | done |
+| 9.10 | Reset to Defaults (confirm) → cache.resetSettings | AT 138-140, SET resetSettings | `ShellSettingsDefaults.resetAll()` (Core values with the Svelte layout, `PlayerPreferences.resetAll()`, card type, `ExtensionManager.removeAll()`) | done |
 | 9.11 | DNS over HTTPS (toggle, URL) | AT 144-157 | — | n.a. (desktop) |
 | 9.12 | Logging Levels (None / All / Interface) | AT 160-167 | — | n.a. (no debug module; system logging) |
 | 9.13 | Toast Levels (All / Warnings / Successes / Errors / None) | AT 168-175 | picker → `toasts` | done (see 4.10) |
@@ -237,7 +237,7 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | 9.15 | Log Output (Export Logs / Reset Logs + toasts) | AT 179-187, 18-41 | — | n.a. (desktop log file) |
 | 9.16 | Open UI Devtools | AT 188-192 | — | n.a. |
 | 9.17 | (iOS) notification permission state, Allow / Open Settings | — | `ShellNotificationPermissionSection` | done (iOS addition) |
-| 9.18 | Changelog tab (last 5 releases, current version) | CT, Changelog.svelte | — | n.a. (the release feed github.com/50n50/Tsumi no longer exists) |
+| 9.18 | Changelog tab (last 5 releases, current version) | CT, Changelog.svelte | — | n.a. (L58: the repository is private, so the GitHub releases API has no public feed to show) |
 | 9.19 | Update modal (changelog of the update, Update Now / What's New, notifications, periodic checks) | UM | — | n.a. (no updater; feed gone) |
 
 ## 10. Extensions settings (ET)
@@ -260,16 +260,17 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | 11.7 | Logout of another profile (dropProfile) | PR 110-112 | `rectangle.portrait.and.arrow.right` → `drop` | done |
 | 11.8 | Reauth profile row highlighted (error color) | PR 93, CSS | Red row background | done |
 | 11.9 | Login box when no profile at all ("Log In" title) or after "Add Profile" | PR 116-133 | `ShellLoginBox` (title only without profiles) | done |
-| 11.10 | AniList button (implicit grant, client 35971) | PR 47-49, 122-126 | `ProfilesService.loginAniList()` | done |
-| 11.11 | MyAnimeList button (PKCE plain, random state) | PR 51-57, 127-131 | `ProfilesService.loginMAL()` | done |
+| 11.10 | AniList button (implicit grant, client 35971) | PR 47-49, 122-126 | `ProfilesService.loginAniList()` → `ShellWebLoginSheet` (web view; the token is caught on the AniList pin page) | done (BUG-login fixed) |
+| 11.11 | MyAnimeList button (PKCE plain, random state) | PR 51-57, 127-131 | `ProfilesService.loginMAL()` → same sheet (code + state caught in any redirect) | done |
 | 11.12 | At most 5 other profiles ("Add Profile" / login hidden at 5) | PR 115, 134 | `others.count < maxOtherProfiles`, `canAddProfile` | done |
 | 11.13 | "Add Profile" (Plus) → modal.open(PROFILE, true) | PR 134-139 | `addingProfile` state → login box | done |
 | 11.14 | Current profile needing reauth: "Authenticate" | PR 141-148 | `ShellProfileActions` red "Authenticate" | done |
 | 11.15 | "Sign Out" (swapProfiles(null)) | PR 149-155 | `logout()` | done |
-| 11.16 | "Login Canceled" toast when the auth window is closed | PR 59-64 | `ProfilesService.runLogin` toast | done |
+| 11.16 | "Login Canceled" toast when the auth window is closed | PR 59-64 | Cancel / swipe down closes the login sheet silently | different (a cancel is not an error) |
 | 11.17 | Page reload after a profile change | SET swapProfiles | `ProfilesService.accountChanged` (services 3.8); the UI observes the services | done |
 | 11.18 | Login in progress | — | Progress overlay, view disabled while `isLoggingIn` | done (iOS addition) |
-| 11.19 | `IPC open-auth` windows, Android `open` | PR 48, 56 | ASWebAuthenticationSession | n.a. |
+| 11.19 | `IPC open-auth` windows, Android `open` | PR 48, 56 | `ShellWebLoginSheet` (WKWebView, default persistent data store so the login is remembered, Cancel button) | done |
+| 11.20 | Paste token fallback (settings.js paste handler) | SET 85-123 | `ShellPasteTokenField` in the login box: raw AniList token, pin page URL / `access_token=...`, MAL `code=&state=`, or a link | done |
 
 ## 12. Notifications modal UI (NM)
 
@@ -313,7 +314,7 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | W6 | `scenePhase == .active` → `WatchTogetherClient.appBecameActive()` | `ShellLifecycle` | done |
 | W7 | `scenePhase == .background` → `AppNotificationsService.flush()` (queued notifications delivered before suspension) | `ShellLifecycle` | done |
 | W8 | `AppNotificationsService.onOpenURL` (notification taps) | `AppWiring.configure` → `ShellDeepLinks.handle` | done |
-| W9 | Background refresh (`BGAppRefreshTask` → `backgroundRefresh()`) | — | n.a. here (needs Info.plist `BGTaskSchedulerPermittedIdentifiers` + `fetch` mode, outside this folder; see report) |
+| W9 | Background refresh (`BGAppRefreshTask` → `backgroundRefresh()`) | `ShellBackgroundRefresh`: registered in `ShellAppDelegate.didFinishLaunching`, scheduled on `.background`, runs `backgroundRefresh()` then `flushAndWait()`; Info.plist `BGTaskSchedulerPermittedIdentifiers` (`org.tsumi.app.refresh`) + `fetch` | done |
 | W10 | `ProfilesService.authenticateOverride` (optional) | not set (ASWebAuthenticationSession default) | done (optional hook intentionally unused) |
 
 ### 13.2 Extensions (`PARITY/extensions.md` "app" rows and public API)
@@ -385,7 +386,7 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | W58 | Profiles UI (login, switch, sync, drop, reauth, logout) | §11 | done |
 | W59 | Notifications UI (`items`, `unreadCount`, `filtered`, `markAll`, `setRead`, `markWatchedAsRead`, `reset`, `requestAuthorization`) | §12, §9.5, §7.14, §9.17 | done |
 | W60 | `HomeSectionsService.availableTitles` / `defaultLayout` / `section(titled:)` in Settings | §8 | done |
-| W61 | `ServiceSettingsExtras` (cardAudio, hentaiAnnounce, releasesNotifyNotOnList) in Settings | §7 | done |
+| W61 | cardAudio, hentaiAnnounce, releasesNotifyNotOnList in Settings (now `SettingsValues` keys; `ServiceSettingsExtras` forwards) | §7 | done |
 | W62 | `Services.clearCaches()`, `AnimeProgressService.reset()` | §9 | done |
 | W63 | `MediaListService.startEpisode(for:)` / `entry(for:)` for shell play entry points | `ShellPlayback.playMedia / playFromLink / playNotification` | done |
 
@@ -393,17 +394,14 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 
 | Status | Feature rows (§1-§12) | Wiring rows (§13) | Total |
 |---|---|---|---|
-| done | 137 | 59 | 196 |
-| partial | 5 | 2 | 7 |
-| n.a. | 36 | 2 | 38 |
-| **total** | **178** | **63** | **241** |
+| done | 146 | 60 | 206 |
+| partial | 3 | 2 | 5 |
+| different | 1 | 0 | 1 |
+| n.a. | 29 | 1 | 30 |
+| **total** | **179** | **63** | **242** |
 
 ## Issues found in other blocks (not modified here)
 
-- `ServiceMessages.post` (Services/ServiceSupport.swift): with the "Warnings / Successes" toast level it shows
-  errors and hides successes / warnings (the Svelte checks are `includes('Successes')`, `includes('Warnings')`,
-  `includes('Errors')`). Suggested rule: `All` → everything; otherwise `.error` needs "Errors", `.success`
-  needs "Successes", `.warning` needs "Warnings", `.info` always (clipboard toasts are unconditional in Svelte).
 - `ResolvedPlayback` has no href of the chosen search result, so the next episode re-searches the series with
   the same extension and takes the best scored result (W28). Adding `sourceHref` would let the shell reuse the
   exact series.
@@ -414,7 +412,5 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
   over a playing one would stay black. The shell avoids it (dismiss, then present; `.id` per controller).
 - `TMDBService.find` returns a single match; `ExtensionIMDbMatch` could carry every TV / movie id (W13).
 - `AppNotificationsService` has no public re-sort (Svelte sorts when the modal closes); the view sorts itself.
-- `ServiceNetworkMonitor` is not observable and has no "AniList outage" state; the shell runs its own
-  NWPathMonitor for the status bar.
-- Background notification checks need Info.plist `BGTaskSchedulerPermittedIdentifiers` and the `fetch`
-  background mode (W9).
+- `ServiceNetworkMonitor` is now observable (`isOnline`, `isAniListDown`); the shell still runs its own
+  NWPathMonitor for the Offline bar.

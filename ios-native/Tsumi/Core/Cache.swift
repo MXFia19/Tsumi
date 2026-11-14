@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Simple persistent cache with expiry (JSON files in Caches/), mirroring common/modules/cache.js
 /// for API responses, plus an in-memory layer.
@@ -10,20 +11,28 @@ actor DiskCache {
     var value: T
   }
 
+  /// Set once the files named by base64 prefixes (which could collide) have been removed.
+  private static let hashedNamesKey = "tsumi.cache.sha256Names"
+
   private let directory: URL
   private var memory: [String: (expires: Date, value: Any)] = [:]
 
   init() {
     let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
     directory = base.appendingPathComponent("TsumiCache", isDirectory: true)
+    if !UserDefaults.standard.bool(forKey: Self.hashedNamesKey) {
+      // Files of the old naming scheme can no longer be found: drop them once.
+      try? FileManager.default.removeItem(at: directory)
+      UserDefaults.standard.set(true, forKey: Self.hashedNamesKey)
+    }
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
   }
 
+  /// File named by the SHA-256 of the whole key (cache.js keys entries by the full JSON string).
   private func fileURL(_ key: String) -> URL {
-    let safe = key.data(using: .utf8)!.base64EncodedString()
-      .replacingOccurrences(of: "/", with: "_")
-      .replacingOccurrences(of: "+", with: "-")
-    return directory.appendingPathComponent(String(safe.prefix(200)) + ".json")
+    let digest = SHA256.hash(data: Data(key.utf8))
+    let name = digest.map { String(format: "%02x", $0) }.joined()
+    return directory.appendingPathComponent(name + ".json")
   }
 
   /// Returns the cached value if present and not expired (or `allowExpired`, e.g. when offline).

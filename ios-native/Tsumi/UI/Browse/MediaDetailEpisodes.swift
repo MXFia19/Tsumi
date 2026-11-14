@@ -2,42 +2,52 @@ import SwiftUI
 import UIKit
 
 // modals/details/components/EpisodeList.svelte: episode list of the details (thumbnail, number and title,
-// length, summary, air date, watch progress, filler mark, completed / next / unreleased states), reverse
-// order, season picker for TMDB shows. Tap plays the episode, long press opens the extension picker.
+// length, summary, air date, watch progress, filler / recap mark, completed / next / unreleased states,
+// Dub / Sub airing rows with the Card Audio setting), reverse order, season picker for TMDB shows. Tap plays
+// the episode, long press opens the extension picker.
 
 @MainActor
 struct BrowseDetailEpisodes: View {
   @Bindable var model: BrowseDetailModel
 
   var body: some View {
-    let media = model.media
+    let media = model.live
     let entry = BrowseMediaInfo.entry(media)
     let watched = entry?.status == .completed
     let watching = entry.map { BrowseMediaInfo.watchingStatuses.contains($0.status) } ?? false
     let userProgress = watching ? (entry?.progress ?? 0) : 0
     let percents = Services.shared.progress.progress(mediaKey: media.id)
     let zeroOffset = model.hasZeroEpisode ? 1 : 0
+    let showDub = ServiceSettingsExtras.cardAudio
     let now = Date()
-    Group {
+    VStack(alignment: .leading, spacing: 18) {
       if !model.episodesLoaded {
         header(count: nil)
         ForEach(0..<skeletonCount(media), id: \.self) { _ in
           BrowseEpisodeRowSkeleton()
             .padding(.horizontal, 16)
         }
+      } else if model.episodesFailed {
+        header(count: nil)
+        BrowseErrorCard(kind: .failed("Couldn't load episodes."), height: 180, onRetry: { model.retryEpisodes() })
+          .padding(.horizontal, 16)
       } else if !model.episodes.isEmpty {
         header(count: model.episodes.count)
-        ForEach(model.displayedEpisodes(now: now)) { episode in
-          BrowseEpisodeRow(
-            media: media,
-            episode: episode,
-            title: displayTitle(episode, media: media),
-            completed: !watched && userProgress >= episode.number + zeroOffset,
-            target: userProgress + 1 == episode.number + zeroOffset,
-            percent: watched ? 0 : (percents[episode.number] ?? 0),
-            now: now
-          )
-          .padding(.horizontal, 16)
+        // Only the rows are lazy (long series), the rest of the details is a plain stack.
+        LazyVStack(alignment: .leading, spacing: 18) {
+          ForEach(model.displayedEpisodes(now: now)) { episode in
+            BrowseEpisodeRow(
+              media: media,
+              episode: episode,
+              title: displayTitle(episode, media: media),
+              completed: !watched && userProgress >= episode.number + zeroOffset,
+              target: userProgress + 1 == episode.number + zeroOffset,
+              percent: watched ? 0 : (percents[episode.number] ?? 0),
+              now: now,
+              dub: showDub ? model.dubAirings[episode.number] : nil
+            )
+            .padding(.horizontal, 16)
+          }
         }
       }
     }
@@ -117,11 +127,20 @@ struct BrowseEpisodeRow: View {
   let target: Bool
   let percent: Int
   let now: Date
+  /// Dub airing of the episode (dubbedEpisode, Card Audio setting): "Dub: ..." and "Sub: ..." labels.
+  var dub: DubEpisodeAiring? = nil
 
   private var unreleased: Bool {
     guard media.status != .finished else { return false }
     if let airDate = episode.airDate { return airDate > now }
     return episode.number > 1 || media.status == .notYetReleased
+  }
+
+  /// Filler or Recap (Jikan flags).
+  private var markText: String? {
+    if episode.isFiller { return "Filler" }
+    if episode.isRecap { return "Recap" }
+    return nil
   }
 
   var body: some View {
@@ -130,26 +149,42 @@ struct BrowseEpisodeRow: View {
         thumbnail
         VStack(alignment: .leading, spacing: 6) {
           titleRow
-          Text(dateText)
-            .font(.caption)
-            .foregroundStyle(BrowsePalette.muted)
-            .lineLimit(1)
+          if dub == nil {
+            Text(dateText)
+              .font(.caption)
+              .foregroundStyle(BrowsePalette.muted)
+              .lineLimit(1)
+          }
         }
         Spacer(minLength: 0)
       }
       progressView
       summaryView
+      if let dub {
+        dubRow(dub)
+      }
     }
     .padding(12)
     .background(completed ? Color.black : BrowsePalette.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay {
+      // .unreleased-overlay: diagonal stripes.
+      if unreleased {
+        BrowseDiagonalStripes(spacing: 12)
+          .fill(Color.black.opacity(0.3))
+          .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .allowsHitTesting(false)
+      }
+    }
     .overlay {
       if let borderColor {
         RoundedRectangle(cornerRadius: 10, style: .continuous)
           .stroke(borderColor, lineWidth: 1)
       }
     }
-    .opacity(completed ? 0.5 : (unreleased ? 0.6 : 1))
+    // .unreleased: blur(.06rem) grayscale(50%).
+    .blur(radius: unreleased ? 0.6 : 0)
     .saturation(unreleased ? 0.5 : 1)
+    .opacity(completed ? 0.5 : 1)
     .contentShape(Rectangle())
     .onTapGesture {
       play(force: false)
@@ -167,7 +202,7 @@ struct BrowseEpisodeRow: View {
   }
 
   private var borderColor: Color? {
-    if episode.isFiller { return BrowsePalette.secondary }
+    if markText != nil { return BrowsePalette.secondary }
     if target { return Color.white }
     return nil
   }
@@ -179,21 +214,14 @@ struct BrowseEpisodeRow: View {
         .frame(width: 150, height: 84)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(alignment: .bottomTrailing) {
-          if episode.isFiller {
-            Text("Filler")
+          if let markText {
+            Text(markText)
               .font(.caption2.weight(.bold))
               .foregroundStyle(.black)
               .padding(.horizontal, 6)
               .padding(.vertical, 2)
               .background(BrowsePalette.secondary, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
               .padding(4)
-          }
-        }
-        .overlay {
-          if unreleased {
-            Image(systemName: "clock")
-              .font(.title3)
-              .foregroundStyle(.white)
           }
         }
     }
@@ -231,11 +259,28 @@ struct BrowseEpisodeRow: View {
         .font(.caption)
         .fontWeight(unreleased ? .bold : .regular)
         .foregroundStyle(unreleased ? BrowsePalette.tertiary : Color.white.opacity(0.8))
-        .lineLimit(4)
+        .lineLimit(dub == nil ? 4 : 3)
     }
-    if episode.thumbnail == nil && episode.isFiller {
-      BrowseChip(text: "Filler", background: BrowsePalette.secondary, foreground: .black)
+    if episode.thumbnail == nil, let markText {
+      BrowseChip(text: markText, background: BrowsePalette.secondary, foreground: .black)
     }
+  }
+
+  /// "Dub: in 3 days (Delayed)" and "Sub: 2 weeks ago" labels (EpisodeList.svelte date-row).
+  private func dubRow(_ dub: DubEpisodeAiring) -> some View {
+    BrowseFlowLayout(spacing: 6, lineSpacing: 6) {
+      BrowseChip(text: "Dub: " + dub.text, background: dub.delayed ? BrowsePalette.danger : BrowsePalette.dub, foreground: .black, font: .caption.weight(.bold))
+      if media.source != .tmdb {
+        let subDelayed = episode.airDate == nil && dub.delayed && !dub.notPlanned
+        BrowseChip(text: "Sub: " + subText(dub), background: subDelayed ? BrowsePalette.danger : BrowsePalette.sub, foreground: .black, font: .caption.weight(.bold))
+      }
+    }
+  }
+
+  /// Sub label: the sub air date, the dub text while the sub date is unknown, else the release estimate.
+  private func subText(_ dub: DubEpisodeAiring) -> String {
+    if episode.airDate == nil && !dub.notPlanned { return dub.text }
+    return dateText
   }
 
   /// since(airdate), or the release estimate of EpisodeList.svelte.

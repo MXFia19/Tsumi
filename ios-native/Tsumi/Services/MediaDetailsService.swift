@@ -5,11 +5,65 @@ import Foundation
 // reviews, following) and of components/EpisodeList.svelte (load / loadTmdbEpisodes: the episode list built
 // from ani.zip, the AniList airing schedule, Jikan, Kitsu, streaming episodes and zero episodes), plus the
 // trailer fallback of TrailerModal.svelte / PreviewCard.svelte (Jikan / TMDB).
+//
+// The AniList episode list is built in two passes so the details never wait on Jikan: `quickEpisodes`
+// (ani.zip / Kitsu / airing schedule, every remote source behind a short timeout), then `enrichEpisodes`
+// (Jikan titles of the episodes ani.zip has no English title for, filler / recap flags), which reads each
+// Jikan page (100 episodes) once.
+
+/// Extended profile of a followed user (User.svelte popover: banner, profile colour, "Following You",
+/// join date, donator badge, moderator roles, anime statistics).
+struct FollowingUserProfile: Codable, Hashable {
+  var userId: Int
+  var bannerImage: URL?
+  /// AniList profile colour name ("blue") or hex value.
+  var profileColor: String?
+  var isFollower: Bool
+  var isBlocked: Bool
+  var createdAt: Date?
+  var donatorBadge: String?
+  var moderatorRoles: [String]
+  var animeCount: Int?
+  var episodesWatched: Int?
+  var meanScore: Double?
+  var minutesWatched: Int?
+}
 
 final class MediaDetailsService: @unchecked Sendable {
   static let shared = MediaDetailsService()
 
+  /// Episodes (by number) whose title must come from Jikan (no English ani.zip title), per media id.
+  private let pendingJikanTitles = ServiceLocked<[String: Set<Int>]>([:])
+
   private init() {}
+
+  // MARK: - Timeout helper
+
+  /// Runs `operation`, or returns `fallback` when it takes longer than `seconds`. The operation is not
+  /// cancelled: it keeps running in the background so its caches still fill for the next time.
+  static func withTimeout<T: Sendable>(_ seconds: Double, fallback: T, _ operation: @escaping @Sendable () async -> T) async -> T {
+    let claimed = ServiceLocked<Bool>(false)
+    return await withCheckedContinuation { (continuation: CheckedContinuation<T, Never>) in
+      Task {
+        let value = await operation()
+        let first: Bool = claimed.update { done in
+          if done { return false }
+          done = true
+          return true
+        }
+        if first { continuation.resume(returning: value) }
+      }
+      Task {
+        try? await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
+        let first: Bool = claimed.update { done in
+          if done { return false }
+          done = true
+          return true
+        }
+        if first { continuation.resume(returning: fallback) }
+      }
+    }
+  }
 
   // MARK: - Details
 
@@ -69,6 +123,100 @@ final class MediaDetailsService: @unchecked Sendable {
     return (try? await AniListService.shared.following(mediaId: id)) ?? []
   }
 
+  // MARK: - Following profiles (User.svelte popover)
+
+  static let followingProfilesQuery = """
+  query($id: Int) {
+    Page {
+      mediaList(mediaId: $id, isFollowing: true, sort: UPDATED_TIME_DESC) {
+        user {
+          id, createdAt, isBlocked, isFollower, bannerImage, donatorBadge, moderatorRoles,
+          options { profileColor },
+          statistics { anime { count, meanScore, minutesWatched, episodesWatched } }
+        }
+      }
+    }
+  }
+  """
+
+  /// Extended profiles of the followed users who have the media (same user fields as the following query of
+  /// anilist.js), keyed by user id. Requested when a popover is first opened, cached 200-300 minutes.
+  func followingProfiles(for media: Media) async -> [Int: FollowingUserProfile] {
+    guard let mediaId = media.anilistId, media.source == .anilist, AccountStore.shared.isAniList else { return [:] }
+    let key = "details.following.profiles.\(AccountStore.shared.current?.viewer.id ?? 0).\(mediaId)"
+    let online = ServiceNetworkMonitor.shared.isOnline
+    if let cached = await DiskCache.shared.get(key, as: [FollowingUserProfile].self, allowExpired: !online) {
+      return Self.profileMap(cached)
+    }
+    guard online, let json = try? await AniListService.shared.request(Self.followingProfilesQuery, variables: ["id": mediaId]),
+          let page = json.dict("data")?.dict("Page") else {
+      let stale = await DiskCache.shared.get(key, as: [FollowingUserProfile].self, allowExpired: true) ?? []
+      return Self.profileMap(stale)
+    }
+    let profiles: [FollowingUserProfile] = page.array("mediaList").compactMap { item in
+      guard let user = item.dict("user"), let id = user.int("id") else { return nil }
+      let anime = user.dict("statistics")?.dict("anime")
+      return FollowingUserProfile(
+        userId: id,
+        bannerImage: URL.lenient(user.string("bannerImage")),
+        profileColor: user.dict("options")?.string("profileColor"),
+        isFollower: user.bool("isFollower") ?? false,
+        isBlocked: user.bool("isBlocked") ?? false,
+        createdAt: user.double("createdAt").map { Date(timeIntervalSince1970: $0) },
+        donatorBadge: user.string("donatorBadge"),
+        moderatorRoles: ServiceJSON.strings(user, "moderatorRoles"),
+        animeCount: anime?.int("count"),
+        episodesWatched: anime?.int("episodesWatched"),
+        meanScore: anime?.double("meanScore"),
+        minutesWatched: anime?.int("minutesWatched")
+      )
+    }
+    await DiskCache.shared.set(key, profiles, ttl: TimeInterval(Int.random(in: 200...300) * 60))
+    return Self.profileMap(profiles)
+  }
+
+  private static func profileMap(_ list: [FollowingUserProfile]) -> [Int: FollowingUserProfile] {
+    var map: [Int: FollowingUserProfile] = [:]
+    for profile in list where map[profile.userId] == nil { map[profile.userId] = profile }
+    return map
+  }
+
+  // MARK: - Recommendation ratings (recommendations sorted by rating, SmallCard "N likes")
+
+  private struct RecommendationRating: Codable {
+    var id: Int
+    var rating: Int
+  }
+
+  /// Rating (likes) of each recommendation of an AniList media, keyed by the recommended AniList id.
+  func recommendationRatings(for media: Media) async -> [Int: Int] {
+    guard media.source == .anilist, let id = media.anilistId else { return [:] }
+    let key = "details.recommendation.ratings.\(id)"
+    let online = ServiceNetworkMonitor.shared.isOnline
+    if let cached = await DiskCache.shared.get(key, as: [RecommendationRating].self, allowExpired: !online) {
+      return Self.ratingMap(cached)
+    }
+    guard online, let json = try? await AniListService.shared.request(AniListService.recommendationsQuery, variables: ["id": id]) else {
+      let stale = await DiskCache.shared.get(key, as: [RecommendationRating].self, allowExpired: true) ?? []
+      return Self.ratingMap(stale)
+    }
+    let edges = json.dict("data")?.dict("Media")?.dict("recommendations")?.array("edges") ?? []
+    let ratings: [RecommendationRating] = edges.compactMap { edge in
+      guard let node = edge.dict("node"), let mediaId = node.dict("mediaRecommendation")?.int("id") else { return nil }
+      return RecommendationRating(id: mediaId, rating: node.int("rating") ?? 0)
+    }
+    if !ratings.isEmpty {
+      await DiskCache.shared.set(key, ratings, ttl: TimeInterval(Int.random(in: 1500...2000) * 60))
+    }
+    return Self.ratingMap(ratings)
+  }
+
+  private static func ratingMap(_ list: [RecommendationRating]) -> [Int: Int] {
+    var map: [Int: Int] = [:]
+    for item in list where map[item.id] == nil { map[item.id] = item.rating }
+    return map
+  }
+
   /// YouTube trailer id: AniList trailer, Jikan fallback (anime) or TMDB videos (western).
   func trailer(for media: Media) async -> String? {
     if let trailer = media.trailerYouTubeId { return trailer }
@@ -94,9 +242,56 @@ final class MediaDetailsService: @unchecked Sendable {
 
   // MARK: - Episodes (EpisodeList.svelte)
 
+  /// Complete episode list (first pass + Jikan titles and filler / recap flags), used by the player.
   func episodes(for media: Media) async -> [EpisodeInfo] {
+    let list = await quickEpisodes(for: media)
+    return await enrichEpisodes(list, for: media)
+  }
+
+  /// First pass of the episode list: no per-episode Jikan request, every remote source behind a short timeout.
+  func quickEpisodes(for media: Media) async -> [EpisodeInfo] {
     if media.source == .tmdb { return await tmdbEpisodes(media) }
     return await anilistEpisodes(media)
+  }
+
+  /// Second pass: Jikan titles (episodes ani.zip has no English title for) and filler / recap flags. Each
+  /// Jikan page (100 episodes) is requested once, a slow page is skipped after 10 seconds.
+  func enrichEpisodes(_ list: [EpisodeInfo], for media: Media) async -> [EpisodeInfo] {
+    guard media.source == .anilist, let malId = media.malId, !list.isEmpty else { return list }
+    let pending = pendingJikanTitles.get()[media.id] ?? []
+    let pageNumbers = Set(list.map { AnimeMappingsService.jikanPageNumber(episode: $0.number) }).sorted()
+    var pages: [Int: [Int: JikanEpisode]] = [:]
+    for page in pageNumbers {
+      if Task.isCancelled { break }
+      let episodes: [JikanEpisode] = await Self.withTimeout(10, fallback: []) {
+        await AnimeMappingsService.shared.jikanEpisodePage(malId: malId, page: page) ?? []
+      }
+      var byNumber: [Int: JikanEpisode] = [:]
+      for episode in episodes where byNumber[episode.malId] == nil { byNumber[episode.malId] = episode }
+      pages[page] = byNumber
+    }
+    let now = Date()
+    var result = list
+    for index in result.indices {
+      let number = result[index].number
+      guard let jikan = pages[AnimeMappingsService.jikanPageNumber(episode: number)]?[number] else { continue }
+      result[index].isFiller = jikan.filler
+      result[index].isRecap = jikan.recap
+      guard number != 0, pending.contains(number), let title = jikan.title, !title.isEmpty else { continue }
+      let released = media.status == .finished || (result[index].airDate.map { $0.timeIntervalSince(now) <= 7 * 24 * 3600 } ?? false)
+      if released {
+        result[index].title = Self.movieTitle(title, media: media)
+      }
+    }
+    return result
+  }
+
+  /// A single-episode title such as "Web" / "Movie" becomes "The Movie".
+  private static func movieTitle(_ title: String, media: Media) -> String {
+    if media.episodes == 1, title.range(of: " web|web |movie", options: [.regularExpression, .caseInsensitive]) != nil || title.lowercased() == "web" {
+      return "The Movie"
+    }
+    return title
   }
 
   private struct RawEpisode {
@@ -121,7 +316,10 @@ final class MediaDetailsService: @unchecked Sendable {
 
   private func anilistEpisodes(_ media: Media) async -> [EpisodeInfo] {
     guard let anilistId = media.anilistId else { return [] }
-    let mappings = await AnimeMappingsService.shared.aniZip(anilistId: anilistId) ?? AniZipMappings()
+    let fetchedMappings: AniZipMappings? = await Self.withTimeout(10, fallback: nil) {
+      await AnimeMappingsService.shared.aniZip(anilistId: anilistId)
+    }
+    let mappings = fetchedMappings ?? AniZipMappings()
     let episodesMap = mappings.episodes
     let orderedKeys = numericKeyOrder(Array(episodesMap.keys))
     let specialCount = mappings.specialCount ?? 0
@@ -141,7 +339,10 @@ final class MediaDetailsService: @unchecked Sendable {
 
     var raw: [RawEpisode] = (0..<max(newEpisodeCount, episodeCount)).map { RawEpisode(episode: $0 + 1, title: nil, airingAt: nil) }
     if raw.count < episodeCount || (raw.isEmpty && episodeCount == 0) {
-      let jikan = await AnimeMappingsService.shared.jikanEpisodes(malId: media.malId)
+      let malId = media.malId
+      let jikan: [JikanEpisode] = await Self.withTimeout(10, fallback: []) {
+        await AnimeMappingsService.shared.jikanEpisodes(malId: malId)
+      }
       if let lastId = jikan.last?.malId, lastId > 0 {
         raw = (1...lastId).map { number in
           let match = lastId <= 100 ? jikan.first(where: { $0.malId == number }) : nil
@@ -153,8 +354,12 @@ final class MediaDetailsService: @unchecked Sendable {
       }
     }
 
-    let zeroEpisode = await AnimeHelpers.hasZeroEpisode(media, mappings: mappings)
-    let kitsu = await AnimeMappingsService.shared.kitsuEpisodes(anilistId: anilistId)
+    let zeroEpisode: ZeroEpisodeInfo? = await Self.withTimeout(10, fallback: nil) {
+      await AnimeHelpers.hasZeroEpisode(media, mappings: mappings)
+    }
+    let kitsu: [KitsuEpisode] = await Self.withTimeout(10, fallback: []) {
+      await AnimeMappingsService.shared.kitsuEpisodes(anilistId: anilistId)
+    }
     if let zeroEpisode {
       let firstAiring = extras.airingSchedule.first(where: { $0.episode == 1 })?.airingAt ?? zeroEpisode.airingAt
       raw.insert(RawEpisode(episode: 0, title: zeroEpisode.title, airingAt: firstAiring), at: 0)
@@ -171,6 +376,7 @@ final class MediaDetailsService: @unchecked Sendable {
     var usedImages = Set<String>()
     var usedSummaries = Set<String>()
     var output: [Int: EpisodeInfo] = [:]
+    var jikanTitles = Set<Int>()
     let list = raw.isEmpty ? [RawEpisode(episode: 1, title: nil, airingAt: nil)] : raw
     let startDate = extras.startDate
 
@@ -181,15 +387,18 @@ final class MediaDetailsService: @unchecked Sendable {
       let streamingTitle: String? = hasBonusEpisode ? nil : streaming.first(where: { $0.number == item.episode && !$0.title.lowercased().trimmingCharacters(in: .whitespaces).hasPrefix("episode") })?.title
       let streamingThumbnail = streaming.first(where: { $0.number == item.episode })?.thumbnail
 
+      // The Jikan title (getSingleEpisode) comes in the second pass (enrichEpisodes) and replaces the
+      // streaming / Kitsu fallbacks of this pass.
       var title: String?
+      var wantsJikanTitle = false
       if item.episode == 0 {
         title = item.title
       } else {
         title = data?.title["en"]
-        if title == nil, media.malId != nil {
-          title = await AnimeMappingsService.shared.jikanEpisode(malId: media.malId, episode: item.episode)?.title
+        if title == nil {
+          wantsJikanTitle = media.malId != nil
+          title = streamingTitle
         }
-        if title == nil { title = streamingTitle }
       }
       lastDuration = data?.length ?? media.duration ?? lastDuration
 
@@ -217,11 +426,9 @@ final class MediaDetailsService: @unchecked Sendable {
         continue
       }
       let episodeNumber = item.episode - (zeroAsFirstEpisode ? 1 : 0)
+      if wantsJikanTitle { jikanTitles.insert(episodeNumber) }
       let released = media.status == .finished || (validated.map { $0.timeIntervalSince(now) <= 7 * 24 * 3600 } ?? false)
-      var foundTitle: String? = released ? fallbackTitle : nil
-      if let found = foundTitle, media.episodes == 1, found.range(of: " web|web |movie", options: [.regularExpression, .caseInsensitive]) != nil || found.lowercased() == "web" {
-        foundTitle = "The Movie"
-      }
+      let foundTitle: String? = released ? fallbackTitle.map { Self.movieTitle($0, media: media) } : nil
 
       var image: URL?
       if released {
@@ -254,13 +461,12 @@ final class MediaDetailsService: @unchecked Sendable {
       }
 
       let length: Int? = (media.status == .finished || validated != nil) ? lastDuration : nil
-      var filler = false
-      if media.malId != nil {
-        filler = await AnimeMappingsService.shared.jikanEpisode(malId: media.malId, episode: episodeNumber)?.filler ?? false
-      }
       let index = episodeNumber - (zeroEpisode == nil ? 1 : 0)
-      output[index] = EpisodeInfo(number: episodeNumber, season: nil, localEpisode: nil, title: foundTitle, summary: summary, thumbnail: image, airDate: validated, durationMinutes: length, isFiller: filler)
+      output[index] = EpisodeInfo(number: episodeNumber, season: nil, localEpisode: nil, title: foundTitle, summary: summary, thumbnail: image, airDate: validated, durationMinutes: length, isFiller: false)
     }
+
+    let pendingTitles = jikanTitles
+    pendingJikanTitles.update { $0[media.id] = pendingTitles }
 
     var result = output.keys.sorted().compactMap { output[$0] }
     if zeroEpisode != nil && result.count == list.count && !result.isEmpty {
