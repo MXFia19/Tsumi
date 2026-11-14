@@ -55,7 +55,7 @@ app.setJumpList?.([
 ])
 
 let defaultBounds
-export function getWindowState() {
+export function getWindowState () {
   const state = store.get('windowState') || {}
   const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize
   defaultBounds = { width: Math.floor(screenWidth * 0.75), height: Math.floor(screenHeight * 0.75), x: undefined, y: undefined }
@@ -75,7 +75,7 @@ export function getWindowState() {
   return { bounds, isMaximized: (state.isMaximized || false), isFullScreen: (state.isFullScreen || false) }
 }
 
-export function saveWindowState(window) {
+export function saveWindowState (window) {
   if (!window || window.isDestroyed()) return
   let bounds
   if (!window.isMaximized() && !window.isFullScreen()) bounds = window.getBounds()
@@ -83,7 +83,7 @@ export function saveWindowState(window) {
   store.set('windowState', { bounds, isMaximized: window.isMaximized(), isFullScreen: window.isFullScreen() })
 }
 
-export function getDefaultBounds() {
+export function getDefaultBounds () {
   const { width: screenWidth, height: screenHeight } = screen.getPrimaryDisplay().workAreaSize
   return {
     width: defaultBounds.width,

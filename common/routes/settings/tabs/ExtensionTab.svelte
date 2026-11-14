@@ -184,7 +184,7 @@
     </div>
     {#each otherExtensions as ext}
       {@const isStarred = settings.starredExtension === ext.key}
-      <div class='card m-0 p-15 mb-10 bg-dark-light border position-relative' class:extension-disabled={!ext.enabled} style='border-color: {isStarred ? "var(--warning-color)" : "var(--dark-color-light)"} !important' draggable='true' role='listitem' on:dragstart={(e) => handleDragStart(e, ext.key)}>
+      <div class='card m-0 p-15 mb-10 bg-dark-light border position-relative' class:extension-disabled={!ext.enabled} style='border-color: {isStarred ? 'var(--warning-color)' : 'var(--dark-color-light)'} !important' draggable='true' role='listitem' on:dragstart={(e) => handleDragStart(e, ext.key)}>
         <div class='d-flex'>
           <div class='d-flex align-items-center mr-10 drag-handle' title='Drag to set as default'>
             <GripVertical size='1.6rem' color='var(--gray-color-very-dim)' />
@@ -203,13 +203,13 @@
             <button type='button' class='btn btn-square d-flex align-items-center justify-content-center bg-transparent shadow-none border-0 p-0' use:click={() => toggleStar(ext.key)} title={isStarred ? 'Unstar' : 'Star — always show at the top of search results'}>
               <Star size='1.8rem' fill={isStarred ? 'var(--warning-color)' : 'none'} color={isStarred ? 'var(--warning-color)' : 'var(--gray-color-very-dim)'} />
             </button>
-            <ConfirmButton click={() => removeSource(ext.key)} title='Delete Extension' class='btn btn-square d-flex align-items-center justify-content-center bg-transparent shadow-none border-0 {pendingSource ? "cursor-wait" : ""} text-danger' disabled={pendingSource} primaryClass='' confirmText='' cancelText='' confirmClass='btn-square text-success w-auto' cancelClass='ml-10 text-muted w-auto' actionClass='d-inline-flex flex-row-reverse'>
+            <ConfirmButton click={() => removeSource(ext.key)} title='Delete Extension' class='btn btn-square d-flex align-items-center justify-content-center bg-transparent shadow-none border-0 {pendingSource ? 'cursor-wait' : ''} text-danger' disabled={pendingSource} primaryClass='' confirmText='' cancelText='' confirmClass='btn-square text-success w-auto' cancelClass='ml-10 text-muted w-auto' actionClass='d-inline-flex flex-row-reverse'>
               <Trash2 size='1.8rem' />
             </ConfirmButton>
             {#if settings.extensions?.[ext.key]}
               <div class='custom-switch'>
                 <input type='checkbox' id={`extension-${ext.key}`} bind:checked={settings.extensions[ext.key].enabled} />
-                <label for={`extension-${ext.key}`}><br/></label>
+                <label for={`extension-${ext.key}`}><br /></label>
               </div>
             {/if}
           </div>

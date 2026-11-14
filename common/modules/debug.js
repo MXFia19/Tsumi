@@ -22,7 +22,7 @@ exports.destroy = (() => {
 })()
 
 const consoleError = console.error
-console.error = function(...args) {
+console.error = function (...args) {
   consoleError.apply(console, args.map(arg => {
     if (arg instanceof Error && arg.stack) return arg.stack
     return arg

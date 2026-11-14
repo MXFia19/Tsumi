@@ -13,9 +13,9 @@
   registerTab(tab)
 </script>
 
-<div class='tab-label pointer mx-auto pl-lg-20 w-lg-full {sidebar ? `d-none d-lg-block` : ``} {substitute ? `d-sm-h-block d-sm-none` : ``}' title={name} use:click={() => (action ?? (() => selectTab(tab)))()}>
+<div class='tab-label pointer mx-auto pl-lg-20 w-lg-full {sidebar ? 'd-none d-lg-block' : ''} {substitute ? 'd-sm-h-block d-sm-none' : ''}' title={name} use:click={() => (action ?? (() => selectTab(tab)))()}>
   <span class='d-flex align-items-center rounded'>
-    <slot active={$selectedTab === tab}/>
+    <slot active={$selectedTab === tab}></slot>
   </span>
 </div>
 

@@ -6,7 +6,7 @@ import Debug from 'debug'
 const debug = Debug('ui:networking')
 
 export const status = writable(navigator.onLine ? 'online' : 'offline')
-export async function printError(title, description, error) {
+export async function printError (title, description, error) {
   if (await isOffline(error) || await isAnilistDown(error)) return
   debug(`Error: ${error.status || 429} - ${error.message || codes[error.status || 429]}`)
   if (settings.value.toasts.includes('All') || settings.value.toasts.includes('Errors')) {
@@ -29,12 +29,12 @@ window.fetch = async (...args) => {
   }
 }
 
-function isNetworkError(error) {
+function isNetworkError (error) {
   if (!error || error.response || (error.status && error.status >= 400)) return false
   return (/request failed|failed to fetch|resolve host|network\s?error/i).test(error.message || '')
 }
 
-function isAnilistError(error) {
+function isAnilistError (error) {
   if (!error || error.response || (error.status && error.status !== 403)) return false
   return (/anilist/i).test(error.message || '') && (/temporarily disabled/i).test(error.message || '')
 }
@@ -47,7 +47,7 @@ export const isOffline = newOutageChecker({
       method: 'HEAD',
       mode: 'no-cors',
       cache: 'no-cache',
-      headers: { 'Pragma': 'no-cache' }
+      headers: { Pragma: 'no-cache' }
     },
     timeout
   }),
@@ -65,9 +65,9 @@ export const isAnilistDown = newOutageChecker({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Accept': 'application/json'
+        Accept: 'application/json'
       },
-      body: JSON.stringify({ query: `query { Page(page: 1, perPage: 1) { media { id } }}` })
+      body: JSON.stringify({ query: 'query { Page(page: 1, perPage: 1) { media { id } }}' })
     },
     timeout,
     validate: async (res) => {
@@ -92,7 +92,7 @@ export const isAnilistDown = newOutageChecker({
   }
 })
 
-async function pingWith({ url, options, timeout = 2000, validate }) {
+async function pingWith ({ url, options, timeout = 2000, validate }) {
   if (!navigator.onLine) return false
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeout)
@@ -108,10 +108,10 @@ async function pingWith({ url, options, timeout = 2000, validate }) {
   }
 }
 
-function newOutageChecker({ key, ping, detect, offlineEvent, onlineEvent, retryRange = [3, 5], outageToast }) {
+function newOutageChecker ({ key, ping, detect, offlineEvent, onlineEvent, retryRange = [3, 5], outageToast }) {
   let monitor
   let promise
-  return async function check(error) {
+  return async function check (error) {
     if (!promise && !monitor) {
       promise = (async () => {
         if (status.value === offlineEvent) return true
@@ -132,7 +132,7 @@ function newOutageChecker({ key, ping, detect, offlineEvent, onlineEvent, retryR
           if (!monitor) {
             monitor = (() => {
               let stop = false
-              async function checkLoop() {
+              async function checkLoop () {
                 if (stop) return
                 const result = await ping(status.value === offlineEvent ? 500 : 2000)
                 if (result && status.value === offlineEvent) {

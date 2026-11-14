@@ -37,14 +37,14 @@
   }
 
   let activeScroll = false
-  function scrolling(duration = 1000) {
+  function scrolling (duration = 1000) {
     activeScroll = true
     setTimeout(() => activeScroll = false, duration)
   }
 
   let scrollContainer
   let previewLength = defaultLength
-  function scrollCarousel(direction) {
+  function scrollCarousel (direction) {
     if (activeScroll) return
     if (direction === 'right' && (scrollContainer.scrollLeft + 2) >= (scrollContainer.scrollWidth - scrollContainer.clientWidth)) {
       scrolling()
@@ -53,7 +53,7 @@
       visibleLength = loadableLength
       setTimeout(() => {
         scrolling()
-        scrollContainer.scrollTo({left: (scrollContainer.scrollWidth - scrollContainer.clientWidth), behavior: 'smooth'})
+        scrollContainer.scrollTo({ left: (scrollContainer.scrollWidth - scrollContainer.clientWidth), behavior: 'smooth' })
       })
     } else {
       visibleLength = Math.min((visibleLength || previewLength) + previewLength, loadableLength)
@@ -65,12 +65,12 @@
     }
   }
 
-  function handleScroll() {
+  function handleScroll () {
     if (scrollContainer && ((scrollContainer.scrollWidth - scrollContainer.clientWidth) - scrollContainer.scrollLeft < 100)) visibleLength = Math.min((visibleLength || previewLength) + overflowLength, loadableLength)
   }
 
   let timeout
-  function handleUpdate() {
+  function handleUpdate () {
     clearTimeout(timeout)
     timeout = setTimeout(() => {
       if (!scrollContainer) return
@@ -105,7 +105,7 @@
 <div class='position-relative' class:isRSS={opts.isRSS}>
   <div class='pb-10 w-full d-flex flex-row justify-content-start gallery' use:dragScroll bind:this={scrollContainer}>
     {#each ($preview || fakecards || []).slice(0, visibleLength || previewLength) as card}
-      <Card {card} variables={{...opts.variables, section: true}} />
+      <Card {card} variables={{ ...opts.variables, section: true }} />
     {/each}
     {#if $preview?.length}
       <ErrorCard promise={$preview[0].data} />

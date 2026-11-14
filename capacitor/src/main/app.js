@@ -43,11 +43,11 @@ export default class App {
     },
     {
       id: 'update_app',
-      actions: [{ id: 'update_now', title: 'Update Now' }, { id: 'whats_new', title: `What's New` }]
+      actions: [{ id: 'update_now', title: 'Update Now' }, { id: 'whats_new', title: 'What\'s New' }]
     }
   ]
 
-  constructor() {
+  constructor () {
     StatusBar.hide().catch(() => {})
     StatusBar.setStyle({ style: Style.Dark }).catch(() => {})
     // Android only: on iOS the web view always draws under the status bar.
@@ -149,7 +149,7 @@ export default class App {
    * Updates CSS variables with safe area insets from the device.
    * @returns {Promise<void>}
    */
-  async updateSafeInsets() {
+  async updateSafeInsets () {
     // getDisplayCutoutInsets is added by our Android patch of the plugin; iOS has the standard safe area.
     let insets
     try {
@@ -169,7 +169,7 @@ export default class App {
    * @param {HTMLElement} container - Element to start searching from.
    * @returns {HTMLElement|null} Closest scrollable parent, or null if none found.
    */
-  keyboardScrollParent(container) {
+  keyboardScrollParent (container) {
     let current = container
     while (current) {
       if (/(auto|scroll)/.test(window.getComputedStyle(current)?.overflowY)) return current

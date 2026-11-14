@@ -7,12 +7,33 @@ const debug = Debug('ui:tmdb')
 const TMDB_API_KEY = atob('OTgwMWI2YjA1NDhhZDU3NTgxZDExMWVhNjkwYzg1Yzg=')
 
 const TMDB_GENRES = {
-  28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy', 80: 'Crime',
-  99: 'Documentary', 18: 'Drama', 10751: 'Family', 14: 'Fantasy', 36: 'History',
-  27: 'Horror', 10402: 'Music', 9648: 'Mystery', 10749: 'Romance', 878: 'Sci-Fi',
-  10770: 'TV Movie', 53: 'Thriller', 10752: 'War', 37: 'Western',
-  10759: 'Action & Adventure', 10762: 'Kids', 10763: 'News', 10764: 'Reality',
-  10765: 'Sci-Fi & Fantasy', 10766: 'Soap', 10767: 'Talk', 10768: 'War & Politics'
+  28: 'Action',
+  12: 'Adventure',
+  16: 'Animation',
+  35: 'Comedy',
+  80: 'Crime',
+  99: 'Documentary',
+  18: 'Drama',
+  10751: 'Family',
+  14: 'Fantasy',
+  36: 'History',
+  27: 'Horror',
+  10402: 'Music',
+  9648: 'Mystery',
+  10749: 'Romance',
+  878: 'Sci-Fi',
+  10770: 'TV Movie',
+  53: 'Thriller',
+  10752: 'War',
+  37: 'Western',
+  10759: 'Action & Adventure',
+  10762: 'Kids',
+  10763: 'News',
+  10764: 'Reality',
+  10765: 'Sci-Fi & Fantasy',
+  10766: 'Soap',
+  10767: 'Talk',
+  10768: 'War & Politics'
 }
 
 const TMDB_GENRE_NAME_TO_ID = Object.fromEntries(Object.entries(TMDB_GENRES).map(([id, name]) => [name, Number(id)]))
@@ -38,7 +59,7 @@ class TMDBClient {
   tmdbToAnilist = {}
   anilistToTmdb = {}
 
-  constructor() {
+  constructor () {
     debug('Initializing TMDB Client')
     this.limiter.on('failed', async (error) => {
       debug('Rate limit or error hit', error)
@@ -53,30 +74,30 @@ class TMDBClient {
     this.mapPromise = this.fetchAnimeMap()
   }
 
-  tvdbToken = null;
-  tvdbTokenExpiry = 0;
+  tvdbToken = null
+  tvdbTokenExpiry = 0
 
-  async getTvdbToken() {
-    if (this.tvdbToken && Date.now() < this.tvdbTokenExpiry) return this.tvdbToken;
+  async getTvdbToken () {
+    if (this.tvdbToken && Date.now() < this.tvdbTokenExpiry) return this.tvdbToken
     try {
       const res = await fetch('https://api4.thetvdb.com/v4/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apikey: '2fa11d19-0298-4c09-9a20-b5ae84a07619' })
-      });
-      const data = await res.json();
+      })
+      const data = await res.json()
       if (data?.data?.token) {
-        this.tvdbToken = data.data.token;
-        this.tvdbTokenExpiry = Date.now() + 1000 * 60 * 60 * 23;
-        return this.tvdbToken;
+        this.tvdbToken = data.data.token
+        this.tvdbTokenExpiry = Date.now() + 1000 * 60 * 60 * 23
+        return this.tvdbToken
       }
     } catch (e) {
-      debug('TVDB login failed', e);
+      debug('TVDB login failed', e)
     }
-    return null;
+    return null
   }
 
-  async fetchAnimeMap() {
+  async fetchAnimeMap () {
     debug('Fetching TMDB/TVDB to Anilist mappings...')
     try {
       const res = await fetch('https://animap.s0n1c.ca/mappings/all')
@@ -121,11 +142,11 @@ class TMDBClient {
     return await res.json()
   })
 
-  getTmdbGenre(id) {
+  getTmdbGenre (id) {
     return TMDB_GENRES[id] || 'Unknown'
   }
 
-  normalizeMedia(tmdbItem) {
+  normalizeMedia (tmdbItem) {
     if (!tmdbItem) return null
     const isTv = tmdbItem.media_type === 'tv' || tmdbItem.first_air_date
     const tmdbType = isTv ? 'tv' : 'movie'
@@ -160,15 +181,15 @@ class TMDBClient {
       streamingEpisodes: [],
       stats: null,
       seasonYear: tmdbItem.first_air_date ? parseInt(tmdbItem.first_air_date.substring(0, 4)) : (tmdbItem.release_date ? parseInt(tmdbItem.release_date.substring(0, 4)) : null),
-      status: tmdbItem.status ?
-        (['Ended', 'Canceled', 'Finished'].some(s => tmdbItem.status?.includes(s)) ? 'FINISHED' : ['Returning Series', 'Released', 'In Production', 'Post Production', 'Pilot', 'Airing'].some(s => tmdbItem.status?.includes(s)) ? 'RELEASING' : 'NOT_YET_RELEASED') :
-        ((tmdbItem.release_date || tmdbItem.first_air_date) ? (new Date(tmdbItem.release_date || tmdbItem.first_air_date).getTime() <= (new Date().getTime() + 86400000) ? 'RELEASING' : 'NOT_YET_RELEASED') : 'RELEASING'),
+      status: tmdbItem.status
+        ? (['Ended', 'Canceled', 'Finished'].some(s => tmdbItem.status?.includes(s)) ? 'FINISHED' : ['Returning Series', 'Released', 'In Production', 'Post Production', 'Pilot', 'Airing'].some(s => tmdbItem.status?.includes(s)) ? 'RELEASING' : 'NOT_YET_RELEASED')
+        : ((tmdbItem.release_date || tmdbItem.first_air_date) ? (new Date(tmdbItem.release_date || tmdbItem.first_air_date).getTime() <= (new Date().getTime() + 86400000) ? 'RELEASING' : 'NOT_YET_RELEASED') : 'RELEASING'),
       isTmdb: true,
       logo: tmdbItem.images?.logos?.find(l => l.iso_639_1 === 'en') || tmdbItem.images?.logos?.[0] ? `https://image.tmdb.org/t/p/w500${(tmdbItem.images?.logos?.find(l => l.iso_639_1 === 'en') || tmdbItem.images?.logos?.[0]).file_path}` : null
     }
   }
 
-  async search(variables = {}) {
+  async search (variables = {}) {
     debug('TMDB Search', variables)
 
     let sort = variables.sort
@@ -208,7 +229,7 @@ class TMDBClient {
 
     const fetchResults = await Promise.all(types.map(async (type) => {
       let endpoint = `/discover/${type}`
-      let params = { page: variables.page || 1 }
+      const params = { page: variables.page || 1 }
 
       const genreIds = getGenreIds(type)
       const excludeGenreIds = getGenreIds(type, true)
@@ -242,7 +263,7 @@ class TMDBClient {
       }
     }))
 
-    let results = []
+    const results = []
     let hasNextPage = false
 
     const movieRes = fetchResults.find(r => r.type === 'movie')?.res
@@ -383,7 +404,7 @@ class TMDBClient {
     }
   })
 
-  async injectMediaImages(mediaList) {
+  async injectMediaImages (mediaList) {
     if (!mediaList || !mediaList.length) return mediaList
     if (this.mapPromise) await this.mapPromise
     await Promise.resolve()
@@ -426,12 +447,12 @@ class TMDBClient {
 
       try {
         const endpoint = isMovie ? `/movie/${tmdbId}` : `/tv/${tmdbId}`
-        let tmdbMedia = await this.handleRequest(endpoint, { append_to_response: 'images', include_image_language: 'en,null,ja' }).catch(() => null)
+        const tmdbMedia = await this.handleRequest(endpoint, { append_to_response: 'images', include_image_language: 'en,null,ja' }).catch(() => null)
 
-        let backdropPath = tmdbMedia ? tmdbMedia.backdrop_path : null
+        const backdropPath = tmdbMedia ? tmdbMedia.backdrop_path : null
         const backdrop = backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : null
 
-        let logo = tmdbMedia?.images?.logos?.find(l => l.iso_639_1 === 'en') || tmdbMedia?.images?.logos?.find(l => l.iso_639_1 === null) || tmdbMedia?.images?.logos?.[0]
+        const logo = tmdbMedia?.images?.logos?.find(l => l.iso_639_1 === 'en') || tmdbMedia?.images?.logos?.find(l => l.iso_639_1 === null) || tmdbMedia?.images?.logos?.[0]
         const logoUrl = logo ? `https://image.tmdb.org/t/p/w500${logo.file_path}` : null
 
         cache.setEntry(caches.MEDIA, cacheKey, { backdrop, logo: logoUrl })
@@ -452,18 +473,18 @@ class TMDBClient {
     return mediaList
   }
 
-  async injectTmdbImages(anilistResults) {
+  async injectTmdbImages (anilistResults) {
     if (!anilistResults || !anilistResults.data || !anilistResults.data.Page || !anilistResults.data.Page.media) return anilistResults
     await this.injectMediaImages(anilistResults.data.Page.media)
     return anilistResults
   }
 
-  getMediaForRSS(page = 1, perPage = 50) {
+  getMediaForRSS (page = 1, perPage = 50) {
     const res = this._getMediaForRSS(page, perPage)
     return Array.from({ length: perPage }, (_, i) => ({ type: 'episode', data: this.fromPending(res, i) }))
   }
 
-  async _getMediaForRSS(page, perPage) {
+  async _getMediaForRSS (page, perPage) {
     try {
       const data = await this.getSchedule({ page })
       const mediaList = data?.data?.Page?.media || []
@@ -497,13 +518,13 @@ class TMDBClient {
     }
   }
 
-  async fromPending(result, i) {
+  async fromPending (result, i) {
     const array = await result
     if (!array || !array[i]) return undefined
     return array[i]
   }
 
-  async getDetails(tmdbId, mediaType = 'tv') {
+  async getDetails (tmdbId, mediaType = 'tv') {
     const typeKey = (mediaType || 'tv').toLowerCase()
     const cacheKey = `tmdb-details-v2-${typeKey}-${tmdbId}`
     const cached = cache.getEntry(caches.GENERAL, cacheKey)
@@ -567,7 +588,7 @@ class TMDBClient {
     }
   }
 
-  async getSeasonEpisodes(tmdbId, seasonNumber) {
+  async getSeasonEpisodes (tmdbId, seasonNumber) {
     const cacheKey = `tmdb-season-${tmdbId}-${seasonNumber}`
     const cached = cache.getEntry(caches.GENERAL, cacheKey)
     if (cached) return cached
@@ -584,7 +605,7 @@ class TMDBClient {
         airdate: ep.air_date ? new Date(ep.air_date) : null,
         length: ep.runtime,
         rating: ep.vote_average ? Math.round(ep.vote_average * 10) : null,
-        seasonNumber: seasonNumber
+        seasonNumber
       }))
 
       cache.setEntry(caches.GENERAL, cacheKey, episodes)
@@ -595,7 +616,7 @@ class TMDBClient {
     }
   }
 
-  async getCollection(collectionId) {
+  async getCollection (collectionId) {
     const cacheKey = `tmdb-collection-${collectionId}`
     const cached = cache.getEntry(caches.GENERAL, cacheKey)
     if (cached) return cached
@@ -615,7 +636,7 @@ class TMDBClient {
     }
   }
 
-  async getRelations(tmdbId, mediaType = 'tv') {
+  async getRelations (tmdbId, mediaType = 'tv') {
     if (mediaType === 'movie') {
       const details = await this.getDetails(tmdbId, 'movie')
       if (details?.belongs_to_collection?.id) {
@@ -635,7 +656,7 @@ class TMDBClient {
     return { relations: [], recommendations: [] }
   }
 
-  async getRecommendations(tmdbId, mediaType = 'tv') {
+  async getRecommendations (tmdbId, mediaType = 'tv') {
     const details = await this.getDetails(tmdbId, mediaType)
     if (!details) return { relations: [], recommendations: [] }
 
@@ -653,7 +674,7 @@ class TMDBClient {
     return { relations: [], recommendations: normalized }
   }
 
-  async getTrailer(media) {
+  async getTrailer (media) {
     if (media.trailer?.id) return media
     const mediaType = media.format === 'MOVIE' ? 'movie' : 'tv'
     const tmdbId = media.idTmdb
@@ -664,7 +685,7 @@ class TMDBClient {
     return null
   }
 
-  async textSearch(query, page = 1) {
+  async textSearch (query, page = 1) {
     if (!query || query.length === 0) return { data: { Page: { pageInfo: { hasNextPage: false }, media: [] } } }
 
     try {

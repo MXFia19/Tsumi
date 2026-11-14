@@ -6,7 +6,7 @@
   export let version
 </script>
 
-<div class='{$$restProps.class}'>
+<div class={$$restProps.class}>
   <div class='column px-20 px-sm-0'>
     <h4 class='mb-10 font-weight-bold'>Changelog</h4>
     <div class='font-size-18 text-muted'>New updates and improvements to Tsumi.</div>
@@ -43,7 +43,7 @@
         <div class='col-sm-9 pre-wrap text-muted'>
           <h2 class='mt-0 font-weight-bold text-white font-scale-34'>{version}</h2>
           <div class='ml-10'>
-            Failed to load the changelog.<br>
+            Failed to load the changelog.<br />
             Possible causes include network connectivity problems, missing or inaccessible changelog files, or issues communicating with the update repository.
           </div>
         </div>

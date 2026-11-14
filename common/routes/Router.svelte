@@ -1,52 +1,53 @@
 <script>
-  import HomePage from "@/routes/home/HomePage.svelte";
+  import HomePage from '@/routes/home/HomePage.svelte'
   import {
-    nowPlaying as media,
-  } from "@/components/MediaHandler.svelte";
-  import SettingsPage from "@/routes/settings/SettingsPage.svelte";
-  import WatchTogetherPage from "@/routes/w2g/WatchTogetherPage.svelte";
-  import SchedulePage from "@/routes/SchedulePage.svelte";
-  import CatalogPage from "@/routes/catalogs/CatalogPage.svelte";
+    nowPlaying as media
+  } from '@/components/MediaHandler.svelte'
+  import SettingsPage from '@/routes/settings/SettingsPage.svelte'
+  import WatchTogetherPage from '@/routes/w2g/WatchTogetherPage.svelte'
+  import SchedulePage from '@/routes/SchedulePage.svelte'
+  import CatalogPage from '@/routes/catalogs/CatalogPage.svelte'
   import {
     isMobile,
-    isSuperSmall,
-  } from "@/components/Miniplayer.svelte";
-  import SearchPage from "@/routes/search/SearchPage.svelte";
-  import { cache, caches } from "@/modules/cache.js";
-  import { search, key } from "@/modules/sections.js";
-  import { page, playPage } from "@/modules/navigation.js";
+    isSuperSmall
+  } from '@/components/Miniplayer.svelte'
+  import SearchPage from '@/routes/search/SearchPage.svelte'
+  import { cache, caches } from '@/modules/cache.js'
+  import { search, key } from '@/modules/sections.js'
+  import { page, playPage } from '@/modules/navigation.js'
 
-  export let statusTransition = false;
-  export let miniplayer = false;
+  export let statusTransition = false
+  export let miniplayer = false
 
-  export let miniplayerPadding = getPadding();
-  export let miniplayerActive = false;
-  setInterval(() => (miniplayerPadding = getPadding()), 500);
-  function getPadding() {
+  export let miniplayerPadding = getPadding()
+  export let miniplayerActive = false
+  setInterval(() => (miniplayerPadding = getPadding()), 500)
+  function getPadding () {
     const miniplayerTop = cache
-      .getEntry(caches.GENERAL, "posMiniplayer")
-      ?.includes("top");
-    let pixelPadding;
-    if ($isMobile) pixelPadding = miniplayerTop ? 150 : 220;
-    else
+      .getEntry(caches.GENERAL, 'posMiniplayer')
+      ?.includes('top')
+    let pixelPadding
+    if ($isMobile) pixelPadding = miniplayerTop ? 150 : 220
+    else {
       pixelPadding =
-        (parseFloat(cache.getEntry(caches.GENERAL, "widthMiniplayer")) ||
+        (parseFloat(cache.getEntry(caches.GENERAL, 'widthMiniplayer')) ||
           ($isSuperSmall ? 0.25 : 0.15)) *
         window.innerWidth *
-        (11 / 16);
+        (11 / 16)
+    }
     return (
-      (miniplayerTop ? "padding-top: " : "padding-bottom: ") +
+      (miniplayerTop ? 'padding-top: ' : 'padding-bottom: ') +
       `${pixelPadding}px !important`
-    );
+    )
   }
 
-  $: miniplayerActive = miniplayer;
+  $: miniplayerActive = miniplayer
 </script>
 
 {#if $page === page.SETTINGS}
   <SettingsPage
     bind:statusTransition
-    miniplayerPadding={miniplayerActive ? miniplayerPadding : ""}
+    miniplayerPadding={miniplayerActive ? miniplayerPadding : ''}
   />
 {:else if $page === page.HOME}
   <HomePage />

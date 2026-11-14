@@ -36,15 +36,15 @@
     return 'Watch Now'
   }
   const playButtonText = getPlayButtonText(media)
-  function toggleFavourite() {
+  function toggleFavourite () {
     media.isFavourite = anilistClient.favourite({ id: media.id })
   }
-  function play() {
+  function play () {
     if (media.status === 'NOT_YET_RELEASED' && !media.isTmdb) return
     playMedia(media)
   }
   let muted = true
-  function toggleMute() {
+  function toggleMute () {
     muted = !muted
   }
 </script>
@@ -52,30 +52,30 @@
 <div class='position-absolute w-350 h-full absolute-container top-0 bottom-0 m-auto bg-dark-light z-30 rounded pointer fade-change overflow-hidden clip-0-rounded' in:fadeIn out:fadeOut bind:this={element} on:scroll={(e) => e.target.scrollTop = 0}>
   <div class='banner position-relative bg-black'>
     <div class='ratio-16-9 w-full h-full clip-0'>
-      <SmartImage class='img-cover w-full h-full' images={[media.bannerImage, ...(media.trailer?.id ? [`https://i.ytimg.com/vi/${media.trailer.id}/maxresdefault.jpg`, `https://i.ytimg.com/vi/${media.trailer.id}/hqdefault.jpg`] : []), media.coverImage?.extraLarge ]}/>
+      <SmartImage class='img-cover w-full h-full' images={[media.bannerImage, ...(media.trailer?.id ? [`https://i.ytimg.com/vi/${media.trailer.id}/maxresdefault.jpg`, `https://i.ytimg.com/vi/${media.trailer.id}/hqdefault.jpg`] : []), media.coverImage?.extraLarge]} />
       {#await (media.trailer?.id && media) || (media.isTmdb ? tmdbClient.getTrailer(media) : episodesList.getMedia(media.idMal)) then trailer}
         {#if trailer?.trailer?.id || trailer?.data?.trailer?.youtube_id }
           {#await ELECTRON.getYouTube() then youtubeServer}
             <div style='transition: opacity .3s' class:transparent={hide}>
-              <SmartImage class='position-absolute top-0 left-0 w-full h-full img-cover blur-6' images={[`https://i.ytimg.com/vi/${trailer?.trailer?.id || trailer?.data?.trailer?.youtube_id}/maxresdefault.jpg`, `https://i.ytimg.com/vi/${trailer?.trailer?.id || trailer?.data?.trailer?.youtube_id}/hqdefault.jpg`]}/>
+              <SmartImage class='position-absolute top-0 left-0 w-full h-full img-cover blur-6' images={[`https://i.ytimg.com/vi/${trailer?.trailer?.id || trailer?.data?.trailer?.youtube_id}/maxresdefault.jpg`, `https://i.ytimg.com/vi/${trailer?.trailer?.id || trailer?.data?.trailer?.youtube_id}/hqdefault.jpg`]} />
               <button type='button' class='position-absolute z-10 top-0 right-0 m-15 btn-square bg-transparent shadow-none border-0 rounded pointer mute' style='filter: drop-shadow(0 0 .4rem hsla(var(--black-color-hsl), 1))' use:click={toggleMute}>
                 {#if muted}
-                  <VolumeX size='2.2rem' fill='currentColor'/>
+                  <VolumeX size='2.2rem' fill='currentColor' />
                 {:else}
-                  <Volume2 size='2.2rem' fill='currentColor'/>
+                  <Volume2 size='2.2rem' fill='currentColor' />
                 {/if}
               </button>
               <iframe
-                  class='w-full border-0 position-absolute left-0 pv-trailer pointer-events-none'
-                  tabindex='-1'
-                  title={media.title.userPreferred}
-                  loading='lazy'
-                  allow='autoplay'
-                  allowfullscreen
-                  on:load={() => { setTimeout(() => hide = false, 300).unref?.() }}
-                  referrerpolicy='strict-origin-when-cross-origin'
-                  src={`${youtubeServer}/embed/${trailer?.trailer?.id || trailer?.data?.trailer?.youtube_id}?autoplay=1&controls=0&mute=${muted ? 1 : 0}&disablekb=1&loop=1&vq=medium&playlist=${trailer?.trailer?.id || trailer?.data?.trailer?.youtube_id}&cc_lang_pref=ja`}
-              />
+                class='w-full border-0 position-absolute left-0 pv-trailer pointer-events-none'
+                tabindex='-1'
+                title={media.title.userPreferred}
+                loading='lazy'
+                allow='autoplay'
+                allowfullscreen
+                on:load={() => { setTimeout(() => hide = false, 300).unref?.() }}
+                referrerpolicy='strict-origin-when-cross-origin'
+                src={`${youtubeServer}/embed/${trailer?.trailer?.id || trailer?.data?.trailer?.youtube_id}?autoplay=1&controls=0&mute=${muted ? 1 : 0}&disablekb=1&loop=1&vq=medium&playlist=${trailer?.trailer?.id || trailer?.data?.trailer?.youtube_id}&cc_lang_pref=ja`}
+              ></iframe>
             </div>
           {/await}
         {/if}
@@ -88,18 +88,18 @@
     </div>
     {#if !_variables?.fileEdit}
       <div class='d-flex flex-row position-relative'>
-        <button type='button' tabindex='-1' class='position-absolute preview-safe-area top-0 left-0 h-50 bg-transparent border-0 shadow-none not-reactive' use:click={() => {}}/>
+        <button type='button' tabindex='-1' class='position-absolute preview-safe-area top-0 left-0 h-50 bg-transparent border-0 shadow-none not-reactive' use:click={() => {}}></button>
         <button class='btn btn-secondary flex-grow-1 text-dark font-weight-bold shadow-none border-0 d-flex align-items-center justify-content-center z-1' use:click={play} disabled={media.status === 'NOT_YET_RELEASED' && !media.isTmdb}>
-          <Play class='pr-10 z-10' fill='currentColor' size='2.2rem'/>
+          <Play class='pr-10 z-10' fill='currentColor' size='2.2rem' />
           {playButtonText}
         </button>
         {#if Helper.isAuthorized() && typeof media.id !== 'string'}
-          <Scoring {media} previewAnime={true}/>
+          <Scoring {media} previewAnime={true} />
         {/if}
         {#if Helper.isAniAuth() && typeof media.id !== 'string'}
           <button class='btn btn-square ml-10 d-flex align-items-center justify-content-center shadow-none border-0 z-1' data-toggle='tooltip' data-placement='top-right' data-target-breakpoint='md' data-title={media.isFavourite ? 'Unfavourite' : 'Favourite'} use:click={toggleFavourite} disabled={!Helper.isAniAuth()}>
             <div class='favourite d-flex align-items-center justify-content-center'>
-              <Heart color={media.isFavourite ? 'var(--tertiary-color)' : 'currentColor'} fill={media.isFavourite ? 'var(--tertiary-color)' : 'transparent'} size='1.7rem'/>
+              <Heart color={media.isFavourite ? 'var(--tertiary-color)' : 'currentColor'} fill={media.isFavourite ? 'var(--tertiary-color)' : 'transparent'} size='1.7rem' />
             </div>
           </button>
         {/if}
@@ -110,9 +110,9 @@
         {#if type || type === 0}
           <span class='d-flex badge pl-5 pr-5 d-flex align-items-center justify-content-center font-scale-14'>
             {#if Number.isInteger(type) && type >= 0}
-              <ThumbsUp fill='currentColor' class='m-0 p-0 pr-5 {type === 0 ? "text-muted" : "text-success"}' size='1.9rem'/>
+              <ThumbsUp fill='currentColor' class='m-0 p-0 pr-5 {type === 0 ? 'text-muted' : 'text-success'}' size='1.9rem' />
             {:else if Number.isInteger(type) && type < 0}
-              <ThumbsDown fill='currentColor' class='text-danger m-0 p-0 pr-5' size='1.9rem'/>
+              <ThumbsDown fill='currentColor' class='text-danger m-0 p-0 pr-5' size='1.9rem' />
             {/if}
             <span> {(Number.isInteger(type) ? Math.abs(type).toLocaleString() + (type >= 0 ? ' like' : ' dislike') + ((type !== 1 && type !== -1) ? 's' : '') : type)}</span>
           </span>
@@ -133,7 +133,7 @@
           </span>
         {/if}
         {#if media.isAdult}
-        <span class='badge pl-5 pr-5 font-scale-14'>
+          <span class='badge pl-5 pr-5 font-scale-14'>
             Rated 18+
           </span>
         {/if}
@@ -146,9 +146,9 @@
               {(season || seasonYear) ? [season, seasonYear].filter(s => s).join(' ') : 'In Production'}
             </span>
             {#if !season && !seasonYear && (media.status === 'NOT_YET_RELEASED')}
-            <span class='badge pl-5 pr-5 font-scale-14'>
-              Not Released
-            </span>
+              <span class='badge pl-5 pr-5 font-scale-14'>
+                Not Released
+              </span>
             {/if}
           {/if}
         {/await}

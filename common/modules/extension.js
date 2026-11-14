@@ -7,7 +7,7 @@ import Debug from 'debug'
 const debug = Debug('ui:extension:manager')
 
 let cachedProxyPort = null
-async function getProxyPort() {
+async function getProxyPort () {
   if (cachedProxyPort !== null) return cachedProxyPort
   try {
     cachedProxyPort = await ELECTRON.getProxyPort?.()
@@ -17,7 +17,7 @@ async function getProxyPort() {
   }
 }
 
-export async function extensionFetch(url, options = {}) {
+export async function extensionFetch (url, options = {}) {
   const headers = options.headers || {}
   const method = (options.method || 'GET').toUpperCase()
   const body = options.body || null
@@ -35,7 +35,7 @@ export async function extensionFetch(url, options = {}) {
   }
 }
 
-async function getExtension(url, isJson = false) {
+async function getExtension (url, isJson = false) {
   const response = await fetch(url)
   if (!response.ok) throw new Error(`HTTP ${response.status} fetching ${url}`)
   return isJson ? await response.json() : await response.text()
@@ -43,7 +43,7 @@ async function getExtension(url, isJson = false) {
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 
-function buildFetchv2Polyfill(proxyPort) {
+function buildFetchv2Polyfill (proxyPort) {
   const normAndWrap = `
 function __normArgs(url, headers, method, body) {
   let h = headers || {};
@@ -126,7 +126,7 @@ async function fetchv2(url, headers, method, body) {
 `
 }
 
-export async function executeExtensionFunction(scriptCode, functionName, ...args) {
+export async function executeExtensionFunction (scriptCode, functionName, ...args) {
   const proxyPort = await getProxyPort()
   const fetchv2Polyfill = buildFetchv2Polyfill(proxyPort)
 
@@ -148,7 +148,7 @@ export async function executeExtensionFunction(scriptCode, functionName, ...args
   return Promise.race([fn(), timeout])
 }
 
-export async function loadExtension(manifestUrl) {
+export async function loadExtension (manifestUrl) {
   const resolvedManifestUrl = new URL(normalizeManifestUrl(manifestUrl), window.location.href).href
 
   let manifest
@@ -179,7 +179,7 @@ export async function loadExtension(manifestUrl) {
   return { manifest, script }
 }
 
-export async function callExtensionFunction(extension, functionName, ...args) {
+export async function callExtensionFunction (extension, functionName, ...args) {
   if (extension?.type === 'stremio') {
     return callStremioFunction(extension, functionName, ...args)
   }
@@ -211,9 +211,9 @@ export async function callExtensionFunction(extension, functionName, ...args) {
 }
 
 class ExtensionManager {
-  constructor() {
+  constructor () {
     this.extensions = new Map()
-    this.loading = new Map() 
+    this.loading = new Map()
     this.enabled = writable({})
     this.subscribers = new Set()
     settings.subscribe(value => {
@@ -223,17 +223,17 @@ class ExtensionManager {
     })
   }
 
-  notify() {
+  notify () {
     this.subscribers.forEach(cb => cb())
   }
 
-  subscribe(cb) {
+  subscribe (cb) {
     this.subscribers.add(cb)
     cb()
     return () => this.subscribers.delete(cb)
   }
 
-  async addExtension(manifestUrl) {
+  async addExtension (manifestUrl) {
     try {
       // Keep everything loadExtension returns (Stremio addons also carry type + stremio).
       const loaded = await loadExtension(manifestUrl)
@@ -262,7 +262,7 @@ class ExtensionManager {
     }
   }
 
-  async removeExtension(key) {
+  async removeExtension (key) {
     this.extensions.delete(key)
 
     const updated = { ...settings.value.extensions }
@@ -274,7 +274,7 @@ class ExtensionManager {
     this.notify()
   }
 
-  toggleExtension(key, enabled) {
+  toggleExtension (key, enabled) {
     if (settings.value.extensions?.[key]) {
       settings.set({
         ...settings.value,
@@ -290,7 +290,7 @@ class ExtensionManager {
     }
   }
 
-  setDefault(key) {
+  setDefault (key) {
     settings.set({
       ...settings.value,
       defaultExtension: key
@@ -298,7 +298,7 @@ class ExtensionManager {
     this.notify()
   }
 
-  unsetDefault() {
+  unsetDefault () {
     settings.set({
       ...settings.value,
       defaultExtension: null
@@ -306,7 +306,7 @@ class ExtensionManager {
     this.notify()
   }
 
-  setStar(key) {
+  setStar (key) {
     settings.set({
       ...settings.value,
       starredExtension: key
@@ -314,7 +314,7 @@ class ExtensionManager {
     this.notify()
   }
 
-  unsetStar() {
+  unsetStar () {
     settings.set({
       ...settings.value,
       starredExtension: null
@@ -322,7 +322,7 @@ class ExtensionManager {
     this.notify()
   }
 
-  async syncFromSettings(extensionConfigs) {
+  async syncFromSettings (extensionConfigs) {
     for (const [key, config] of Object.entries(extensionConfigs)) {
       if (!this.extensions.has(key) && !this.loading.has(key) && config?.url) {
         this.loading.set(
@@ -342,7 +342,7 @@ class ExtensionManager {
     }
   }
 
-  getEnabled() {
+  getEnabled () {
     const result = []
     for (const [key, ext] of this.extensions) {
       const config = settings.value.extensions?.[key]
@@ -353,7 +353,7 @@ class ExtensionManager {
     return result
   }
 
-  async callDefault(functionName, ...args) {
+  async callDefault (functionName, ...args) {
     const defaultKey = settings.value.defaultExtension
     if (!defaultKey) throw new Error('No default extension set')
 
@@ -363,7 +363,7 @@ class ExtensionManager {
     return callExtensionFunction(extension, functionName, ...args)
   }
 
-  async callAll(functionName, ...args) {
+  async callAll (functionName, ...args) {
     const enabled = this.getEnabled()
     const results = []
 

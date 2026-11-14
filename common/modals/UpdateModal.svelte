@@ -15,7 +15,7 @@
 
   export const updateState = writable('up-to-date')
   const sanitizeVersion = (version) => ((version || '').match(/[\d.]+/g)?.join('') || '')
-  async function getChangelog(updateVersion) {
+  async function getChangelog (updateVersion) {
     const changelog = await changeLog
     if (!changelog?.length) return null
     const updateIndex = changelog.findIndex(entry => sanitizeVersion(entry.version) === sanitizeVersion(updateVersion))
@@ -41,7 +41,7 @@
         IPC.emit('notification', {
           title: 'Update Available!',
           message: `An update to v${version} ${SUPPORTS.isAndroid ? 'is available for download and installation' : 'has been downloaded and is ready for installation'}.`,
-          button: [{ text: 'Update Now', activation: 'tsumi://update/' }, { text: `What's New`, activation: 'tsumi://changelog/' }],
+          button: [{ text: 'Update Now', activation: 'tsumi://update/' }, { text: 'What\'s New', activation: 'tsumi://changelog/' }],
           activation: {
             type: 'protocol',
             launch: 'tsumi://show/'
@@ -62,13 +62,13 @@
   $: updating = false
   let updatePromise = createDeferred()
 
-  function close(ignored = false) {
+  function close (ignored = false) {
     if (updating) return
     if (ignored) $updateState = 'ignored'
     modal.close(modal.UPDATE_PROMPT)
   }
 
-  function confirm() {
+  function confirm () {
     if (updating) return
     updating = true
     updatePromise = createDeferred()
@@ -85,7 +85,7 @@
     IPC.emit('quit-and-install')
   }
 
-  function compareVersions(currentVersion, previousVersion) {
+  function compareVersions (currentVersion, previousVersion) {
     const a = sanitizeVersion(currentVersion).split('.').map(Number)
     const b = sanitizeVersion(previousVersion).split('.').map(Number)
     for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -114,16 +114,16 @@
       {@const isLesser = changelog?.previousVersion && (compareVersions(version, changelog.previousVersion) < 0 || (compareVersions(version, changelog.previousVersion) > 0 && compareVersions(version, latestVersion) < 0))}
       <div class='row px-md-20 position-relative'>
         <div class='text-muted w-full mt-30 mt-md-0'>
-          <h3 class='font-weight-bold text-white title font-scale-34 d-flex mb-5'><BadgeAlert class='mr-20 block-scale-43' strokeWidth='2'/> Update Available!</h3>
+          <h3 class='font-weight-bold text-white title font-scale-34 d-flex mb-5'><BadgeAlert class='mr-20 block-scale-43' strokeWidth='2' /> Update Available!</h3>
           <div class='font-scale-20'>{latestVersion} - {changelog?.entry ? new Date(changelog.entry.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''}</div>
-          <hr class='my-20'>
+          <hr class='my-20' />
           <div class='mt-20' class:d-none={!isLesser}>
             It looks like you're upgrading from an earlier version, consider checking out the <span class='custom-link' use:click={() => IPC.emit('open', 'https://github.com/50n50/Tsumi/releases')}>past release notes</span>.
           </div>
           <div class:mt-20={!isLesser}>
 
           </div>
-          <hr class='my-20'/>
+          <hr class='my-20' />
           {#if changelog?.entry?.body?.trim().length}
             <h4 class='mt-0 font-weight-bold text-white'>Changelog</h4>
             <Changelog class='ml-10' body={changelog.entry.body} />

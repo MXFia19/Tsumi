@@ -46,7 +46,7 @@ export const caches = Object.freeze({
  * @param {string} dbName - The name of the database to open.
  * @returns {Promise<IDBDatabase>} - A promise that resolves to the database instance.
  */
-function open(dbName) {
+function open (dbName) {
   if (currentDB) return currentDB
   currentDB = new Promise((resolve, reject) => {
     const request = indexedDB.open(String(dbName), version)
@@ -70,7 +70,7 @@ function open(dbName) {
  * @param {keyof typeof caches} cache - The name of the cache (object store).
  * @returns {Promise<Array>} - A promise that resolves to an array of all stored values.
  */
-async function loadAll(userID, cache) {
+async function loadAll (userID, cache) {
   try {
     const database = await open(userID)
     return new Promise((resolve, reject) => {
@@ -98,7 +98,7 @@ async function loadAll(userID, cache) {
  * @param {string} key - The key to retrieve the associated value for.
  * @returns {Promise<*>} - A promise that resolves to the value associated with the key, or null if not found.
  */
-async function get(userID, cache, key) {
+async function get (userID, cache, key) {
   const database = await open(userID)
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(cache.key, 'readonly')
@@ -117,7 +117,7 @@ async function get(userID, cache, key) {
  * @param {*} value - The value to store.
  * @returns {Promise<void>} - A promise that resolves when the operation is complete.
  */
-async function set(userID, cache, key, value) {
+async function set (userID, cache, key, value) {
   const database = await open(userID)
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(cache.key, 'readwrite')
@@ -135,7 +135,7 @@ async function set(userID, cache, key, value) {
  * @param {string[]} keys - An array of keys to delete.
  * @returns {Promise<void>} - A promise that resolves when all specified keys are deleted.
  */
-async function remove(userID, cache, keys) {
+async function remove (userID, cache, keys) {
   if (!keys || keys.length === 0) return
   const database = await open(userID)
   const transaction = database.transaction(cache.key, 'readwrite')
@@ -150,7 +150,7 @@ async function remove(userID, cache, keys) {
  * @param {keyof typeof caches} cache - The name of the cache (object store).
  * @returns {Promise<void>} - A promise that resolves when the cache is cleared.
  */
-async function reset(userID, cache) {
+async function reset (userID, cache) {
   const database = await open(userID)
   const transaction = database.transaction(cache.key, 'readwrite')
   transaction.objectStore(cache.key).clear()
@@ -162,7 +162,7 @@ async function reset(userID, cache) {
  * @param {string} userID - The unique ID of the user (database name).
  * @returns {Promise<void>} - A promise that resolves when the database is deleted.
  */
-async function purge(userID) {
+async function purge (userID) {
   if (currentDB) {
     try { (await currentDB).close() } catch {}
     currentDB = null
@@ -185,7 +185,7 @@ async function purge(userID) {
  * @param {Array<[string, any]>} entries - An array of [key, value] pairs to insert/update.
  * @returns {Promise<void>} A promise that resolves when the transaction completes.
  */
-async function putMany(userID, cache, entries) {
+async function putMany (userID, cache, entries) {
   if (!entries.length) return
   const database = await open(userID)
   const transaction = database.transaction(cache.key, 'readwrite')
@@ -202,9 +202,9 @@ async function putMany(userID, cache, entries) {
  * @param {keyof typeof caches} cache - The cache to recover from.
  * @returns {Promise<Object>} An object containing successfully recovered key-value pairs.
  */
-async function recoverCache(userID, cache) {
+async function recoverCache (userID, cache) {
   const recovered = {}
-  let corruptedKeys = []
+  const corruptedKeys = []
   try {
     const database = await open(userID)
     const transaction = database.transaction(cache.key, 'readonly')
@@ -245,7 +245,7 @@ async function recoverCache(userID, cache) {
  * @param {string} userID - The unique ID of the user (database name).
  * @returns {object} The batch writer instance associated with the user.
  */
-function getBatchWriter(userID) {
+function getBatchWriter (userID) {
   if (!batchWriters.has(userID)) batchWriters.set(userID, createBatchWriter(userID))
   return batchWriters.get(userID)
 }
@@ -257,7 +257,7 @@ function getBatchWriter(userID) {
  * @param {IDBTransaction} transaction - The IndexedDB transaction to monitor.
  * @returns {Promise<void>} A promise that resolves on success, rejects on failure.
  */
-function waitForTransaction(transaction) {
+function waitForTransaction (transaction) {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve()
     transaction.onabort = transaction.onerror = (error) => reject(error?.target?.error || new Error('IndexedDB transaction failed'))
@@ -275,7 +275,7 @@ function waitForTransaction(transaction) {
  * @param {number} [resetDelay=5000] - Delay in ms after which retry counts are reset.
  * @returns {Object} Batch writer with methods {@link enqueue}, {@link flushNow}, and {@link pendingCount}.
  */
-function createBatchWriter(userID, firstFlushDelay = 10_000, subsequentFlushDelay = 1_500, resetDelay = 5_000) {
+function createBatchWriter (userID, firstFlushDelay = 10_000, subsequentFlushDelay = 1_500, resetDelay = 5_000) {
   const pending = new Map()
   const retryMap = new Map()
   let flushTimer = null
@@ -285,7 +285,7 @@ function createBatchWriter(userID, firstFlushDelay = 10_000, subsequentFlushDela
   /**
    * Clears retry counts, allowing failed writes to retry again.
    */
-  function resetRetries() {
+  function resetRetries () {
     retryMap.clear()
   }
   setInterval(resetRetries, resetDelay).unref?.()
@@ -294,7 +294,7 @@ function createBatchWriter(userID, firstFlushDelay = 10_000, subsequentFlushDela
    * Flushes all queued writes to IndexedDB in a single transaction.
    * If an error occurs, re-enqueues the writes for retry.
    */
-  async function flush() {
+  async function flush () {
     if (flushTimer) {
       clearTimeout(flushTimer)
       flushTimer = null
@@ -335,7 +335,7 @@ function createBatchWriter(userID, firstFlushDelay = 10_000, subsequentFlushDela
      * @param {string|number} key - The key to store in the cache.
      * @param {*} value - The value to store.
      */
-    enqueue(cache, key, value) {
+    enqueue (cache, key, value) {
       const cacheKey = cache.key
       if (!pending.has(cacheKey)) pending.set(cacheKey, new Map())
       pending.get(cacheKey).set(String(key), value)
@@ -353,14 +353,14 @@ function createBatchWriter(userID, firstFlushDelay = 10_000, subsequentFlushDela
     /**
      * Immediately flushes all queued cache entries to IndexedDB.
      */
-    async flushNow() {
+    async flushNow () {
       await flush()
     },
     /**
      * Returns the total number of queued cache entries across all caches.
      * @returns {number} Total pending cache entries.
      */
-    pendingCount() {
+    pendingCount () {
       return [...pending.values()].reduce((n, m) => n + m.size, 0)
     }
   }
@@ -399,7 +399,7 @@ class Cache {
    * A promise that resolves when the cache has been fully initialized.
    * Use this to ensure all required data is loaded and ready for use.
    */
-  constructor() {
+  constructor () {
     this.isReady = this.#initialize()
   }
 
@@ -407,7 +407,7 @@ class Cache {
    * Initializes the cache by loading necessary data into memory.
    * @returns {Promise<void>}
    */
-  async #initialize() {
+  async #initialize () {
     debug(`Loading caches with id: ${this.cacheID}...`)
     const cacheTypes = [
       { key: caches.MEDIA_CACHE, writable: (data) => mediaCache = writable(deepClone(data)) },
@@ -490,7 +490,7 @@ class Cache {
    * nulls stored data to enable garbage collection, and logs its destruction.
    * After calling, this instance should not be used.
    */
-  destroy() {
+  destroy () {
     this.subscribers.forEach((unsubscribe) => unsubscribe())
     this.#pending.clear()
     mediaCache = null
@@ -510,7 +510,7 @@ class Cache {
    * @param {Object} data The cache object to store.
    * @warn Do not use this outside of {@link Cache}, use {@link cacheEntry} instead.
    */
-  #update(cache, key, data) {
+  #update (cache, key, data) {
     if (cache === caches.USER_LISTS || cache === caches.MAPPINGS) {
       (cache === caches.USER_LISTS ? this.user_lists : this.mappings).update((query) => {
         query[key] = typeof data === 'function' ? data(query[key]) : data
@@ -532,7 +532,7 @@ class Cache {
    * @param {string} newCacheID - The ID of the new cache to which data should be transferred.
    * @returns {Promise<void>} Resolves when the data has been successfully transferred and the old cache purged.
    */
-  async abandon(newCacheID){
+  async abandon (newCacheID) {
     await purge(this.cacheID)
     this.cacheID = newCacheID
     for (const value of [[caches.GENERAL, this.general.value], [caches.NOTIFICATIONS, this.notifications.value], [caches.HISTORY, this.history.value]]) {
@@ -546,7 +546,7 @@ class Cache {
    * Resets all settings completely clearing the general cache.
    * See {@link generalDefaults} for all values that will be reset.
    */
-  async resetSettings() {
+  async resetSettings () {
     await reset(this.cacheID, caches.GENERAL)
     location.reload()
   }
@@ -555,7 +555,7 @@ class Cache {
    * Resets all watch history completely clearing the history cache.
    * See {@link historyDefaults} for all values that will be reset.
    */
-  async resetHistory() {
+  async resetHistory () {
     await reset(this.cacheID, caches.HISTORY)
     this.history.value = { ...historyDefaults }
   }
@@ -566,7 +566,7 @@ class Cache {
    *
    * See {@link queryDefaults} for all values that will be reset.
    */
-  async resetCaches() {
+  async resetCaches () {
     await reset(this.cacheID, caches.QUERIES)
     await reset(this.cacheID, caches.MAPPINGS)
     await reset(this.cacheID, caches.USER_LISTS)
@@ -578,7 +578,7 @@ class Cache {
    * Resets all notifications completely clearing the notifications cache.
    * See {@link notifyDefaults} for all values that will be reset.
    */
-  resetNotifications() {
+  resetNotifications () {
     this.notifications.value = { ...notifyDefaults }
     window.dispatchEvent(new Event('notification-reset'))
   }
@@ -589,7 +589,7 @@ class Cache {
    * @param {string} key - The category to retrieve (e.g., 'lastAni').
    * @returns {Promise<any>} The cached data for the specified key, or `undefined` if it does not exist.
    */
-  read(cache, key) {
+  read (cache, key) {
     return get(this.cacheID, cache, key)
   }
 
@@ -600,7 +600,7 @@ class Cache {
    * @param {Object} data The cache object to store.
    * @returns {Promise<void>} Resolves when the data has been successfully updated.
    */
-  write(cache, key, data) {
+  write (cache, key, data) {
     this.setEntry(cache, key, data)
     return set(this.cacheID, cache, key, data)
   }
@@ -611,7 +611,7 @@ class Cache {
    * @param {string} key - The category to retrieve (e.g., 'lastAni').
    * @returns {any} The cached data for the specified key, or `undefined` if it does not exist.
    */
-  getEntry(cache, key) {
+  getEntry (cache, key) {
     return (cache === caches.GENERAL ? this.general : cache === caches.NOTIFICATIONS ? this.notifications : this.history).value[key]
   }
 
@@ -621,7 +621,7 @@ class Cache {
    * @param {string} key The category to update (e.g., 'lastAni').
    * @param {Object} data The cache object to store.
    */
-  setEntry(cache, key, data) {
+  setEntry (cache, key, data) {
     (cache === caches.GENERAL ? this.general : cache === caches.NOTIFICATIONS ? this.notifications : this.history).update((query) => {
       const current = query[key]
       query[key] = typeof data === 'function' ? data(current) : data
@@ -636,7 +636,7 @@ class Cache {
    * @param {string} key The key to delete from the cache.
    * @returns {Promise<void>} Resolves when the entry has been successfully deleted.
    */
-  async deleteEntry(cache, key) {
+  async deleteEntry (cache, key) {
     const dataEntry = cache === caches.GENERAL ? this.general : cache === caches.NOTIFICATIONS ? this.notifications : cache === caches.HISTORY ? this.history : cache === caches.USER_LISTS ? this.user_lists : cache === caches.MAPPINGS ? this.mappings : cache === caches.MEDIA_CACHE ? mediaCache : null
     const store = dataEntry || this.queries
     store.update((query) => {
@@ -659,7 +659,7 @@ class Cache {
    * @param {Object} [fillLists] - An object containing user list data to attach to each media entry (e.g., `{ data: { MediaList: [...] } }`)
    * @returns {Promise<void>} Resolves when the media cache has been successfully updated.
    */
-  async updateMedia(medias, fillLists) {
+  async updateMedia (medias, fillLists) {
     if (!medias || !medias.length) return
     const filledMedias = fillLists ? fillEntries(medias, fillLists) : medias /* attaches any alternative authorization userList information to the anilist media for tracking. */
     const mediaMap = new Map(filledMedias.map(m => [m.id, m]))
@@ -686,8 +686,8 @@ class Cache {
    * @param {number | string | null} id
    * @returns {Promise<Object | null>}
    */
-  async requestMedia(id) {
-    if (!id || typeof id === "string") return null;
+  async requestMedia (id) {
+    if (!id || typeof id === 'string') return null
     const media = mediaCache.value[id]
     if (media) return media
     if (!this.anilistClient) {
@@ -703,7 +703,7 @@ class Cache {
    * @param {number | string | null} id
    * @returns {Object | null}
    */
-  getMedia(id) {
+  getMedia (id) {
     if (!id) return null
     return mediaCache.value[id] ?? {}
   }
@@ -716,7 +716,7 @@ class Cache {
    * @param {boolean} [ignoreExpiry=false] - If true, the entry will be returned even if it has expired, defaults to `false`; meaning expired entries will not be returned.
    * @returns {Promise<Object|null>} The cached entry if found and valid; otherwise, `null`.
    */
-  cachedEntry(cache, key, ignoreExpiry) {
+  cachedEntry (cache, key, ignoreExpiry) {
     if (this.#pending.has(`${cache.key}:${key}`) && !ignoreExpiry) {
       debug(`Found pending query ${cache.key} for ${key}`)
       return this.#pending.get(`${cache.key}:${key}`)
@@ -754,7 +754,7 @@ class Cache {
    * @returns {Promise<Object>} A promise that resolves when the caching operation is complete.
    *
    */
-  async cacheEntry(cache, key, vars, data, expiry) {
+  async cacheEntry (cache, key, vars, data, expiry) {
     if (this.#pending.has(`${cache.key}:${key}`)) {
       debug(`Found pending query ${cache.key} for ${key} during cache update...`)
       return this.#pending.get(`${cache.key}:${key}`)
@@ -765,7 +765,7 @@ class Cache {
       try {
         res = await data
       } catch (error) {
-        debug(`Detected an error in the promised data, returning cached data if available.`, error)
+        debug('Detected an error in the promised data, returning cached data if available.', error)
         return this.cachedEntry(cache, key, true)
       }
       const cacheRes = deepClone(res)
@@ -796,7 +796,7 @@ class Cache {
   }
 }
 
-export let cache = new Cache()
+export const cache = new Cache()
 
 /**
  * Ensures that the cache system has finished initializing before use.
@@ -804,7 +804,7 @@ export let cache = new Cache()
  *
  * @returns {Promise<void>} A promise that resolves once the cache is fully initialized and ready to use.
  */
-export function cacheReady() {
+export function cacheReady () {
   return cache.isReady
 }
 
@@ -833,7 +833,7 @@ const ANILIST_TO_MAL = Object.fromEntries(Object.entries(MAL_TO_ANILIST).map(([m
  * @param {string} status - The status to map.
  * @returns {string|undefined} The mapped status, or undefined if not recognized.
  */
-export function mapStatus(status) {
+export function mapStatus (status) {
   return MAL_TO_ANILIST[status] ?? ANILIST_TO_MAL[status]
 }
 
@@ -849,7 +849,7 @@ export function mapStatus(status) {
  * @param {Array<Object>} userLists.data.MediaList - An array of media list entries from alternate authorizations.
  * @returns {Array<Object>} The updated array of AniList media objects with attached user list data.
  */
-function fillEntries(medias, userLists) {
+function fillEntries (medias, userLists) {
   debug(`Filling MyAnimeList entry data for ${medias?.length} media(s)`)
   const malEntries = userLists?.data?.MediaList || []
   const malMap = new Map(malEntries.map(({ node }) => [node.id, node.my_list_status]))

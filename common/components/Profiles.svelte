@@ -18,7 +18,7 @@
   const currentProfile = writable(alToken || malToken)
 
   profiles.subscribe(() => {
-      currentProfile.set(alToken || malToken)
+    currentProfile.set(alToken || malToken)
   })
 
   function isAniProfile (profile) {
@@ -39,7 +39,7 @@
     swapProfiles(profile)
   }
 
-  function toggleSync(profile) {
+  function toggleSync (profile) {
     const profileID = profile.viewer.data.Viewer.id
     if (sync.value.includes(profileID)) sync.value = sync.value.filter(id => id !== profileID)
     else sync.value = sync.value.concat(profileID)
@@ -64,19 +64,19 @@
   })
 </script>
 <script>
-  function close() {
+  function close () {
     modal.close(modal.PROFILE)
   }
 </script>
 
 <SoftModal class='w-auto mw-350 d-flex justify-content-center flex-column scrollbar-none bg-very-dark p-30 mx-20 mb-30 mt-20 rounded' bind:showModal={$modal[modal.PROFILE]} {close} id={modal.PROFILE}>
   <div class='d-flex justify-content-end align-items-start w-auto'>
-    <button type='button' class='btn btn-square d-flex align-items-center justify-content-center' use:click={close}><X size='1.7rem' strokeWidth='3'/></button>
+    <button type='button' class='btn btn-square d-flex align-items-center justify-content-center' use:click={close}><X size='1.7rem' strokeWidth='3' /></button>
   </div>
   <div class='d-flex flex-column align-items-center'>
     {#if $currentProfile}
-      <SmartImage class='h-150 rounded-circle' images={[$currentProfile.viewer.data.Viewer['avatar']?.large, $currentProfile.viewer.data.Viewer['avatar']?.medium, $currentProfile.viewer.data.Viewer['picture'], './404_square.png']} title='Current Profile'/>
-      <img class='h-3 auth-icon rounded-circle' src={isAniProfile($currentProfile) ? './anilist_icon.png' : './myanimelist_icon.png'} alt={isAniProfile($currentProfile) ? 'Logged in with AniList' : 'Logged in with MyAnimeList'} title={isAniProfile($currentProfile) ? 'Logged in with AniList' : 'Logged in with MyAnimeList'}>
+      <SmartImage class='h-150 rounded-circle' images={[$currentProfile.viewer.data.Viewer.avatar?.large, $currentProfile.viewer.data.Viewer.avatar?.medium, $currentProfile.viewer.data.Viewer.picture, './404_square.png']} title='Current Profile' />
+      <img class='h-3 auth-icon rounded-circle' src={isAniProfile($currentProfile) ? './anilist_icon.png' : './myanimelist_icon.png'} alt={isAniProfile($currentProfile) ? 'Logged in with AniList' : 'Logged in with MyAnimeList'} title={isAniProfile($currentProfile) ? 'Logged in with AniList' : 'Logged in with MyAnimeList'} />
       <p class='font-size-18 font-weight-bold'>{$currentProfile.viewer.data.Viewer.name}</p>
     {/if}
   </div>
@@ -87,32 +87,32 @@
   {/if}
   <div class='d-flex flex-column align-items-start'>
     {#each $profiles as profile}
-      <button type='button' class='profile-item {profile.reauth ? `authenticate` : ``} box text-left pointer border-0 d-flex align-items-center justify-content-between position-relative flex-wrap z-1' data-toggle='tooltip' data-placement='top' data-title='Switch to Profile: {profile.viewer.data.Viewer.name}' class:not-reactive={!$reactive} use:click={() => switchProfile(profile)}>
+      <button type='button' class='profile-item {profile.reauth ? 'authenticate' : ''} box text-left pointer border-0 d-flex align-items-center justify-content-between position-relative flex-wrap z-1' data-toggle='tooltip' data-placement='top' data-title='Switch to Profile: {profile.viewer.data.Viewer.name}' class:not-reactive={!$reactive} use:click={() => switchProfile(profile)}>
         <div class='d-flex align-items-center flex-wrap'>
-          <SmartImage class='h-50 w-50 ml-10 mt-5 mb-5 mr-10 rounded-circle bg-transparent' images={[profile.viewer.data.Viewer.avatar?.large, profile.viewer.data.Viewer.avatar?.medium, profile.viewer.data.Viewer.picture, './404_square.png']}/>
-          <img class='ml-5 auth-icon rounded-circle' src={isAniProfile(profile) ? './anilist_icon.png' : './myanimelist_icon.png'} alt={isAniProfile(profile) ? 'Logged in with AniList' : 'Logged in with MyAnimeList'} title={isAniProfile(profile) ? 'Logged in with AniList' : 'Logged in with MyAnimeList'}>
+          <SmartImage class='h-50 w-50 ml-10 mt-5 mb-5 mr-10 rounded-circle bg-transparent' images={[profile.viewer.data.Viewer.avatar?.large, profile.viewer.data.Viewer.avatar?.medium, profile.viewer.data.Viewer.picture, './404_square.png']} />
+          <img class='ml-5 auth-icon rounded-circle' src={isAniProfile(profile) ? './anilist_icon.png' : './myanimelist_icon.png'} alt={isAniProfile(profile) ? 'Logged in with AniList' : 'Logged in with MyAnimeList'} title={isAniProfile(profile) ? 'Logged in with AniList' : 'Logged in with MyAnimeList'} />
           <p class='text-wrap'>{profile.viewer.data.Viewer.name}</p>
         </div>
         <div class='controls d-flex align-items-center flex-wrap ml-10'>
-          <button type='button' tabindex='-1' class='position-absolute profile-safe-area top-0 right-0 h-full w-100 bg-transparent border-0 shadow-none not-reactive' use:click={() => {}}/>
+          <button type='button' tabindex='-1' class='position-absolute profile-safe-area top-0 right-0 h-full w-100 bg-transparent border-0 shadow-none not-reactive' use:click={() => {}}></button>
           {#if !profile.reauth}
             <button type='button' class='custom-switch bg-transparent border-0 z-1' data-toggle='tooltip' data-placement='left' data-title='Sync List Entries' use:click|stopPropagation>
               <input type='checkbox' id='sync-{profile.viewer.data.Viewer.id}' checked={$sync.includes(profile.viewer.data.Viewer.id)} use:click={() => toggleSync(profile)} />
-              <label for='sync-{profile.viewer.data.Viewer.id}'><br/></label>
+              <label for='sync-{profile.viewer.data.Viewer.id}'><br /></label>
             </button>
           {:else}
-            <button type='button' class='button {profile.reauth ? `pa-button` : `p-button`} pt-5 pb-5 pl-5 pr-5 mr-15 bg-transparent border-0 d-flex align-items-center justify-content-center z-1' data-toggle='tooltip' data-placement='left' data-title='Authenticate' use:click|stopPropagation={confirmMAL}>
+            <button type='button' class='button {profile.reauth ? 'pa-button' : 'p-button'} pt-5 pb-5 pl-5 pr-5 mr-15 bg-transparent border-0 d-flex align-items-center justify-content-center z-1' data-toggle='tooltip' data-placement='left' data-title='Authenticate' use:click|stopPropagation={confirmMAL}>
               <ClockAlert size='2.2rem' />
             </button>
           {/if}
-          <button type='button' class='button {profile.reauth ? `pa-button` : `p-button`} pt-5 pb-5 pl-5 pr-5 bg-transparent border-0 rounded d-flex align-items-center justify-content-center z-1' data-toggle='tooltip' data-placement='left' data-title='Logout' use:click|stopPropagation={() => dropProfile(profile)}>
+          <button type='button' class='button {profile.reauth ? 'pa-button' : 'p-button'} pt-5 pb-5 pl-5 pr-5 bg-transparent border-0 rounded d-flex align-items-center justify-content-center z-1' data-toggle='tooltip' data-placement='left' data-title='Logout' use:click|stopPropagation={() => dropProfile(profile)}>
             <LogOut size='2.2rem' />
           </button>
         </div>
       </button>
     {/each}
     {#if ($modal[modal.PROFILE]?.data || (!$currentProfile && $profiles.length <= 0)) && $profiles.length < 5}
-      <div class='box border-0 info d-flex flex-column {$currentProfile || $profiles.length > 0 ? `align-items-center` : `bg-transparent pointer`}' class:rounded-top-30={$profiles.length <= 0}>
+      <div class='box border-0 info d-flex flex-column {$currentProfile || $profiles.length > 0 ? 'align-items-center' : 'bg-transparent pointer'}' class:rounded-top-30={$profiles.length <= 0}>
         {#if !$currentProfile && $profiles.length <= 0}
           <h5 class='modal-title'>Log In</h5>
         {/if}
@@ -128,7 +128,7 @@
         </div>
       </div>
     {:else if $profiles.length < 5}
-      <button type='button' class='box pointer border-0 pt-10 pb-10 d-flex align-items-center justify-content-center text-center {$profiles.length > 0 && $currentProfile ? `` : !$currentProfile ? `rounded-bottom-30` : `rounded-top-30`}' use:click={() => { modal.open(modal.PROFILE, true) }}>
+      <button type='button' class='box pointer border-0 pt-10 pb-10 d-flex align-items-center justify-content-center text-center {$profiles.length > 0 && $currentProfile ? '' : !$currentProfile ? 'rounded-bottom-30' : 'rounded-top-30'}' use:click={() => { modal.open(modal.PROFILE, true) }}>
         <Plus class='mr-10' size='2.2rem' />
         <div class='mt-4'>
           Add Profile

@@ -11,7 +11,7 @@
   /** @type {import('@/modules/al.d.ts').Media} */
   export let data
   export let variables = null
-  let _variables = variables
+  const _variables = variables
 
   let media
   $: if (data && !media) media = mediaCache.value[data?.id]
@@ -34,11 +34,11 @@
 </script>
 
 <div class='d-flex px-md-20 py-10 position-relative justify-content-center full-card-ct' use:click={viewMedia}>
-  <div class='card load-in m-0 p-0 pointer full-card {airingInfo?.episode.match(/out for/i) ? `airing` : ``}' style:--color={media.coverImage.color || 'var(--tertiary-color)'}>
+  <div class='card load-in m-0 p-0 pointer full-card {airingInfo?.episode.match(/out for/i) ? 'airing' : ''}' style:--color={media.coverImage.color || 'var(--tertiary-color)'}>
     <div class='row h-full'>
       <div class='img-col d-inline-block position-relative col-3 col-md-4'>
         <span class='airing-badge rounded-10 font-weight-semi-bold text-light bg-success' class:d-none={!airingInfo?.episode?.match(/out for/i)}>AIRING</span>
-        <SmartImage class='cover-img cover-color w-full h-270' color={media.coverImage.color || 'var(--tertiary-color)'} images={[media.coverImage.extraLarge, media.coverImage?.medium, './404_cover.png']}/>
+        <SmartImage class='cover-img cover-color w-full h-270' color={media.coverImage.color || 'var(--tertiary-color)'} images={[media.coverImage.extraLarge, media.coverImage?.medium, './404_cover.png']} />
         {#if !_variables?.scheduleList}
           <AudioLabel {media} />
         {/if}
@@ -47,29 +47,29 @@
         <div class='px-15 py-10 bg-very-dark'>
           <h5 class='m-0 text-white text-capitalize font-weight-bold title'>
             {#if media.mediaListEntry?.status}
-              <div style:--statusColor={statusColorMap[media.mediaListEntry.status]} class='list-status-circle d-inline-flex overflow-hidden mr-5' title={media.mediaListEntry.status} />
+              <div style:--statusColor={statusColorMap[media.mediaListEntry.status]} class='list-status-circle d-inline-flex overflow-hidden mr-5' title={media.mediaListEntry.status}></div>
             {/if}
             {anilistClient.title(media)}
           </h5>
           <div class='details text-muted m-0 pt-5 text-capitalize d-flex flex-wrap'>
-              <span class='badge pl-5 pr-5'>
-                {#if media.format}
-                  {formatMap[media.format]}
-                {/if}
-              </span>
+            <span class='badge pl-5 pr-5'>
+              {#if media.format}
+                {formatMap[media.format]}
+              {/if}
+            </span>
             {#if maxEp > 1 || (maxEp !== 1 && ['CURRENT', 'REPEATING', 'PAUSED', 'DROPPED'].includes(media.mediaListEntry?.status) && media.mediaListEntry?.progress)}
-                <span class='badge pl-5 pr-5'>
-                  {['CURRENT', 'REPEATING', 'PAUSED', 'DROPPED'].includes(media.mediaListEntry?.status) && media.mediaListEntry?.progress ? media.mediaListEntry.progress + ' / ' : ''}{maxEp && maxEp !== 0 && !(media.mediaListEntry?.progress > maxEp) ? maxEp : '?'} Episodes
-                </span>
+              <span class='badge pl-5 pr-5'>
+                {['CURRENT', 'REPEATING', 'PAUSED', 'DROPPED'].includes(media.mediaListEntry?.status) && media.mediaListEntry?.progress ? media.mediaListEntry.progress + ' / ' : ''}{maxEp && maxEp !== 0 && !(media.mediaListEntry?.progress > maxEp) ? maxEp : '?'} Episodes
+              </span>
             {:else if media.duration}
-                <span class='badge pl-5 pr-5'>
-                  {media.duration + ' Minutes'}
-                </span>
+              <span class='badge pl-5 pr-5'>
+                {media.duration + ' Minutes'}
+              </span>
             {/if}
             {#if media.isAdult}
-                <span class='badge pl-5 pr-5'>
-                  Rated 18+
-                </span>
+              <span class='badge pl-5 pr-5'>
+                Rated 18+
+              </span>
             {/if}
             {#await ((media.season || media.seasonYear || (media.status === 'NOT_YET_RELEASED')) && media) || getKitsuMappings(media.id) then details}
               {@const attributes = details?.included?.[0]?.attributes}
@@ -96,8 +96,8 @@
           {#if airingInfo}
             <div class='d-flex align-items-center pt-5 text-white'>
               {airingInfo.episode}&nbsp;
-              <span class='font-weight-bold {airingInfo.episode.match(/out for/i) ? `text-success` : `text-light`} d-inline'>
-                  {airingInfo.time}
+              <span class='font-weight-bold {airingInfo.episode.match(/out for/i) ? 'text-success' : 'text-light'} d-inline'>
+                {airingInfo.time}
               </span>
             </div>
           {/if}

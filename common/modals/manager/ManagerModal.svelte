@@ -15,12 +15,12 @@
 
   let container
   let searchText = ''
-  function filterResults(files, searchText) {
+  function filterResults (files, searchText) {
     if (!searchText?.length) return files
     return files.filter(({ name, media }) => matchPhrase(searchText, name, 0.4, false, true) || (media?.media?.id && matchKeys(cache.getMedia(media?.media?.id), searchText, ['title.userPreferred', 'title.english', 'title.romaji', 'title.native', 'synonyms'], 0.4))) || []
   }
 
-  function close() {
+  function close () {
     modal.close(modal.FILE_MANAGER)
   }
 </script>
@@ -31,23 +31,23 @@
       <h3 class='mb-0 font-weight-bold text-white title font-size-24'>File Manager</h3>
       <h5 class='mb-0 mt-0 text-muted info font-size-12'>Something didn't resolve correctly? Please open an issue on GitHub so we can investigate and fix it!</h5>
     </div>
-    <button type='button' class='btn btn-square ml-auto d-flex align-items-center justify-content-center rounded-2 flex-shrink-0' use:click={close}><X size='1.7rem' strokeWidth='3'/></button>
+    <button type='button' class='btn btn-square ml-auto d-flex align-items-center justify-content-center rounded-2 flex-shrink-0' use:click={close}><X size='1.7rem' strokeWidth='3' /></button>
   </div>
-  <FileCard {playFile} bind:file={playing} playing={true} class='mr-30'/>
+  <FileCard {playFile} bind:file={playing} playing={true} class='mr-30' />
   <div class='input-group mt-10 long-input' class:d-none={files?.length < 2}>
     <Search size='2.6rem' strokeWidth='2.5' class='position-absolute z-10 text-dark-light h-full pl-10 ml-20 pointer-events-none' />
     <input
-        type='search'
-        class='form-control bg-dark-very-light pl-40 ml-20 mr-30 rounded-1 h-40 text-truncate'
-        autocomplete='off'
-        spellcheck='false'
-        data-option='search'
-        placeholder='Filter by file name or series title' bind:value={searchText} on:input={() => { container.scrollTo({top: 0}); }} />
+      type='search'
+      class='form-control bg-dark-very-light pl-40 ml-20 mr-30 rounded-1 h-40 text-truncate'
+      autocomplete='off'
+      spellcheck='false'
+      data-option='search'
+      placeholder='Filter by file name or series title' bind:value={searchText} on:input={() => { container.scrollTo({ top: 0 }) }} />
   </div>
-  <div><div class='shadow-overlay' class:d-none={files?.length < 2}/></div>
+  <div><div class='shadow-overlay' class:d-none={files?.length < 2}></div></div>
   <div bind:this={container} class='overflow-y-auto mt-10'>
     {#each filterResults(files?.filter((file) => file !== playing), searchText) as file, index}
-      <FileCard {playFile} bind:file class='{index === 0 ? `mt-10` : ``}'/>
+      <FileCard {playFile} bind:file class={index === 0 ? 'mt-10' : ''} />
     {/each}
   </div>
 </SoftModal>

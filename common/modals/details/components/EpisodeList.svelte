@@ -10,7 +10,7 @@
 
   const episodeRx = /Episode (\d+) - (.*)/
 
-  async function dubbedEpisode(i, media) {
+  async function dubbedEpisode (i, media) {
     if (!settings.value.cardAudio) return
     const episode = i + 1
     const entry = (await animeSchedule.dubAiringLists.value)?.find(entry => entry.media?.media?.id === media.id)
@@ -23,18 +23,18 @@
       const numberOfEpisodes = entry.subtractedEpisodeNumber || 1
       if (entry.episodeDate && entry.episodeNumber <= episode) {
         const airDate = past(new Date(airingSchedule.airingAt), entry.episodeNumber >= episode ? 0 : episode - entry.episodeNumber, true)
-        return { airdate: airDate, text: `${entry.delayedIndefinitely ? 'Suspended' : entry.delayedIndefinitely ? 'Not Planned' : ((episode > entry.episodeNumber) && (numberOfEpisodes > 4) && !entry.unaired) ? 'In Production' : sinceUtil(airDate) + (delayed ? ` (${entry.delayedText || 'Delayed'})` : '')}`, delayed: delayed }
+        return { airdate: airDate, text: `${entry.delayedIndefinitely ? 'Suspended' : entry.delayedIndefinitely ? 'Not Planned' : ((episode > entry.episodeNumber) && (numberOfEpisodes > 4) && !entry.unaired) ? 'In Production' : sinceUtil(airDate) + (delayed ? ` (${entry.delayedText || 'Delayed'})` : '')}`, delayed }
       } else if (airingSchedule && airingSchedule.episode <= episode) {
         return { airdate: airingSchedule.airingAt, text: `${sinceUtil(new Date(airingSchedule.airingAt))} ${(delayed ? `(${entry.delayedText || 'Delayed'})` : '')}`, delayed: delayed && !entry.delayedIndefinitely }
       } else {
-        return { airdate: new Date().toISOString(), text: `Finished`, delayed: false }
+        return { airdate: new Date().toISOString(), text: 'Finished', delayed: false }
       }
     } else if (episodeEntry) {
       return { airdate: episodeEntry.episode.airedAt, text: `${sinceUtil(new Date(episodeEntry.episode.airedAt))}`, delayed: false }
     } else if ((await malDubs.dubLists.value)?.incomplete?.includes(media.idMal) && (await animeSchedule.dubAiredLists.value).find(entry => entry?.id === media.id && entry?.episode?.aired === 1)) {
-      return { text: `Not Planned`, delayed: true, notPlanned: true }
+      return { text: 'Not Planned', delayed: true, notPlanned: true }
     } else if (!entry && !episodeEntry && (media.seasonYear >= new Date().getFullYear()) && await malDubs.isDubMedia(media)) {
-      return { text: `In Production`, delayed: false }
+      return { text: 'In Production', delayed: false }
     }
   }
 </script>
@@ -77,9 +77,9 @@
   $: animeProgress = liveAnimeProgress(id)
 
   let loadScroll = false
-  let maxEpisodes = 15
+  const maxEpisodes = 15
   let currentEpisodes = []
-  function handleScroll(event) {
+  function handleScroll (event) {
     const container = event.target
     if (currentEpisodes.length !== episodeList.length && container.scrollTop + container.clientHeight + 80 >= container.scrollHeight) {
       loadScroll = true
@@ -95,7 +95,7 @@
       const keys = Object.keys(episodes || {})
       const episodeData = episodes?.[episode] || episodes?.[`O${episode}`]
       // Handle mappings edge case where there are two entries with the same episode. This typically happens when a movie or special gets broken up into multiple parts for streaming e.g: https://anilist.co/anime/151384 and https://anilist.co/anime/194884
-      if (episode === 1 && specialCount === 0 && episodes?.['1'] && episodes?.['O1'] && (media.format === 'MOVIE' || media.format === 'SPECIAL' || episodeData?.title?.en?.match(/MOVIE/i)) && keys.length > (media.episodes ?? 0) && media.status === 'FINISHED') {
+      if (episode === 1 && specialCount === 0 && episodes?.['1'] && episodes?.O1 && (media.format === 'MOVIE' || media.format === 'SPECIAL' || episodeData?.title?.en?.match(/MOVIE/i)) && keys.length > (media.episodes ?? 0) && media.status === 'FINISHED') {
         return episodes[keys[1]]
       }
       return episodeData
@@ -121,7 +121,7 @@
         }, {})
         alEpisodes = alEpisodes.map((episode, i) => {
           const settledData = settledMap?.[episode.episode]
-          if (settledData) return { ...episode, airingAt: settledData.airingAt ?? episode.airingAt, episode: settledData.episode ?? episode.episode, filler: episodesList.getSingleEpisode(idMal, (i + 1)), dubAiring: dubbedEpisode(i, media)}
+          if (settledData) return { ...episode, airingAt: settledData.airingAt ?? episode.airingAt, episode: settledData.episode ?? episode.episode, filler: episodesList.getSingleEpisode(idMal, (i + 1)), dubAiring: dubbedEpisode(i, media) }
           return episode
         })
       }
@@ -146,7 +146,7 @@
     let zeroAsFirstEpisode
     const zeroEpisode = await hasZeroEpisode(media, mappings)
     const kitsuMappings = await episodesList.getKitsuEpisodes(media.id)
-    if (zeroEpisode) alEpisodes.unshift({ episode: 0, title: zeroEpisode[0].title, airingAt: media.airingSchedule?.nodes?.find(node => node.episode === 1)?.airingAt || zeroEpisode[0].airingAt, filler: episodesList.getSingleEpisode(idMal, 0), dubAiring: dubbedEpisode(0, media)})
+    if (zeroEpisode) alEpisodes.unshift({ episode: 0, title: zeroEpisode[0].title, airingAt: media.airingSchedule?.nodes?.find(node => node.episode === 1)?.airingAt || zeroEpisode[0].airingAt, filler: episodesList.getSingleEpisode(idMal, 0), dubAiring: dubbedEpisode(0, media) })
     for (const { episode, title: oldTitle, airingAt, filler, dubAiring } of alEpisodes?.length ? alEpisodes : [{ episode: 1, title: null, airingAt: null, filler: null, dubAiring: null }]) {
       const airingPromise = await airingAt
       const alDate = airingPromise && new Date(typeof airingPromise === 'number' ? (airingPromise || 0) * 1000 : (airingPromise || 0))
@@ -198,7 +198,7 @@
 
       const episodeNumber = episode - (zeroAsFirstEpisode ? 1 : 0)
       const foundTitle = (media?.status === 'FINISHED' || (validatedAiringAt && new Date(validatedAiringAt).getTime() <= (Date.now() + 7 * 24 * 60 * 60 * 1000))) ? title || kitsuEpisode?.titles?.en_us || kitsuEpisode?.titles?.en_jp || newTitle?.jp || oldTitle?.jp : null
-      episodeList[episodeNumber - (!zeroEpisode ? 1 : 0)] = { zeroEpisode, episode: episodeNumber, image: (media?.status === 'FINISHED' || (validatedAiringAt && new Date(validatedAiringAt).getTime() <= (Date.now() + 7 * 24 * 60 * 60 * 1000))) ? episode === 0 ? zeroEpisode[0]?.thumbnail : episodeList.some((ep) => ep.image === (image || kitsuEpisode?.thumbnail?.original || streamingThumbnail) && ep.episode !== episodeNumber) ? null : (image || kitsuEpisode?.thumbnail?.original || streamingThumbnail) : null, summary: (media?.status === 'FINISHED' || (validatedAiringAt && new Date(validatedAiringAt).getTime() <= Date.now()) || ((episode === 0 || episode === 1) && !validatedAiringAt && media?.status === 'RELEASING')) ? episode === 0 ? (zeroSummary || summary || overview) : episodeList.some((ep) => ep.summary === (summary || overview || kitsuEpisode?.synopsis || kitsuEpisode?.description) && ep.episode !== episodeNumber) ? null : (summary || overview || kitsuEpisode?.synopsis || kitsuEpisode?.description) : `This episode ${validatedAiringAt || (media?.status === 'NOT_YET_RELEASED' && ((media?.status === 'NOT_YET_RELEASED' && (media?.startDate?.month || media?.season || media?.seasonYear)))) ? `will be released ${validatedAiringAt || media?.startDate?.month ? `${validatedAiringAt ? `on` : `in`} ${monthDay(validatedAiringAt || new Date(media.startDate.year, media.startDate.month, media.startDate.day), !validatedAiringAt)}` : `in ${media?.season ? capitalize(media?.season?.toLowerCase()) : ''} ${media?.seasonYear || ''}`}.` : ` is in production and does not have an estimated release date.`}`, rating, title: foundTitle && media?.episodes === 1 && (foundTitle.match(/ web|web |movie/i) || foundTitle.toLowerCase() === 'web') ? 'The Movie' : foundTitle, length: media?.status === 'FINISHED' || validatedAiringAt ? lastDuration : null, airdate: validatedAiringAt, airingAt: validatedAiringAt, filler, dubAiring: !zeroEpisode ? _dubAiring : dubbedEpisode(episodeNumber - 1, media) }
+      episodeList[episodeNumber - (!zeroEpisode ? 1 : 0)] = { zeroEpisode, episode: episodeNumber, image: (media?.status === 'FINISHED' || (validatedAiringAt && new Date(validatedAiringAt).getTime() <= (Date.now() + 7 * 24 * 60 * 60 * 1000))) ? episode === 0 ? zeroEpisode[0]?.thumbnail : episodeList.some((ep) => ep.image === (image || kitsuEpisode?.thumbnail?.original || streamingThumbnail) && ep.episode !== episodeNumber) ? null : (image || kitsuEpisode?.thumbnail?.original || streamingThumbnail) : null, summary: (media?.status === 'FINISHED' || (validatedAiringAt && new Date(validatedAiringAt).getTime() <= Date.now()) || ((episode === 0 || episode === 1) && !validatedAiringAt && media?.status === 'RELEASING')) ? episode === 0 ? (zeroSummary || summary || overview) : episodeList.some((ep) => ep.summary === (summary || overview || kitsuEpisode?.synopsis || kitsuEpisode?.description) && ep.episode !== episodeNumber) ? null : (summary || overview || kitsuEpisode?.synopsis || kitsuEpisode?.description) : `This episode ${validatedAiringAt || (media?.status === 'NOT_YET_RELEASED' && ((media?.status === 'NOT_YET_RELEASED' && (media?.startDate?.month || media?.season || media?.seasonYear)))) ? `will be released ${validatedAiringAt || media?.startDate?.month ? `${validatedAiringAt ? 'on' : 'in'} ${monthDay(validatedAiringAt || new Date(media.startDate.year, media.startDate.month, media.startDate.day), !validatedAiringAt)}` : `in ${media?.season ? capitalize(media?.season?.toLowerCase()) : ''} ${media?.seasonYear || ''}`}.` : ' is in production and does not have an estimated release date.'}`, rating, title: foundTitle && media?.episodes === 1 && (foundTitle.match(/ web|web |movie/i) || foundTitle.toLowerCase() === 'web') ? 'The Movie' : foundTitle, length: media?.status === 'FINISHED' || validatedAiringAt ? lastDuration : null, airdate: validatedAiringAt, airingAt: validatedAiringAt, filler, dubAiring: !zeroEpisode ? _dubAiring : dubbedEpisode(episodeNumber - 1, media) }
     }
 
     if (zeroEpisode && episodeList.length === alEpisodes.length) episodeList = episodeList.slice(0, -1)
@@ -207,7 +207,7 @@
     return episodeList && episodeList?.length > 0 ? episodeList : null
   }
 
-  async function loadTmdbEpisodes() {
+  async function loadTmdbEpisodes () {
     const mediaType = media.format === 'MOVIE' ? 'movie' : 'tv'
     const details = await tmdbClient.getDetails(media.idTmdb, mediaType)
     if (!details) {
@@ -272,8 +272,8 @@
   }
 
   let container
-  $: if (id && container) container.scrollTo({top: 0, behavior: 'smooth'})
-  function renderVisible() {
+  $: if (id && container) container.scrollTo({ top: 0, behavior: 'smooth' })
+  function renderVisible () {
     if (!container || container.scrollHeight === 0 || container.clientHeight === 0) return
     if (currentEpisodes.length !== episodeList.length && !(container.scrollHeight > container.clientHeight)) {
       const nextBatch = (episodeOrder ? episodeList : [...episodeList]?.reverse())?.slice(currentEpisodes.length, currentEpisodes.length + maxEpisodes)
@@ -281,7 +281,7 @@
     }
   }
 
-  function mobileWait(condition, interval = 1000) {
+  function mobileWait (condition, interval = 1000) {
     if (mobileWaiting) return mobileList ? mobileWaiting : null
     mobileWaiting = new Promise(resolve => setTimeout(resolve, 1000))
     mobileWaiting = new Promise((resolve) => {
@@ -318,11 +318,11 @@
     {/each}
   {:then _}
     {#if episodeList}
-      {#each currentEpisodes as { zeroEpisode, episode, image, summary, rating, title, length, airdate, filler, dubAiring}, index}
+      {#each currentEpisodes as { zeroEpisode, episode, image, summary, rating, title, length, airdate, filler, dubAiring }, index}
         {#await Promise.all([title, filler, dubAiring, currentEpisodes[episodeOrder ? index - 1 : index + 1]?.dubAiring])}
-          {#each Array.from({length: Math.min(episodeCount || 0, maxEpisodes)}) as _, index}
+          {#each Array.from({ length: Math.min(episodeCount || 0, maxEpisodes) }) as _, index}
             <div class='w-full px-20 content-visibility-auto scale h-150' class:h-165={SUPPORTS.isAndroid} class:my-20={!mobileList || index !== 0}>
-              <EpisodeListSk/>
+              <EpisodeListSk />
             </div>
           {/each}
         {:then [title, filler, dubAiring, nextDubAiring]}
@@ -335,11 +335,11 @@
             {@const resolvedTitle = episodeList.filter((ep) => ep.episode < episode).some((ep) => matchPhrase(ep.title, title, 0.1, true)) ? null : title}
             {@const largeCard = image}
             <div class='w-full content-visibility-auto scale my-20' class:load-in={!loadScroll} class:opacity-half={completed} class:scale-target={target} class:px-20={!target} class:px-10={target} class:h-150={!SUPPORTS.isAndroid && largeCard} class:h-165={SUPPORTS.isAndroid && largeCard}>
-              <div role='button' tabindex='0' class='episode-card rounded-2 w-full h-full overflow-hidden d-flex flex-xsm-column flex-row position-relative {unreleased ? `unreleased not-allowed` : `pointer`}' class:not-reactive={!$reactive} class:smallCard={!largeCard} class:android={SUPPORTS.isAndroid}  class:border={target || hasFiller} class:bg-black={completed} class:border-secondary={hasFiller} class:bg-dark-light={!completed} use:click={() => !unreleased && play(media, { number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode })} on:contextmenu|preventDefault={() => !unreleased && play(media, { number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode }, true)}>
-                <div class='unreleased-overlay position-absolute top-0 left-0 right-0 h-full pointer-events-none rounded-2' class:d-none={!unreleased}/>
+              <div role='button' tabindex='0' class='episode-card rounded-2 w-full h-full overflow-hidden d-flex flex-xsm-column flex-row position-relative {unreleased ? 'unreleased not-allowed' : 'pointer'}' class:not-reactive={!$reactive} class:smallCard={!largeCard} class:android={SUPPORTS.isAndroid} class:border={target || hasFiller} class:bg-black={completed} class:border-secondary={hasFiller} class:bg-dark-light={!completed} use:click={() => !unreleased && play(media, { number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode })} on:contextmenu|preventDefault={() => !unreleased && play(media, { number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode }, true)}>
+                <div class='unreleased-overlay position-absolute top-0 left-0 right-0 h-full pointer-events-none rounded-2' class:d-none={!unreleased}></div>
                 {#if image}
                   <div class='d-flex'>
-                    <SmartImage class='img-cover {!SUPPORTS.isAndroid ? `h-150` : `h-165`} w-full w-sm-265' images={[image, './404_episode.png']}/>
+                    <SmartImage class='img-cover {!SUPPORTS.isAndroid ? 'h-150' : 'h-165'} w-full w-sm-265' images={[image, './404_episode.png']} />
                     {#if dubAiring}
                       <div class='position-relative d-none sm-label'>
                         <AudioLabel {media} episodeList={true} dubbed={dubAiring?.airdate && (new Date(dubAiring.airdate).getTime() <= new Date().getTime())} subbed={(airdate && (new Date(airdate).getTime() <= new Date().getTime())) || (dubAiring?.airdate && (new Date(dubAiring.airdate).getTime() <= new Date().getTime()))} />
@@ -366,14 +366,14 @@
                   </div>
                   {#if completed}
                     <div class='progress mb-10'>
-                      <div class='progress-bar w-full'/>
+                      <div class='progress-bar w-full'></div>
                     </div>
                   {:else if progress}
                     <div class='progress mb-15'>
-                      <div class='progress-bar' style='width: {progress}%'/>
+                      <div class='progress-bar' style='width: {progress}%'></div>
                     </div>
                   {/if}
-                  <div class='font-size-12 overflow-hidden {(!completed && !progress) || !dubAiring ? `line-3 line-sm-4` : `line-2 line-sm-3`}' class:mb-10={!largeCard} class:summary={unreleased} class:font-weight-bold={unreleased}>
+                  <div class='font-size-12 overflow-hidden {(!completed && !progress) || !dubAiring ? 'line-3 line-sm-4' : 'line-2 line-sm-3'}' class:mb-10={!largeCard} class:summary={unreleased} class:font-weight-bold={unreleased}>
                     {summary?.replace(/\s*\(?source:\s*[\s\S]+?\)?$/i, '') || ''}
                   </div>
                   <div class='font-size-12 mt-auto' class:mb-5={dubAiring} class:mb-10={!dubAiring}>

@@ -1,17 +1,17 @@
 <div class='load-in rounded w-full h-full overflow-hidden d-flex flex-xsm-column flex-row pointer position-relative bg-dark'>
   <div class='h-full bg-ske'>
-    <div class='skeloader bg-ske h-full w-266 overflow-hidden img-cover'/>
+    <div class='skeloader bg-ske h-full w-266 overflow-hidden img-cover'></div>
   </div>
   <div class='h-full w-full px-20 pt-15 d-flex flex-column'>
     <div class='w-full d-flex flex-row mb-20 mt-0 title'>
-      <div class='skeloader episode-title w-full bg-ske h-25 rounded'/>
-      <div class='skeloader ml-auto bg-ske w-30 h-25 rounded flex-shrink-0'/>
+      <div class='skeloader episode-title w-full bg-ske h-25 rounded'></div>
+      <div class='skeloader ml-auto bg-ske w-30 h-25 rounded flex-shrink-0'></div>
     </div>
-    <div class='skeloader bg-ske w-full h-10 overflow-hidden rounded'/>
-    <div class='skeloader description bg-ske w-full h-10 overflow-hidden rounded'/>
-    <div class='skeloader n-description bg-ske w-full h-10 overflow-hidden rounded'/>
-    <div class='skeloader n-description bg-ske w-full h-10 overflow-hidden rounded'/>
-    <div class='skeloader bg-ske h-20 rounded mt-15 date'/>
+    <div class='skeloader bg-ske w-full h-10 overflow-hidden rounded'></div>
+    <div class='skeloader description bg-ske w-full h-10 overflow-hidden rounded'></div>
+    <div class='skeloader n-description bg-ske w-full h-10 overflow-hidden rounded'></div>
+    <div class='skeloader n-description bg-ske w-full h-10 overflow-hidden rounded'></div>
+    <div class='skeloader bg-ske h-20 rounded mt-15 date'></div>
   </div>
 </div>
 

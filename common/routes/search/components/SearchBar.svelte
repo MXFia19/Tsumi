@@ -4,7 +4,7 @@
   const sortOptions = { TITLE_ROMAJI: 'Title', START_DATE_DESC: 'Release Date', SCORE_DESC: 'Score', POPULARITY_DESC: 'Popularity', UPDATED_AT_DESC: 'Date Updated', UPDATED_TIME_DESC: 'Last Updated', STARTED_ON_DESC: 'Start Date', FINISHED_ON_DESC: 'Completed Date', PROGRESS_DESC: 'Your Progress', USER_SCORE_DESC: 'Your Score' }
   const formatOptions = { TV: 'TV Show', MOVIE: 'Movie', TV_SHORT: 'TV Short', SPECIAL: 'Special', OVA: 'OVA', ONA: 'ONA' }
 
-  export function searchCleanup(search, badge) {
+  export function searchCleanup (search, badge) {
     return Object.fromEntries(Object.entries(search).map((entry) => (!badge || badgeKeys.includes(entry[0])) && entry).filter(a => (a?.[1] === false || a?.[1] === 0 || a?.[1]) && (!Array.isArray(a[1]) || a[1].length > 0)))
   }
 </script>
@@ -33,7 +33,7 @@
 
   $: _isWestern = !!(search.excludeAnime || search.isTmdb || search.idTmdb || search.western)
 
-  function getTags() {
+  function getTags () {
     delete search.clearNow
     return {
       headers: {
@@ -61,7 +61,7 @@
     }
   )
 
-  function searchClear() {
+  function searchClear () {
     search = {
       scheduleList: ($page === page.SCHEDULE),
       genre: [],
@@ -73,7 +73,7 @@
       status: [],
       status_not: [],
       ...(search.fileEdit ? { fileEdit: search.fileEdit } : {}),
-      ...(($page === page.SCHEDULE) ? { load: search.load } : { season: '', sort: ''})
+      ...(($page === page.SCHEDULE) ? { load: search.load } : { season: '', sort: '' })
     }
     searchTags.tags = []
     searchTags.tags_not = []
@@ -81,15 +81,15 @@
     form.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
-  function getSortDisplayName(value) {
+  function getSortDisplayName (value) {
     return sortOptions[value] || value
   }
 
-  function getFormatDisplayName(value) {
+  function getFormatDisplayName (value) {
     return formatOptions[value] || value
   }
 
-  function removeBadge(badge) {
+  function removeBadge (badge) {
     if (badge.key === 'title') {
       delete search.load
       delete search.disableHide
@@ -113,7 +113,7 @@
     form.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
-  function toggleHideMyAnime() {
+  function toggleHideMyAnime () {
     if (search.disableHide || search.disableSearch || !Helper.isAuthorized()) return
     search.hideMyAnime = !search.hideMyAnime
     search.hideStatus = search.hideMyAnime ? ['CURRENT', 'COMPLETED', 'DROPPED', 'PAUSED', 'REPEATING'] : ''
@@ -122,7 +122,7 @@
     form.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
-  function toggleShowMyAnime() {
+  function toggleShowMyAnime () {
     if (search.disableHide || search.disableSearch || !Helper.isAuthorized()) return
     search.showMyAnime = !search.showMyAnime
     search.showStatus = search.showMyAnime ? ['CURRENT', 'COMPLETED', 'DROPPED', 'PAUSED', 'REPEATING'] : ''
@@ -131,12 +131,12 @@
     form.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
-  function toggleSubs() {
+  function toggleSubs () {
     search.hideSubs = !search.hideSubs
     form.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
-  function clearTags() { // cannot specify genre and tag filtering with user specific sorting options when using alternative authentication.
+  function clearTags () { // cannot specify genre and tag filtering with user specific sorting options when using alternative authentication.
     if (!Helper.isAniAuth() && Helper.isUserSort(search)) {
       search.genre = []
       search.genre_not = []
@@ -147,7 +147,7 @@
     }
   }
 
-  function handleFile({ target }) {
+  function handleFile ({ target }) {
     const { files } = target
     if (files?.[0]) {
       toast.promise(traceAnime(files[0]), {
@@ -161,18 +161,18 @@
     }
   }
 
-  function changeCardMode(type) {
+  function changeCardMode (type) {
     $settings.cards = type
     form.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
   let advancedSearch = 'd-advanced-search'
-  function toggleAdvancedSearch() {
+  function toggleAdvancedSearch () {
     if (!advancedSearch?.length) advancedSearch = 'd-advanced-search'
     else advancedSearch = ''
   }
 
-  function toArray(value) {
+  function toArray (value) {
     return Array.isArray(value) ? value : value ? [value] : []
   }
 </script>
@@ -181,7 +181,7 @@
   <div class='row'>
     <div class='col-lg-auto col-4 p-10 d-flex flex-column justify-content-end' class:d-advanced-title={advancedSearch}>
       <div class='pb-10 font-weight-semi-bold d-flex align-items-center {advancedSearch} font-scale-24'>
-        <Grid2X2 class='mr-10 block-scale-30'/>
+        <Grid2X2 class='mr-10 block-scale-30' />
         <div>Source</div>
       </div>
       <div class='input-group'>
@@ -194,11 +194,11 @@
     </div>
     <div class='col-lg col-4 p-10 d-flex flex-column justify-content-end' class:d-advanced-title={advancedSearch}>
       <div class='pb-10 font-weight-semi-bold d-flex align-items-center {advancedSearch} font-scale-24'>
-        <Type class='mr-10 block-scale-30'/>
+        <Type class='mr-10 block-scale-30' />
         <div>Title</div>
       </div>
       <div class='input-group'>
-        <Search size='2.6rem' strokeWidth='2.5' class='position-absolute z-10 text-dark-light h-full pl-10 pointer-events-none'/>
+        <Search size='2.6rem' strokeWidth='2.5' class='position-absolute z-10 text-dark-light h-full pl-10 pointer-events-none' />
         <input
           bind:this={searchTextInput}
           type='search'
@@ -208,21 +208,21 @@
           bind:value={search.search}
           data-option='search'
           disabled={search.disableSearch}
-          placeholder='Any'/>
+          placeholder='Any' />
       </div>
     </div>
     <div class='col-lg col-4 p-10 z-4 d-flex {advancedSearch} flex-column justify-content-end'>
       <div class='pb-10 font-weight-semi-bold d-flex align-items-center font-scale-24'>
-        <Hash class='mr-10 block-scale-30'/>
+        <Hash class='mr-10 block-scale-30' />
         <div>Genres</div>
       </div>
       <div class='input-group' title={(!Helper.isAniAuth() && Helper.isUserSort(search)) ? 'Cannot use with sort: ' + sortOptions[search.sort] : ''}>
-        <CustomDropdown id={`tags-input`} bind:form headers={searchTags.headers} options={[...genreList, ...tmdbGenreList, ...tagList]} bind:value={searchTags.tags} bind:altValue={searchTags.tags_not} constrainAlt={false} disabled={search.disableSearch || (!Helper.isAniAuth() && Helper.isUserSort(search))}/>
+        <CustomDropdown id='tags-input' bind:form headers={searchTags.headers} options={[...genreList, ...tmdbGenreList, ...tagList]} bind:value={searchTags.tags} bind:altValue={searchTags.tags_not} constrainAlt={false} disabled={search.disableSearch || (!Helper.isAniAuth() && Helper.isUserSort(search))} />
       </div>
     </div>
     <div class='col-lg col-4 p-10 z-4 d-none {advancedSearch} flex-column justify-content-end' class:d-flex={!search.scheduleList}>
       <div class='pb-10 font-weight-semi-bold d-flex align-items-center font-scale-24'>
-        <CalendarRange class='mr-10 block-scale-30'/>
+        <CalendarRange class='mr-10 block-scale-30' />
         <div>Season</div>
       </div>
       <div class='d-flex align-items-center'>
@@ -236,31 +236,31 @@
           </select>
         </div>
         <div class='input-group'>
-          <CustomDropdown id={`year-input`} class='radius-left-0' bind:form options={Array.from({ length: currentYear - 1940 + 2 }, (_, i) => currentYear + 1 - i)} bind:value={search.year} arrayValue={false} bind:disabled={search.disableSearch}/>
+          <CustomDropdown id='year-input' class='radius-left-0' bind:form options={Array.from({ length: currentYear - 1940 + 2 }, (_, i) => currentYear + 1 - i)} bind:value={search.year} arrayValue={false} bind:disabled={search.disableSearch} />
         </div>
       </div>
     </div>
     <div class='col p-10 z-3 d-flex {advancedSearch} flex-column justify-content-end'>
       <div class='pb-10 font-weight-semi-bold d-flex align-items-center font-scale-24'>
-        <Tv class='mr-10 block-scale-30'/>
+        <Tv class='mr-10 block-scale-30' />
         <div>Format</div>
       </div>
       <div class='input-group'>
-        <CustomDropdown id={`format-input`} bind:form options={{ TV: 'TV Show', MOVIE: 'Movie', TV_SHORT: 'TV Short', SPECIAL: 'Special', OVA: 'OVA', ONA: 'ONA' }} bind:value={search.format} bind:altValue={search.format_not} bind:disabled={search.disableSearch}/>
+        <CustomDropdown id='format-input' bind:form options={{ TV: 'TV Show', MOVIE: 'Movie', TV_SHORT: 'TV Short', SPECIAL: 'Special', OVA: 'OVA', ONA: 'ONA' }} bind:value={search.format} bind:altValue={search.format_not} bind:disabled={search.disableSearch} />
       </div>
     </div>
     <div class='col p-10 z-2 d-none {advancedSearch} flex-column justify-content-end' class:d-flex={!search.scheduleList}>
       <div class='pb-10 font-weight-semi-bold d-flex align-items-center font-scale-24'>
-        <MonitorPlay class='mr-10 block-scale-30'/>
+        <MonitorPlay class='mr-10 block-scale-30' />
         <div>Status</div>
       </div>
       <div class='input-group'>
-        <CustomDropdown id={`status-input`} bind:form options={{ RELEASING: 'Releasing', FINISHED: 'Finished', NOT_YET_RELEASED: 'Not Yet Released', CANCELLED: 'Cancelled' }} bind:value={search.status} bind:altValue={search.status_not} bind:disabled={search.disableSearch}/>
+        <CustomDropdown id='status-input' bind:form options={{ RELEASING: 'Releasing', FINISHED: 'Finished', NOT_YET_RELEASED: 'Not Yet Released', CANCELLED: 'Cancelled' }} bind:value={search.status} bind:altValue={search.status_not} bind:disabled={search.disableSearch} />
       </div>
     </div>
     <div class='col p-10 d-none {advancedSearch} flex-column justify-content-end' class:d-flex={!search.scheduleList}>
       <div class='pb-10 font-weight-semi-bold d-flex align-items-center font-scale-24'>
-        <ArrowDownWideNarrow class='mr-10 block-scale-30'/>
+        <ArrowDownWideNarrow class='mr-10 block-scale-30' />
         <div>Sort</div>
       </div>
       <div class='input-group'>
@@ -304,9 +304,9 @@
     {#if !search.fileEdit}
       <div class='col-auto p-10 d-flex'>
         <div class='align-self-end'>
-          <button class='btn btn-square bg-dark-light px-5 align-self-end border-0 z-1' type='button' data-toggle='tooltip' data-placement='bottom' data-target-breakpoint='md' data-title='{search.showMyAnime ? `Show My Anime` : `Hide My Anime`}' use:click={toggleHideMyAnime} on:contextmenu|preventDefault={toggleShowMyAnime} disabled={search.disableHide || search.disableSearch || !Helper.isAuthorized()} class:text-primary={search.hideMyAnime} class:text-octonary={search.showMyAnime}>
+          <button class='btn btn-square bg-dark-light px-5 align-self-end border-0 z-1' type='button' data-toggle='tooltip' data-placement='bottom' data-target-breakpoint='md' data-title={search.showMyAnime ? 'Show My Anime' : 'Hide My Anime'} use:click={toggleHideMyAnime} on:contextmenu|preventDefault={toggleShowMyAnime} disabled={search.disableHide || search.disableSearch || !Helper.isAuthorized()} class:text-primary={search.hideMyAnime} class:text-octonary={search.showMyAnime}>
             <label for='hide-my-anime' class='pointer mb-0 d-flex align-items-center justify-content-center'>
-              <svelte:component this={search.showMyAnime ? badgeDisplayNames['showMyAnime'] : badgeDisplayNames['hideMyAnime']} size='1.625rem' />
+              <svelte:component this={search.showMyAnime ? badgeDisplayNames.showMyAnime : badgeDisplayNames.hideMyAnime} size='1.625rem' />
             </label>
           </button>
         </div>
@@ -350,20 +350,20 @@
           {@const filteredBadges = sanitisedSearch.filter(badge => badge.key !== 'hideStatus' && badge.key !== 'showStatus' && (search.userList || badge.key !== 'title'))}
           <div class='d-flex flex-wrap flex-row align-items-center'>
             {#if filteredBadges.length > 0}
-              <Tags class='text-dark-light mr-20 block-scale-30 mb-5'/>
+              <Tags class='text-dark-light mr-20 block-scale-30 mb-5' />
             {/if}
-          {#each badgeKeys as key}
-            {@const matchingBadges = filteredBadges.filter(badge => badge.key === key)}
-            {#each matchingBadges as badge}
-              {#if badge.key === key && (badge.key !== 'hideStatus' && badge.key !== 'showStatus' && (search.userList || badge.key !== 'title')) && !(badge.key === 'sort' && badge.value === 'TRENDING_DESC')}
-                <div use:click={() => removeBadge(badge)} class='badge border-0 py-5 px-10 text-capitalize mr-10 text-white text-nowrap d-flex align-items-center mb-5' class:bg-dark-light={!badge.key.includes('_not')} class:bg-danger-very-dim={badge.key.includes('_not')}>
-                  <svelte:component this={badge.key === 'genre' ? genreIcons[badge.value] || badgeDisplayNames[badge.key] : badgeDisplayNames[badge.key]} class='mr-5 square-scale-18'/>
-                  <span>{badge.key === 'sort' ? getSortDisplayName(badge.value) : (badge.key === 'format' || badge.key === 'format_not') ? getFormatDisplayName(badge.value) : (badge.key === 'hideMyAnime' ? 'Hide My Anime' : badge.key === 'showMyAnime' ? 'Show My Anime' : badge.key === 'hideSubs' ? 'Dubbed' : ('' + badge.value).replace(/_/g, ' ').toLowerCase())}</span>
-                  <button on:click={() => removeBadge(badge)} class='pointer bg-transparent border-0 icon text-white position-relative pl-0 pr-0 pt-0 x-filter d-flex align-items-center z-1' type='button' data-toggle='tooltip' data-placement='bottom' data-target-breakpoint='md' data-title='Remove Filter'><X size='1.3rem' strokeWidth='3'/></button>
-                </div>
-              {/if}
+            {#each badgeKeys as key}
+              {@const matchingBadges = filteredBadges.filter(badge => badge.key === key)}
+              {#each matchingBadges as badge}
+                {#if badge.key === key && (badge.key !== 'hideStatus' && badge.key !== 'showStatus' && (search.userList || badge.key !== 'title')) && !(badge.key === 'sort' && badge.value === 'TRENDING_DESC')}
+                  <div use:click={() => removeBadge(badge)} class='badge border-0 py-5 px-10 text-capitalize mr-10 text-white text-nowrap d-flex align-items-center mb-5' class:bg-dark-light={!badge.key.includes('_not')} class:bg-danger-very-dim={badge.key.includes('_not')}>
+                    <svelte:component this={badge.key === 'genre' ? genreIcons[badge.value] || badgeDisplayNames[badge.key] : badgeDisplayNames[badge.key]} class='mr-5 square-scale-18' />
+                    <span>{badge.key === 'sort' ? getSortDisplayName(badge.value) : (badge.key === 'format' || badge.key === 'format_not') ? getFormatDisplayName(badge.value) : (badge.key === 'hideMyAnime' ? 'Hide My Anime' : badge.key === 'showMyAnime' ? 'Show My Anime' : badge.key === 'hideSubs' ? 'Dubbed' : ('' + badge.value).replace(/_/g, ' ').toLowerCase())}</span>
+                    <button on:click={() => removeBadge(badge)} class='pointer bg-transparent border-0 icon text-white position-relative pl-0 pr-0 pt-0 x-filter d-flex align-items-center z-1' type='button' data-toggle='tooltip' data-placement='bottom' data-target-breakpoint='md' data-title='Remove Filter'><X size='1.3rem' strokeWidth='3' /></button>
+                  </div>
+                {/if}
+              {/each}
             {/each}
-          {/each}
           </div>
         {/if}
       </div>

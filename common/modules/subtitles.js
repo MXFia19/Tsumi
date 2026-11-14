@@ -21,7 +21,7 @@ Style: Default, ${settings.value.font?.name.toLowerCase() || 'Roboto Medium'},52
 `
 const stylesRx = /^Style:[^,]*/gm
 export default class Subtitles {
-  constructor(video, files, selected, onHeader) {
+  constructor (video, files, selected, onHeader) {
     this.video = video
     this.selected = selected || null
     this.files = files || []
@@ -121,10 +121,10 @@ export default class Subtitles {
   }
 
   // Default no-op handlers, shadowed by the instance handlers assigned in the constructor
-  handleTracks() { }
-  handleSubtitle() { }
-  handleFile() { }
-  handleSubtitleFile() { } async addSingleSubtitleFile(file) {
+  handleTracks () { }
+  handleSubtitle () { }
+  handleFile () { }
+  handleSubtitleFile () { } async addSingleSubtitleFile (file) {
     // lets hope there's no more than 100 subtitle tracks in a file
     const index = 100 + this.headers.length
     this.subtitleFiles[index] = file
@@ -155,7 +155,7 @@ export default class Subtitles {
     } else console.error(`Failed to load the file ${file.name} as it is not a subtitle file.`)
   }
 
-  initSubtitleRenderer() {
+  initSubtitleRenderer () {
     if (!this.renderer) {
       const options = {
         video: this.video,
@@ -183,7 +183,7 @@ export default class Subtitles {
     }
   }
 
-  static convertSubText(text, type) {
+  static convertSubText (text, type) {
     const srtRx = /(?:\d+\r?\n)?(\S{9,12})\s?-->\s?(\S{9,12})(.*)\r?\n([\s\S]*)$/i
     const srt = text => {
       const subtitles = []
@@ -244,7 +244,7 @@ export default class Subtitles {
     }
   }
 
-  constructSub(subtitle, isNotAss, subtitleIndex, trackNumber) {
+  constructSub (subtitle, isNotAss, subtitleIndex, trackNumber) {
     if (isNotAss === true) { // converts VTT or other to SSA
       const matches = subtitle.text.match(/<[^>]+>/g) // create array of all tags
       if (matches) {
@@ -275,7 +275,7 @@ export default class Subtitles {
     }
   }
 
-  selectCaptions(trackNumber) {
+  selectCaptions (trackNumber) {
     if (trackNumber != null) {
       this.current = Number(trackNumber)
       this.onHeader()
@@ -288,7 +288,7 @@ export default class Subtitles {
     }
   }
 
-  destroy() {
+  destroy () {
     // Client event listeners removed
     this.stream?.destroy()
     this.parser?.destroy()

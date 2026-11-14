@@ -94,13 +94,13 @@ export default class Protocol {
       if (state.endsWith('/')) state = state.slice(0, -1)
       if (state.includes('%')) state = decodeURIComponent(state)
       this.window.webContents.send('maltoken', code, state)
-    } 
+    }
   }
 
   /**
    * @param {string} id - The media id.
    */
-  play(id) {
+  play (id) {
     this.window.webContents.send('play-anime', id)
     ipcMain.emit('window-show')
   }

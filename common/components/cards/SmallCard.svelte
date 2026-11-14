@@ -22,14 +22,14 @@
   let media
   $: media = mediaCache.value[data?.id] || data
   mediaCache.subscribe((value) => { if (value && media?.id && (JSON.stringify(value[media?.id]) !== JSON.stringify(media))) media = value[media?.id] })
-  function viewMedia() {
+  function viewMedia () {
     if (_variables?.fileEdit) _variables.fileEdit(media)
     else modal.open(modal.ANIME_DETAILS, media)
   }
 
   let preview = false
   let ignoreFocus = false
-  function setHoverState(state) {
+  function setHoverState (state) {
     const focused = document.activeElement
     if (container && focused?.offsetParent != null && (container.contains(focused)) && (!previewCard || !previewCard.contains(focused))) ignoreFocus = true
     if (settings.value.cardPreview) preview = state
@@ -40,7 +40,7 @@
   let previewCard
   let focusTimeout
   let blurTimeout
-  function handleFocus() {
+  function handleFocus () {
     if (ignoreFocus || preview) return
     clearTimeouts()
     focusTimeout = setTimeout(() => {
@@ -52,7 +52,7 @@
     }, 800)
     focusTimeout.unref?.()
   }
-  function handleBlur() {
+  function handleBlur () {
     clearTimeouts()
     blurTimeout = setTimeout(() => {
       const focused = document.activeElement
@@ -66,14 +66,14 @@
     })
     blurTimeout.unref?.()
   }
-  function handleOutsideClick(event) {
+  function handleOutsideClick (event) {
     if (container && previewCard && !container.contains(event.target) && !previewCard.contains(event.target)) {
       preview = false
       ignoreFocus = false
       document.removeEventListener('pointerup', handleOutsideClick)
     }
   }
-  function clearTimeouts() {
+  function clearTimeouts () {
     clearTimeout(focusTimeout)
     clearTimeout(blurTimeout)
   }
@@ -103,22 +103,22 @@
   $: if (preview) clearTimeout(focusTimeout)
 </script>
 
-<div bind:this={container} class='d-flex p-md-20 p-15 position-relative small-card-ct {$reactive ? `` : `not-reactive`}' use:hoverClick={[viewMedia, setHoverState, viewMedia]} on:focus={handleFocus}>
+<div bind:this={container} class='d-flex p-md-20 p-15 position-relative small-card-ct {$reactive ? '' : 'not-reactive'}' use:hoverClick={[viewMedia, setHoverState, viewMedia]} on:focus={handleFocus}>
   {#if preview}
-    <PreviewCard {media} {type} {_variables} bind:element={previewCard}/>
+    <PreviewCard {media} {type} {_variables} bind:element={previewCard} />
   {/if}
-  <div class='item load-in small-card d-flex flex-column pointer {airingInfo?.episode.match(/out for/i) ? `airing` : ``}'>
+  <div class='item load-in small-card d-flex flex-column pointer {airingInfo?.episode.match(/out for/i) ? 'airing' : ''}'>
     {#if airingInfo}
       <div class='w-full text-center pb-10'>
         {airingInfo.episode}&nbsp;
-        <span class='font-weight-bold {airingInfo.episode.match(/out for/i) ? `text-success` : `text-light`}'>
-            {airingInfo.time}
+        <span class='font-weight-bold {airingInfo.episode.match(/out for/i) ? 'text-success' : 'text-light'}'>
+          {airingInfo.time}
         </span>
       </div>
     {/if}
     <div class='d-inline-block position-relative'>
       <span class='airing-badge rounded-10 font-weight-semi-bold text-light bg-success' class:d-none={!airingInfo?.episode?.match(/out for/i)}>AIRING</span>
-      <SmartImage class='cover-img cover-color cover-ratio w-full rounded' color={media?.coverImage?.color || 'var(--tertiary-color)'} images={[media?.coverImage?.extraLarge, media?.coverImage?.medium, './404_cover.png']}/>
+      <SmartImage class='cover-img cover-color cover-ratio w-full rounded' color={media?.coverImage?.color || 'var(--tertiary-color)'} images={[media?.coverImage?.extraLarge, media?.coverImage?.medium, './404_cover.png']} />
       {#if !_variables?.scheduleList}
         <AudioLabel {media} />
       {/if}
@@ -126,7 +126,7 @@
     {#if type || type === 0}
       <div class='context-type d-flex align-items-center'>
         {#if Number.isInteger(type) && type >= 0}
-          <ThumbsUp fill='currentColor' class='pr-5 pb-5 {type === 0 ? `text-muted` : `text-success`}' size='2rem' />
+          <ThumbsUp fill='currentColor' class='pr-5 pb-5 {type === 0 ? 'text-muted' : 'text-success'}' size='2rem' />
         {:else if Number.isInteger(type) && type < 0}
           <ThumbsDown fill='currentColor' class='text-danger pr-5 pb-5' size='2rem' />
         {/if}
@@ -135,7 +135,7 @@
     {/if}
     <div class='text-white font-weight-very-bold font-size-16 title overflow-hidden' class:mb-10={type || type === 0}>
       {#if media.mediaListEntry?.status}
-        <div style:--statusColor={statusColorMap[media.mediaListEntry.status]} class='list-status-circle d-inline-flex overflow-hidden mr-5' title={media.mediaListEntry.status} />
+        <div style:--statusColor={statusColorMap[media.mediaListEntry.status]} class='list-status-circle d-inline-flex overflow-hidden mr-5' title={media.mediaListEntry.status}></div>
       {/if}
       {anilistClient.title(media)}
     </div>

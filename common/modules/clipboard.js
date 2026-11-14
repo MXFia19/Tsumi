@@ -1,7 +1,7 @@
 import 'browser-event-target-emitter'
 import { toast } from 'svelte-sonner'
 
-export function copyToClipboard(text, detail) {
+export function copyToClipboard (text, detail) {
   if (!text) return
   navigator.clipboard.writeText(text)
   toast('Copied to clipboard', {

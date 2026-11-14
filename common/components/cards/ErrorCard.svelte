@@ -29,9 +29,9 @@
           {:else if JSON.stringify(errors)?.match(/extension is not enabled/i) && !errors?.filter(error => !error?.message.match(/extension is not enabled/i))?.length}
             It looks like you haven't added any extension sources, manage your extensions in the settings.
           {:else if errors?.length === 1 && Array.isArray(errors[0].message)}
-           {#each errors[0].message.slice(1) as message}
-             <div>{message}</div>
-           {/each}
+            {#each errors[0].message.slice(1) as message}
+              <div>{message}</div>
+            {/each}
           {:else}
             {#each errors?.filter(error => !error.message.match(/found no results|extension is not enabled/i)) as error}
               <div>{error.message}</div>

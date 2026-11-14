@@ -2,7 +2,7 @@ import { anilistClient } from '@/modules/anilist.js'
 import { cache } from '@/modules/cache.js'
 import { anitomyscript, hasZeroEpisode } from '@/modules/anime/anime.js'
 import { chunks, matchKeys, isValidNumber } from '@/modules/util.js'
-//import levenshtein from 'js-levenshtein'
+// import levenshtein from 'js-levenshtein'
 import Debug from 'debug'
 const debug = Debug('ui:animeresolver')
 
@@ -113,7 +113,7 @@ export default new class AnimeResolver {
     return [...titles]
   }
 
-/*  /!**
+  /*  /!**
    * @param {import('../al.d.ts').Media} media
    * @param {string} name
    * @param {number} threshold (optional, percentage of title length)
@@ -127,7 +127,7 @@ export default new class AnimeResolver {
       if (levenshtein(title.toLowerCase(), target) <= maxDistance) return true
     }
     return false
-  }*/
+  } */
 
   /**
    * resolve anime name based on file name and store it
@@ -143,8 +143,8 @@ export default new class AnimeResolver {
         const titleVariants = [{ ...titleObject }]
         if (obj.anime_year) titleVariants.unshift({ ...titleObject, year: obj.anime_year })
         if (obj.release_information?.length > 0) {
-          if (obj.anime_year) titleVariants.unshift({...titleObject, title: title + ' ' + obj.release_information, year: obj.anime_year})
-          titleVariants.unshift({...titleObject, title: title + ' ' + obj.release_information})
+          if (obj.anime_year) titleVariants.unshift({ ...titleObject, title: title + ' ' + obj.release_information, year: obj.anime_year })
+          titleVariants.unshift({ ...titleObject, title: title + ' ' + obj.release_information })
         }
         return titleVariants
       })
@@ -202,7 +202,7 @@ export default new class AnimeResolver {
     return res.data.Media
   }
 
-  async findAndCacheTitle(fileName, findAnime = true) {
+  async findAndCacheTitle (fileName, findAnime = true) {
     const parseObjs = await anitomyscript(fileName)
     const TYPE_EXCLUSIONS = ['ED', 'ENDING', 'NCED', 'NCOP', 'OP', 'OPENING', 'PREVIEW', 'PV']
 
@@ -225,41 +225,41 @@ export default new class AnimeResolver {
    * @param fileName Array or fileNames or a single fileName to be cleansed.
    * @returns {*}
    */
-  cleanFileName(fileName) {
+  cleanFileName (fileName) {
     const cleanName = (name) => {
       // Preserve specific patterns
       name = name
-          .replace(/\b([A-Za-z]{3}\d)\.(\d)\b/g, '<<AUDIO_$1_$2>>')     // For AAC2.0, DDP2.0, etc.
-          .replace(/\b(H|X)\.(\d{3})\b/g, '<<RES_$1_$2>>')              // For H.264, H.265, X.265, etc.
-          .replace(/\b5\.1\b/g, '<<CHANNEL_5_1>>')                      // For 5.1 channels
-          .replace(/\bFLAC5\.1\b/g, '<<AUDIO_FLAC_5_1>>')               // For FLAC5.1
-          .replace(/\bVol\.(\d+)\b/g, '<<VOL_$1>>')                     // For Vol. followed by any digits
+        .replace(/\b([A-Za-z]{3}\d)\.(\d)\b/g, '<<AUDIO_$1_$2>>') // For AAC2.0, DDP2.0, etc.
+        .replace(/\b(H|X)\.(\d{3})\b/g, '<<RES_$1_$2>>') // For H.264, H.265, X.265, etc.
+        .replace(/\b5\.1\b/g, '<<CHANNEL_5_1>>') // For 5.1 channels
+        .replace(/\bFLAC5\.1\b/g, '<<AUDIO_FLAC_5_1>>') // For FLAC5.1
+        .replace(/\bVol\.(\d+)\b/g, '<<VOL_$1>>') // For Vol. followed by any digits
 
       // Remove file extensions and replace all remaining periods with spaces
       name = name.replace(/\.(mkv|mp4|avi|mov|wmv|flv|webm|m4v|mpeg|mpg|3gp|ogg|ogv)$/i, '').replace(/\./g, ' ')
 
       // Fix common naming issues, the unfortunate depression of horribly named releases. Please don't be like them, do better.
       name = name
-          .replace('1-2', '1/2').replace('1_2', '1/2').replace('½', '1/2') // Ranma 1/2 fix.
-          .replace(/\s*part\s*1\+2/i, '') // Primary Misfit of Demon King fix.
-          .replace(/PANTY AND STOCKING/i, 'PANTY & STOCKING') // PANTY & STOCKING fix.
-          .replace(/Link Click (Season\s*3|S\s*3|\s*03)/i, 'Link Click: Bridon Arc') // Link Click S3 fix.
-          .replace(/Symphogear G (Season\s*2|S\s*2|\s*02)/i, 'Symphogear G') // Symphogear S2 fix. No you are not playing Season 2 of Symphogear G, why would you name it S2EXX but include the actual title.. that just makes it Season 1, aka "Symphogear G".
-          .replace(/Symphogear GX (Season\s*3|S\s*3|\s*03)/i, 'Symphogear GX') // Symphogear S3 fix.... see above.
-          .replace(/Symphogear AXZ (Season\s*4|S\s*4|\s*04)/i, 'Symphogear AXZ') // Symphogear S4 fix.... see above.
-          .replace(/Symphogear XV (Season\s*5|S\s*5|\s*05)/i, 'Symphogear XV') // Symphogear S5 fix.... see above.
-          .replace(/Kiss X Sis|KissXSis/i, 'Kiss×Sis') // Kiss X Sis fix, Anilist is weird using Unicode characters, not a release groups fault.
-          .replace(/Steins_Gate|Steins Gate/i, 'Steins;Gate') // Fix for certain Steins;Gate series being strict about the semicolon.
-          .replace(/Code Geass Movie 01|Code Geass Movie 1/i, 'Code Geass: Lelouch of the Rebellion I - Initiation') // Fix for bad Code Geass releases labeling Movie 1 as Rebellion I.
-          .replace(/Code Geass Movie 02|Code Geass Movie 2/i, 'Code Geass: Lelouch of the Rebellion II - Transgression') // Fix for bad Code Geass releases labeling Movie 2 as Rebellion II.
-          .replace(/Code Geass Movie 03|Code Geass Movie 3/i, 'Code Geass: Lelouch of the Rebellion III - Glorification') // Fix for bad Code Geass releases labeling Movie 3 as Rebellion III.
+        .replace('1-2', '1/2').replace('1_2', '1/2').replace('½', '1/2') // Ranma 1/2 fix.
+        .replace(/\s*part\s*1\+2/i, '') // Primary Misfit of Demon King fix.
+        .replace(/PANTY AND STOCKING/i, 'PANTY & STOCKING') // PANTY & STOCKING fix.
+        .replace(/Link Click (Season\s*3|S\s*3|\s*03)/i, 'Link Click: Bridon Arc') // Link Click S3 fix.
+        .replace(/Symphogear G (Season\s*2|S\s*2|\s*02)/i, 'Symphogear G') // Symphogear S2 fix. No you are not playing Season 2 of Symphogear G, why would you name it S2EXX but include the actual title.. that just makes it Season 1, aka "Symphogear G".
+        .replace(/Symphogear GX (Season\s*3|S\s*3|\s*03)/i, 'Symphogear GX') // Symphogear S3 fix.... see above.
+        .replace(/Symphogear AXZ (Season\s*4|S\s*4|\s*04)/i, 'Symphogear AXZ') // Symphogear S4 fix.... see above.
+        .replace(/Symphogear XV (Season\s*5|S\s*5|\s*05)/i, 'Symphogear XV') // Symphogear S5 fix.... see above.
+        .replace(/Kiss X Sis|KissXSis/i, 'Kiss×Sis') // Kiss X Sis fix, Anilist is weird using Unicode characters, not a release groups fault.
+        .replace(/Steins_Gate|Steins Gate/i, 'Steins;Gate') // Fix for certain Steins;Gate series being strict about the semicolon.
+        .replace(/Code Geass Movie 01|Code Geass Movie 1/i, 'Code Geass: Lelouch of the Rebellion I - Initiation') // Fix for bad Code Geass releases labeling Movie 1 as Rebellion I.
+        .replace(/Code Geass Movie 02|Code Geass Movie 2/i, 'Code Geass: Lelouch of the Rebellion II - Transgression') // Fix for bad Code Geass releases labeling Movie 2 as Rebellion II.
+        .replace(/Code Geass Movie 03|Code Geass Movie 3/i, 'Code Geass: Lelouch of the Rebellion III - Glorification') // Fix for bad Code Geass releases labeling Movie 3 as Rebellion III.
       if (name.match(/Steins;Gate/i) && name.match(/Movie/i)) name = (/Steins;Gate 0/i.test(name) ? name.replace(/Steins;Gate 0/i, 'Steins;Gate 0:') : name.replace(/Steins;Gate/i, 'Steins;Gate:')).replace(/The Movie/i, '').replace(/Movie/i, '') // Steins;Gate movies are very sensitive when resolving.
       if (name.match(/Steins;Gate/i) && name.match(/Divide|β|Beta/i)) name = name.replace(/23β|23 β|23\(β\)|23 \(β\)|β|23Beta|23 Beta|Open the Missing Link|Divide By Zero/i, 'Kyoukaimenjou No Missing Link - Divide By Zero').replace(/Episode 23|23|Episode/i, '') // Steins;Gate 23β incorrectly detects as Episode 23 of the main series, we need to use the full Romaji name.
       if (name.match(/Code Geass /i) && !name.match(/Lelouch|Dakkan|Dakken|Rozé|Roze|Rose|Movie|Akito|Recapture/i)) name = name.replace(/Code Geass/i, 'Code Geass: Hangyaku No Lelouch') // fixes the main series being detected as the Spin-off (alternative) series.
       if (name.match(/Yami Healer/i) && !name.match(/Isshun|Shiteita|Yakutatazu|Tsuihou|Sareta|Toshite|Tanoshiku/i)) name = name.replace(/Yami Healer/i, 'Isshun de Chiryou Shiteita no ni Yakutatazu to Tsuihou Sareta Tensai Chiyushi, Yami Healer Toshite Tanoshiku Ikiru') // stupid fix for a synonym that doesn't exist with The Brilliant Healer's New Life in the Shadows...
       if (name.match(/Kanchigai no Atelier Meister/i) && !name.match(/Mini|Short|Eiyuu|Party/i)) name = name.replace(/Kanchigai no Atelier Meister/i, 'The Unaware Atelier Meister') // stupid fix to prevent the Mini Anime from being fetched due to egregiously long romaji name in the TV series.
       if (name.match(/Prince/i) && name.match(/Tennis/i)) name = name.replace(/new /i, '') // Prince of Tennis fix.
-      if (name.match(/Mugen Gacha/i) && !name.match(/Shinjiteita|Nakamatachi|Korosarekaketa|Fukushuu|Unlimited|Backstabbed|Backwater|Dungeon|Revenge/i)) name = name.replace(/Mugen Gacha/i, `My Gift Lvl 9999 Unlimited Gacha: Backstabbed in a Backwater Dungeon, I'm Out for Revenge!`) // My Gift Lvl 9999 Unlimited Gacha fix.
+      if (name.match(/Mugen Gacha/i) && !name.match(/Shinjiteita|Nakamatachi|Korosarekaketa|Fukushuu|Unlimited|Backstabbed|Backwater|Dungeon|Revenge/i)) name = name.replace(/Mugen Gacha/i, 'My Gift Lvl 9999 Unlimited Gacha: Backstabbed in a Backwater Dungeon, I\'m Out for Revenge!') // My Gift Lvl 9999 Unlimited Gacha fix.
       if (name.match(/Gintama[: ]/i) && name.match(/3-nen|Z-gumi|Ginpachi/i) && !name.match(/Tuuuunnn/i)) name = name.replace(/Gintama[: ]?/i, '') // Mr. Ginpachi's Zany Class fix.
       if (name.match(/Mobile Suit Z /i)) name = name.replace(/ Z /i, ' Zeta ') // Mobile Suit Zeta Gundam fix.
       if (name.match(/Kaijuu 8-gou/i) && name.match(/Mission Recon/i)) name = name.replace(/- Mission Recon| -Mission Recon|Mission Recon/i, '').replace(/Kaijuu 8-gou/i, 'Kaiju No. 8: Mission Recon') // Kaiju No. 8: Mission Recon fix...
@@ -271,22 +271,22 @@ export default new class AnimeResolver {
 
       // fix incorrect marker patterns to prevent them from being detected as episode count...
       name = name
-          .replace(/H 264/i, 'H.264')
-          .replace(/H 265/i, 'H.265')
-          .replace(/MPEG 2/i, 'MPEG-2')
-          .replace(/MPEG 4/i, 'MPEG-4')
-          .replace(/AVC 1/i, 'AVC1')
-          .replace(/\s*2\.0/i, '2.0')
-          .replace(/\s*5\.0/i, '5.0')
-          .replace(/\s*5\.1/i, '5.1')
+        .replace(/H 264/i, 'H.264')
+        .replace(/H 265/i, 'H.265')
+        .replace(/MPEG 2/i, 'MPEG-2')
+        .replace(/MPEG 4/i, 'MPEG-4')
+        .replace(/AVC 1/i, 'AVC1')
+        .replace(/\s*2\.0/i, '2.0')
+        .replace(/\s*5\.0/i, '5.0')
+        .replace(/\s*5\.1/i, '5.1')
 
       // Restore preserved patterns by converting markers back
       name = name
-          .replace(/<<AUDIO_([A-Za-z]{3}\d)_(\d)>>/g, '$1.$2')          // For AAC2.0, DDP2.0, etc.
-          .replace(/<<RES_([HX])_(\d{3})>>/g, '$1.$2')                  // For H.264, H.265, X.265, etc.
-          .replace(/<<CHANNEL_5_1>>/g, '5.1')                           // For 5.1 channels
-          .replace(/<<AUDIO_FLAC_5_1>>/g, 'FLAC5.1')                    // For FLAC5.1
-          .replace(/<<VOL_(\d+)>>/g, 'Vol.$1')                          // For Vol. followed by any digits
+        .replace(/<<AUDIO_([A-Za-z]{3}\d)_(\d)>>/g, '$1.$2') // For AAC2.0, DDP2.0, etc.
+        .replace(/<<RES_([HX])_(\d{3})>>/g, '$1.$2') // For H.264, H.265, X.265, etc.
+        .replace(/<<CHANNEL_5_1>>/g, '5.1') // For 5.1 channels
+        .replace(/<<AUDIO_FLAC_5_1>>/g, 'FLAC5.1') // For FLAC5.1
+        .replace(/<<VOL_(\d+)>>/g, 'Vol.$1') // For Vol. followed by any digits
 
       // Remove extra spaces (collapse multiple spaces into one)
       return name.replace(/\s+/g, ' ').trim()
@@ -304,7 +304,7 @@ export default new class AnimeResolver {
    *
    * @returns {boolean} If any of the media titles matches the parsed anime title.
    */
-  isVerified(media, parseObj, titleKeys, threshold) {
+  isVerified (media, parseObj, titleKeys, threshold) {
     // Edge case: prevent "Golden Time" movie from being misidentified as the TV series.
     if (String(parseObj?.episode_number).replace(/^0+/, '') === '1' && /Golden Time/i.test(parseObj?.anime_title) && media?.format === 'MOVIE') return false
 
@@ -352,7 +352,7 @@ export default new class AnimeResolver {
    * @param {string | string[]} fileName
    * @returns {Promise<any[]>}
    */
-  async resolveFileAnime(fileName) {
+  async resolveFileAnime (fileName) {
     if (!fileName) return [{}]
     const parseObjs = await this.findAndCacheTitle(this.cleanFileName(fileName))
     const fileAnimes = []
@@ -362,7 +362,7 @@ export default new class AnimeResolver {
       let media = this.animeNameCache[this.getCacheKeyForTitle(parseObj)]
       const threshold = parseObj?.anime_title?.length > 15 ? 0.2 : parseObj?.anime_title?.length > 9 ? 0.15 : 0.1 // play nice with small anime titles
       const titleKeys = ['title.userPreferred', 'title.english', 'title.romaji', 'title.native', 'synonyms']
-      let needsVerification = !media || !this.isVerified(media, parseObj, titleKeys, threshold)
+      const needsVerification = !media || !this.isVerified(media, parseObj, titleKeys, threshold)
       // resolve episode, if movie, dont.
       let zeroEpisode = await hasZeroEpisode(media)
       let maxep = (media?.nextAiringEpisode?.episode || media?.episodes) - (zeroEpisode ? 1 : 0)
@@ -432,8 +432,8 @@ export default new class AnimeResolver {
         episode = isValidNumber(mediaSearch.episode) ? Math.abs(mediaSearch.episode) : isValidNumber(episode) ? Math.abs(episode) : episode
         failed = mediaSearch.failed || (isValidNumber(mediaSearch.episode) && Number(mediaSearch.episode) < 0) || failed
       }
-      debug(`${failed || !(media?.title?.userPreferred) ? `Failed to resolve` : `Resolved`} ${parseObj.anime_title} ${parseObj.episode_number} ${episode} ${media?.id}:${media?.title?.userPreferred}`)
-      const guessedEpisode = isValidNumber(episode) ? episode : episode ? episode : isValidNumber(parseObj.episode_number) ? parseObj.episode_number : parseObj.episode_number ? parseObj.episode_number : media?.episodes === 1 ? 1 : media?.format === 'MOVIE' && (media?.episodes ?? 0) <= 1 ? 1 : null
+      debug(`${failed || !(media?.title?.userPreferred) ? 'Failed to resolve' : 'Resolved'} ${parseObj.anime_title} ${parseObj.episode_number} ${episode} ${media?.id}:${media?.title?.userPreferred}`)
+      const guessedEpisode = isValidNumber(episode) ? episode : episode || (isValidNumber(parseObj.episode_number) ? parseObj.episode_number : parseObj.episode_number ? parseObj.episode_number : media?.episodes === 1 ? 1 : media?.format === 'MOVIE' && (media?.episodes ?? 0) <= 1 ? 1 : null)
       fileAnimes.push({
         episode: isValidNumber(guessedEpisode) ? Math.abs(guessedEpisode) === 0 && media?.episodes === 1 ? 1 : Math.abs(guessedEpisode) : guessedEpisode,
         ...(!media || media?.format !== 'MOVIE' || parseObj?.anime_season ? { season: parseObj?.anime_season ? Number(parseObj.anime_season) : 1 } : {}),
@@ -458,7 +458,7 @@ export default new class AnimeResolver {
    *
    * @returns {Object} An object containing the resolved `parseObj`, `media`, `episode`, and a `failed` flag indicating resolution success or failure.
    */
-  async findResult(parseObj, maxep, offset, media, titleKeys, threshold) {
+  async findResult (parseObj, maxep, offset, media, titleKeys, threshold) {
     const prequel = await this.findPrequel(parseObj, offset, media, titleKeys, threshold)
     const defaults = { parseObj, media }
     if (prequel.result.failed) {
@@ -500,7 +500,7 @@ export default new class AnimeResolver {
    *
    * @returns {Object} An object containing the resolved media and episode details, along with an indication of whether a prequel was found.
    */
-  async findPrequel(parseObj, offset, media, titleKeys, threshold) {
+  async findPrequel (parseObj, offset, media, titleKeys, threshold) {
     const prequel = !parseObj.anime_season && (this.findEdge(media, 'PREQUEL')?.node || ((media.format === 'OVA' || media.format === 'ONA') && this.findEdge(media, 'PARENT')?.node))
     debug(`Prequel ${prequel?.id}:${prequel?.title?.userPreferred}`)
     const root = prequel && (await this.resolveSeason({ media: await this.getAnimeById(prequel.id), force: true, offset })).media
@@ -530,7 +530,7 @@ export default new class AnimeResolver {
    *
    * @returns {Object} An object containing the resolved `media`, `parseObj`, `episode`, and a `failed` flag indicating resolution success or failure.
    */
-  async handleEpisode(parseObj, maxep, offset, media, prequel, titleKeys, threshold) {
+  async handleEpisode (parseObj, maxep, offset, media, prequel, titleKeys, threshold) {
     debug(`Attempting last ditch effort for failed result ${parseObj.anime_title}: ${media?.id}:${media?.title?.userPreferred}.`)
     const episodeNumber = Array.isArray(parseObj.episode_number) ? parseObj.episode_number[1] : parseObj.episode_number
     if (parseObj.anime_season) {
@@ -538,7 +538,7 @@ export default new class AnimeResolver {
       if (!result.failed) return { ...result, parseObj }
     }
     if ((episodeNumber > maxep) || (episodeNumber < 0)) {
-      debug(`Detected that the episode number ${episodeNumber} is ${(episodeNumber > maxep) ? `greater than the expect max ${maxep} episode(s)` : `is a negative number`} assuming the actual episode number is in the title for [${parseObj.anime_title}]...`)
+      debug(`Detected that the episode number ${episodeNumber} is ${(episodeNumber > maxep) ? `greater than the expect max ${maxep} episode(s)` : 'is a negative number'} assuming the actual episode number is in the title for [${parseObj.anime_title}]...`)
       const parseNew = await this.findAndCacheTitle(parseObj.anime_title.replace(/S\d+(E\d+)?/, ''))
       const probeMedia = this.animeNameCache[this.getCacheKeyForTitle(parseNew[0])]
       if ((parseNew[0]?.episode_number < maxep) && probeMedia && this.isVerified(probeMedia, parseNew[0], titleKeys, threshold)) {
@@ -562,7 +562,7 @@ export default new class AnimeResolver {
    *
    * @returns {Object} An object containing the resolved `media` object, and a `failed` flag indicating whether the manual search was successful.
    */
-  async manualMediaSearch(parseObj, maxep, media, titleKeys, threshold) {
+  async manualMediaSearch (parseObj, maxep, media, titleKeys, threshold) {
     debug(`Attempting final attempt to manual search for failed result ${parseObj.anime_title}: ${media?.id}:${media?.title?.userPreferred}.`)
     const titles = new Set()
     const multiTitleMatch = parseObj.anime_title.match(/^(.+?)\s*\((.+?)\)$/)
@@ -575,7 +575,7 @@ export default new class AnimeResolver {
       const search = await anilistClient.search({ search: title, ...(media ? { id_not: media.id } : {}), ...(parseObj.anime_season ? { format_not: ['OVA', ...((Number(parseObj.anime_season) > 1) ? ['MOVIE'] : [])] } : { }) })
       if (search?.data?.Page?.media) {
         for (const searchMedia of search.data.Page.media) {
-          if (this.isVerified(searchMedia, {...parseObj, anime_title: title}, titleKeys, threshold)) {
+          if (this.isVerified(searchMedia, { ...parseObj, anime_title: title }, titleKeys, threshold)) {
             debug(`Found media from manual search for ${parseObj.anime_title}:${parseObj.anime_season}:${parseObj.episode_number}: ${searchMedia?.id}:${searchMedia?.title?.userPreferred} while ignoring the original compound ${media?.id}:${media?.title?.userPreferred}, this is likely correct...`)
             if (parseObj.anime_season > 1) return { media: await this.resolveBySeason(searchMedia, parseObj) }
             else if (searchMedia.status === 'FINISHED' && parseObj.episode_number > searchMedia.episodes) return (await this.findPrequel(parseObj, 0, searchMedia, titleKeys, threshold))?.result
@@ -657,7 +657,7 @@ export default new class AnimeResolver {
    * @param root - If we are calculating FROM root.
    * @returns {Promise<{media: import('../al.d.ts').Media}>}
    */
-  async resolveBySeason(media, parseObj, sequelNumber = 0, root = false) {
+  async resolveBySeason (media, parseObj, sequelNumber = 0, root = false) {
     if (!parseObj?.anime_season) return media
     if (root) {
       const sequel = this.findEdge(media, 'SEQUEL')?.node

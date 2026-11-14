@@ -8,7 +8,7 @@
   export let css = ''
   export let innerCss = ''
 
-  function handleKeydown(event) {
+  function handleKeydown (event) {
     if (!showModal || event.key !== 'Escape' || !modal.focused || modal.focused !== id) return
     const target = event.target
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
@@ -24,7 +24,7 @@
   <div class='modal-soft-dialog d-flex align-items-center justify-content-center pt-40 {innerCss}' tabindex='-1' role='button' class:hide={!showModal} class:show={showModal} on:pointerdown|self={close}>
     <div class='overflow-hidden d-flex flex-column overflow-y-scroll scroll-container {$$restProps.class}'>
       {#if showModal || shouldRender}
-        <slot />
+        <slot></slot>
       {/if}
     </div>
   </div>

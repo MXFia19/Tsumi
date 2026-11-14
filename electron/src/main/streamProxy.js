@@ -7,7 +7,7 @@ const debug = Debug('electron:streaming-proxy')
 let server = null
 let expressApp = null
 
-export async function startStreamProxy() {
+export async function startStreamProxy () {
   if (server) return server.address().port
 
   return new Promise((resolve, reject) => {
@@ -168,7 +168,7 @@ export async function startStreamProxy() {
   })
 }
 
-export async function stopStreamProxy() {
+export async function stopStreamProxy () {
   if (!server) return
 
   return new Promise((resolve) => {
@@ -181,7 +181,7 @@ export async function stopStreamProxy() {
   })
 }
 
-export function getProxyUrl(streamUrl, headers = {}, proxyPort) {
+export function getProxyUrl (streamUrl, headers = {}, proxyPort) {
   if (!proxyPort) return streamUrl
 
   const encodedUrl = encodeURIComponent(streamUrl)

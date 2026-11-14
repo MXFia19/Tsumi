@@ -105,7 +105,7 @@
                 {property.toString().replace(/_/g, ' ').toLowerCase()}
               {/if}
             </div>
-            <div />
+            <div></div>
           </div>
         </div>
       {/if}

@@ -26,24 +26,25 @@ import http from 'http'
  */
 
 const pendingResponses = new Map()
-export const youtubeServer = !development ? http.createServer((req, res) => {
-  const url = new URL(req.url, `http://localhost`)
-  if (url.pathname === '/loaded') {
-    const responseId = url.searchParams.get('id')
-    const pendingRes = pendingResponses.get(responseId)
-    if (pendingRes) {
-      pendingRes.end('</body></html>')
-      pendingResponses.delete(responseId)
+export const youtubeServer = !development
+  ? http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost')
+    if (url.pathname === '/loaded') {
+      const responseId = url.searchParams.get('id')
+      const pendingRes = pendingResponses.get(responseId)
+      if (pendingRes) {
+        pendingRes.end('</body></html>')
+        pendingResponses.delete(responseId)
+      }
+      res.end('ok')
+      return
     }
-    res.end('ok')
-    return
-  }
-  const pathParts = url.pathname.split('/').filter(Boolean)
-  const videoId = pathParts[pathParts.length - 1]
-  const params = url.searchParams.toString()
-  const responseId = String(Date.now() + Math.random())
-  res.writeHead(200, { 'Content-Type': 'text/html', 'Referrer-Policy': 'strict-origin-when-cross-origin' })
-  res.write(`<!DOCTYPE html>
+    const pathParts = url.pathname.split('/').filter(Boolean)
+    const videoId = pathParts[pathParts.length - 1]
+    const params = url.searchParams.toString()
+    const responseId = String(Date.now() + Math.random())
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Referrer-Policy': 'strict-origin-when-cross-origin' })
+    res.write(`<!DOCTYPE html>
 <html lang='en'>
 <head>
   <meta charset='UTF-8'>
@@ -62,9 +63,10 @@ export const youtubeServer = !development ? http.createServer((req, res) => {
     referrerpolicy='strict-origin-when-cross-origin'
     onload="fetch('/loaded?id=${responseId}')"
   ></iframe>`)
-  pendingResponses.set(responseId, res)
-  req.on('close', () => pendingResponses.delete(responseId))
-}) : {}
+    pendingResponses.set(responseId, res)
+    req.on('close', () => pendingResponses.delete(responseId))
+  })
+  : {}
 
 youtubeServer?.listen?.(0, 'localhost', () => console.log(`YouTube server running on http://localhost:${youtubeServer.address().port}`))
 ipcMain.handle('electron:getYouTube', () => development ? 'https://www.youtube-nocookie.com' : `http://localhost:${youtubeServer.address().port}`)

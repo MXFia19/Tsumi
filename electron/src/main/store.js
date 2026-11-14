@@ -31,7 +31,7 @@ class Store {
   /**
    * Resets the store to its default values.
    */
-  reset() {
+  reset () {
     this.data = {}
     writeFileSync(this.path, JSON.stringify(this.data))
   }
@@ -39,7 +39,7 @@ class Store {
   /**
    * Deletes the JSON file completely.
    */
-  delete() {
+  delete () {
     if (existsSync(this.path)) unlinkSync(this.path)
   }
 }

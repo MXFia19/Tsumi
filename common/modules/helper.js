@@ -11,7 +11,6 @@ import Debug from 'debug'
 const debug = Debug('ui:helper')
 
 export default class Helper {
-
   static statusName = {
     CURRENT: 'Watching',
     PLANNING: 'Planning',
@@ -21,8 +20,8 @@ export default class Helper {
     REPEATING: 'Rewatching'
   }
 
-  static sortMap(sort) {
-    switch(sort) {
+  static sortMap (sort) {
+    switch (sort) {
       case 'UPDATED_TIME_DESC':
         return 'list_updated_at'
       case 'STARTED_ON_DESC':
@@ -36,12 +35,12 @@ export default class Helper {
     }
   }
 
-  static statusMap(status) {
+  static statusMap (status) {
     return mapStatus(status)
   }
 
-  static airingMap(status) {
-    switch(status) {
+  static airingMap (status) {
+    switch (status) {
       case 'finished_airing':
         return 'FINISHED'
       case 'currently_airing':
@@ -51,7 +50,7 @@ export default class Helper {
     }
   }
 
-  static getFuzzyDate(media, status) {
+  static getFuzzyDate (media, status) {
     const updatedDate = new Date()
     const fuzzyDate = { year: updatedDate.getFullYear(), month: updatedDate.getMonth() + 1, day: updatedDate.getDate() }
     let startedAt = media.mediaListEntry?.startedAt?.year && media.mediaListEntry?.startedAt?.month && media.mediaListEntry?.startedAt?.day ? media.mediaListEntry.startedAt : (['CURRENT', 'REPEATING'].includes(status) ? fuzzyDate : undefined)
@@ -75,41 +74,41 @@ export default class Helper {
     return safe
   }
 
-  static isAniAuth() {
+  static isAniAuth () {
     return alToken
   }
 
-  static isMalAuth() {
+  static isMalAuth () {
     return malToken
   }
 
-  static isAuthorized() {
+  static isAuthorized () {
     return isAuthorized()
   }
 
-  static getClient() {
+  static getClient () {
     return this.isAniAuth() ? anilistClient : malClient
   }
 
-  static getUser() {
+  static getUser () {
     return (alToken || malToken)?.viewer?.data?.Viewer
   }
 
-  static getUserAvatar() {
+  static getUserAvatar () {
     return this.getUser()?.avatar?.large || this.getUser()?.avatar?.medium || this.getUser()?.picture
   }
 
-  static isUserSort(variables) {
+  static isUserSort (variables) {
     return ['UPDATED_TIME_DESC', 'STARTED_ON_DESC', 'FINISHED_ON_DESC', 'PROGRESS_DESC', 'USER_SCORE_DESC'].includes(variables?.sort)
   }
 
-  static userLists(variables) {
+  static userLists (variables) {
     return (!this.isUserSort(variables) || variables.sort === 'UPDATED_TIME_DESC')
-        ? this.getClient().userLists.value
-        : this.getClient().getUserLists({sort: (this.isAniAuth() ? variables.sort : this.sortMap(variables.sort))})
+      ? this.getClient().userLists.value
+      : this.getClient().getUserLists({ sort: (this.isAniAuth() ? variables.sort : this.sortMap(variables.sort)) })
   }
 
-  static async entry(media, variables) {
+  static async entry (media, variables) {
     let res
     if (!variables.token) {
       res = await this.getClient().entry(variables)
@@ -133,7 +132,7 @@ export default class Helper {
     return res
   }
 
-  static async delete(media, variables) {
+  static async delete (media, variables) {
     let res
     if (!variables.token) {
       res = await this.getClient().delete(variables)
@@ -148,7 +147,7 @@ export default class Helper {
     return res
   }
 
-  static async updateEntry(filemedia) {
+  static async updateEntry (filemedia) {
     // check if values exist
     if (filemedia.media && this.isAuthorized()) {
       const { media, failed } = filemedia
@@ -226,7 +225,7 @@ export default class Helper {
               let res
               if (profile.viewer?.data?.Viewer?.avatar) {
                 variables.score = (cachedMedia.mediaListEntry?.score ? (cachedMedia.mediaListEntry?.score * 10) : 0)
-                const lists = (await anilistClient.getUserLists({userID: profile.viewer.data.Viewer.id, token: profile.token}))?.data?.MediaListCollection?.lists?.flatMap(list => list.entries).find(({ media: listMedia }) => listMedia.id === cachedMedia.id)?.media?.mediaListEntry?.customLists?.filter(list => list.enabled).map(list => list.name) || []
+                const lists = (await anilistClient.getUserLists({ userID: profile.viewer.data.Viewer.id, token: profile.token }))?.data?.MediaListCollection?.lists?.flatMap(list => list.entries).find(({ media: listMedia }) => listMedia.id === cachedMedia.id)?.media?.mediaListEntry?.customLists?.filter(list => list.enabled).map(list => list.name) || []
                 res = await anilistClient.entry({ ...variables, lists, token: profile.token })
               } else {
                 variables.score = (cachedMedia.mediaListEntry?.score ? cachedMedia.mediaListEntry?.score : 0)
@@ -242,8 +241,8 @@ export default class Helper {
     }
   }
 
-  static listToast(res, description, profile)  {
-    const who = (profile ? ' for ' + profile.viewer.data.Viewer.name + (profile.viewer?.data?.Viewer?.avatar ? ' (AniList)' : ' (MyAnimeList)')  : '')
+  static listToast (res, description, profile) {
+    const who = (profile ? ' for ' + profile.viewer.data.Viewer.name + (profile.viewer?.data?.Viewer?.avatar ? ' (AniList)' : ' (MyAnimeList)') : '')
     if (res?.data?.mediaListEntry || res?.data?.SaveMediaListEntry) {
       debug(`List Updated ${who}: ${description.replace(/\n/g, ', ')}`)
       if (!profile && (settings.value.toasts.includes('All') || settings.value.toasts.includes('Successes'))) {
@@ -264,11 +263,11 @@ export default class Helper {
     }
   }
 
-  static getPaginatedMediaList(page, perPage, variables, mediaList) {
+  static getPaginatedMediaList (page, perPage, variables, mediaList) {
     debug('Getting custom paged media list')
     return (variables.hideSubs ? malDubs.dubLists.value : Promise.resolve()).then(dubLists => {
       const ids = this.isAniAuth() ? mediaList.filter(({ media }) => {
-          if ((!variables.hideSubs || dubLists.dubbed.includes(media.idMal)) &&
+        if ((!variables.hideSubs || dubLists.dubbed.includes(media.idMal)) &&
             matchKeys(media, variables.search, ['title.userPreferred', 'title.english', 'title.romaji', 'title.native']) &&
             (!variables.genre || variables.genre.map(genre => genre.trim().toLowerCase()).every(genre => media.genres.map(genre => genre.trim().toLowerCase()).includes(genre))) &&
             (!variables.tag || variables.tag.map(tag => tag.trim().toLowerCase()).every(tag => media.tags.map(tag => tag.name.trim().toLowerCase()).includes(tag))) &&
@@ -279,37 +278,37 @@ export default class Helper {
             (!variables.status || (typeof variables.status === 'string' && variables.status === media.status) || (Array.isArray(variables.status) && variables.status.includes(media.status))) &&
             (!variables.status_not || (typeof variables.status_not === 'string' && variables.status_not !== media.status) || (Array.isArray(variables.status_not) && !variables.status_not.includes(media.status))) &&
             (!variables.continueWatching || (media.status === 'FINISHED' || media.mediaListEntry?.progress < media.nextAiringEpisode?.episode - 1))) {
-            return true
+          return true
+        }
+      }).sort((a, b) => {
+        if (this.isUserSort(variables)) {
+          switch (variables.sort) {
+            case 'STARTED_ON_DESC':
+              return ((b.media?.mediaListEntry?.startedAt?.year || 0) * 10000 + (b.media?.mediaListEntry?.startedAt?.month || 0) * 100 + (b.media?.mediaListEntry?.startedAt?.day || 0)) -
+                     ((a.media?.mediaListEntry?.startedAt?.year || 0) * 10000 + (a.media?.mediaListEntry?.startedAt?.month || 0) * 100 + (a.media?.mediaListEntry?.startedAt?.day || 0))
+            case 'FINISHED_ON_DESC':
+              return ((b.media?.mediaListEntry?.completedAt?.year || 0) * 10000 + (b.media?.mediaListEntry?.completedAt?.month || 0) * 100 + (b.media?.mediaListEntry?.completedAt?.day || 0)) -
+                     ((a.media?.mediaListEntry?.completedAt?.year || 0) * 10000 + (a.media?.mediaListEntry?.completedAt?.month || 0) * 100 + (a.media?.mediaListEntry?.completedAt?.day || 0))
+            case 'PROGRESS_DESC':
+              const getSortValue = (media) => {
+                const progress = media?.mediaListEntry?.progress ?? 0
+                const totalEpisodes = media?.episodes ?? getMediaMaxEp(media) ?? 0
+                if (progress === 0) return Infinity
+                if (totalEpisodes === 0) return -progress
+                const distance = totalEpisodes - progress
+                return distance <= 0 ? -Infinity : distance
+              }
+              return getSortValue(a.media) - getSortValue(b.media)
+            case 'USER_SCORE_DESC': // doesn't exist, AniList uses SCORE_DESC for both MediaSort and MediaListSort.
+              return (b.media?.mediaListEntry?.score || 0) - (a.media?.mediaListEntry?.score || 0)
+            case 'UPDATED_TIME_DESC':
+              return (b.media?.mediaListEntry?.updatedAt || 0) - (a.media?.mediaListEntry?.updatedAt || 0)
           }
-        }).sort((a, b) => {
-          if (this.isUserSort(variables)) {
-            switch (variables.sort) {
-              case 'STARTED_ON_DESC':
-                return ((b.media?.mediaListEntry?.startedAt?.year || 0) * 10000 + (b.media?.mediaListEntry?.startedAt?.month || 0) * 100 + (b.media?.mediaListEntry?.startedAt?.day || 0))
-                     - ((a.media?.mediaListEntry?.startedAt?.year || 0) * 10000 + (a.media?.mediaListEntry?.startedAt?.month || 0) * 100 + (a.media?.mediaListEntry?.startedAt?.day || 0))
-              case 'FINISHED_ON_DESC':
-                return ((b.media?.mediaListEntry?.completedAt?.year || 0) * 10000 + (b.media?.mediaListEntry?.completedAt?.month || 0) * 100 + (b.media?.mediaListEntry?.completedAt?.day || 0))
-                     - ((a.media?.mediaListEntry?.completedAt?.year || 0) * 10000 + (a.media?.mediaListEntry?.completedAt?.month || 0) * 100 + (a.media?.mediaListEntry?.completedAt?.day || 0))
-              case 'PROGRESS_DESC':
-                const getSortValue = (media) => {
-                  const progress = media?.mediaListEntry?.progress ?? 0
-                  const totalEpisodes = media?.episodes ?? getMediaMaxEp(media) ?? 0
-                  if (progress === 0) return Infinity
-                  if (totalEpisodes === 0) return -progress
-                  const distance = totalEpisodes - progress
-                  return distance <= 0 ? -Infinity : distance
-                }
-                return getSortValue(a.media) - getSortValue(b.media)
-              case 'USER_SCORE_DESC': // doesn't exist, AniList uses SCORE_DESC for both MediaSort and MediaListSort.
-                return (b.media?.mediaListEntry?.score || 0) - (a.media?.mediaListEntry?.score || 0)
-              case 'UPDATED_TIME_DESC':
-                return (b.media?.mediaListEntry?.updatedAt || 0) - (a.media?.mediaListEntry?.updatedAt || 0)
-            }
-          }
-          return 0
-        }) // no need to handle sorting for this, we implemented sorting (above) for Anilist because Watching and Rewatching are separate lists. This is not the case for MyAnimeList, it uses "is_rewatching" boolean as an indicator instead.
-          .map(({ media }) => (this.isUserSort(variables) ? media : media.id)) : mediaList.filter(({ node }) => {
-          if ((!variables.hideSubs || dubLists.dubbed.includes(node.id)) &&
+        }
+        return 0
+      }) // no need to handle sorting for this, we implemented sorting (above) for Anilist because Watching and Rewatching are separate lists. This is not the case for MyAnimeList, it uses "is_rewatching" boolean as an indicator instead.
+        .map(({ media }) => (this.isUserSort(variables) ? media : media.id)) : mediaList.filter(({ node }) => {
+        if ((!variables.hideSubs || dubLists.dubbed.includes(node.id)) &&
             matchKeys(node, variables.search, ['title', 'alternative_titles.en', 'alternative_titles.ja']) &&
             (!variables.season || variables.season.toLowerCase() === node.start_season?.season.toLowerCase()) &&
             (!variables.year || variables.year === node.start_season?.year) &&
@@ -317,10 +316,10 @@ export default class Helper {
             (!variables.format_not || (Array.isArray(variables.format_not) ? !((variables.format_not.includes(node.media_type.toUpperCase()) || (variables.format_not.includes('TV_SHORT') && (node.media_type.toUpperCase() === 'TV') && (node.average_episode_duration < 1200))) && (!variables.format_not.includes('TV') || variables.format_not.includes('TV_SHORT') || (node.average_episode_duration >= 1200))) : !(((variables.format_not === node.media_type.toUpperCase()) || ((variables.format_not === 'TV_SHORT') && (node.media_type.toUpperCase() === 'TV') && (node.average_episode_duration < 1200))) && ((variables.format_not !== 'TV') || (variables.format_not === 'TV_SHORT') || (node.average_episode_duration >= 1200))))) &&
             (!variables.status || (typeof variables.status === 'string' && variables.status === this.airingMap(node.status)) || (Array.isArray(variables.status) && variables.status.includes(this.airingMap(node.status)))) &&
             (!variables.status_not || (typeof variables.status_not === 'string' && variables.status_not !== this.airingMap(node.status)) || (Array.isArray(variables.status_not) && !variables.status_not.includes(this.airingMap(node.status))))) {
-            // api does not provide airing episode or tags, additionally genres are inaccurate and tags do not exist.
-            return true
-          }
-        }).map(({ node }) => node.id).filter(Boolean)
+          // api does not provide airing episode or tags, additionally genres are inaccurate and tags do not exist.
+          return true
+        }
+      }).map(({ node }) => node.id).filter(Boolean)
       if (!ids.length) return {}
       if (this.isUserSort(variables)) {
         debug(`Handling page media list with user specific sorting ${variables.sort}`)
@@ -332,23 +331,25 @@ export default class Helper {
         const paginatedIds = ids.slice(startIndex, endIndex)
         const hasNextPage = ids.length > endIndex
         const idIndexMap = paginatedIds.reduce((map, id, index) => { map[id] = index; return map }, {})
-        return this.isAniAuth() ? {
-          data: {
-            Page: {
-              pageInfo: {
-                hasNextPage: hasNextPage
-              },
-              media: paginatedIds
+        return this.isAniAuth()
+          ? {
+              data: {
+                Page: {
+                  pageInfo: {
+                    hasNextPage
+                  },
+                  media: paginatedIds
+                }
+              }
             }
-          }
-        } : anilistClient.searchIDS({ page: 1, perPage, idMal: paginatedIds, ...this.sanitiseObject(updatedVariables) }).then(res => {
-          res.data.Page.pageInfo.hasNextPage = hasNextPage
-          res.data.Page.media = res.data.Page.media.sort((a, b) => { return idIndexMap[a.idMal] - idIndexMap[b.idMal] })
-          return res
-        })
+          : anilistClient.searchIDS({ page: 1, perPage, idMal: paginatedIds, ...this.sanitiseObject(updatedVariables) }).then(res => {
+            res.data.Page.pageInfo.hasNextPage = hasNextPage
+            res.data.Page.media = res.data.Page.media.sort((a, b) => { return idIndexMap[a.idMal] - idIndexMap[b.idMal] })
+            return res
+          })
       } else {
         debug(`Handling page media list with non-specific sorting ${variables.sort}`)
-        return anilistClient.searchIDS({ page, perPage, ...({[this.isAniAuth() ? 'id' : 'idMal']: ids}), ...this.sanitiseObject(variables) }).then(res => {
+        return anilistClient.searchIDS({ page, perPage, ...({ [this.isAniAuth() ? 'id' : 'idMal']: ids }), ...this.sanitiseObject(variables) }).then(res => {
           return res
         })
       }

@@ -1,22 +1,22 @@
 <script>
-  import { nowPlaying as media } from "@/components/MediaHandler.svelte";
-  import { hasUnreadNotifications } from "@/modals/NotificationsModal.svelte";
-  import { updateState } from "@/modals/UpdateModal.svelte";
-  import { settings } from "@/modules/settings.js";
-  import { SUPPORTS } from "@/modules/support.js";
-  import { status } from "@/modules/networking.js";
-  import { click } from "@/modules/click.js";
-  import { toast } from "svelte-sonner";
-  import Helper from "@/modules/helper.js";
-  import { page, modal, playPage } from "@/modules/navigation.js";
-  import { IPC, ELECTRON, VERSION } from "@/modules/bridge.js";
+  import { nowPlaying as media } from '@/components/MediaHandler.svelte'
+  import { hasUnreadNotifications } from '@/modals/NotificationsModal.svelte'
+  import { updateState } from '@/modals/UpdateModal.svelte'
+  import { settings } from '@/modules/settings.js'
+  import { SUPPORTS } from '@/modules/support.js'
+  import { status } from '@/modules/networking.js'
+  import { click } from '@/modules/click.js'
+  import { toast } from 'svelte-sonner'
+  import Helper from '@/modules/helper.js'
+  import { page, modal, playPage } from '@/modules/navigation.js'
+  import { IPC, ELECTRON, VERSION } from '@/modules/bridge.js'
   import {
     goBack,
     goForward,
     canGoBack,
-    canGoForward,
-  } from "@/modules/navigation.js";
-  import SidebarLink from "@/components/navigation/SidebarLink.svelte";
+    canGoForward
+  } from '@/modules/navigation.js'
+  import SidebarLink from '@/components/navigation/SidebarLink.svelte'
   import {
     MoveLeft,
     MoveRight,
@@ -33,42 +33,42 @@
     Settings,
     Users,
     Bell,
-    BellDot,
-  } from "lucide-svelte";
+    BellDot
+  } from 'lucide-svelte'
 
-  const btnSize = !SUPPORTS.isAndroid ? "3.1rem" : "3.6rem";
-  let _status = status.value;
-  $: statusTransition = false;
+  const btnSize = !SUPPORTS.isAndroid ? '3.1rem' : '3.6rem'
+  let _status = status.value
+  $: statusTransition = false
   $: {
     if (_status !== $status) {
-      statusTransition = true;
-      setTimeout(() => (statusTransition = false), 3000);
-      _status = $status;
+      statusTransition = true
+      setTimeout(() => (statusTransition = false), 3000)
+      _status = $status
     }
   }
-  let fullScreen = false;
+  let fullScreen = false
   ELECTRON.isFullScreen().then((isFullScreen) => {
-    fullScreen = isFullScreen;
-    ELECTRON.onFullScreen((isFullScreen) => (fullScreen = isFullScreen));
-  });
+    fullScreen = isFullScreen
+    ELECTRON.onFullScreen((isFullScreen) => (fullScreen = isFullScreen))
+  })
 </script>
 
 <div
-  class="sidebar z-80 d-md-block"
+  class='sidebar z-80 d-md-block'
   class:animated={$settings.expandingSidebar}
 >
   <div
-    class="sidebar-menu h-full d-flex flex-column m-0 pb-5 animate"
+    class='sidebar-menu h-full d-flex flex-column m-0 pb-5 animate'
     class:br-10={!$settings.expandingSidebar}
   >
     <div
-      class="w-50 top-0 flex-shrink-0 pointer-events-none {_status?.match(
-        /offline/i,
+      class='w-50 top-0 flex-shrink-0 pointer-events-none {_status?.match(
+        /offline/i
       )
-        ? `h-25`
-        : `${VERSION.platform === `darwin` && !fullScreen ? `h-25` : `h-0`}`}"
+        ? 'h-25'
+        : `${VERSION.platform === 'darwin' && !fullScreen ? 'h-25' : 'h-0'}`}'
       class:status-transition={statusTransition}
-    />
+    ></div>
     {#if !SUPPORTS.isAndroid}
       <!--
       <div
@@ -106,69 +106,69 @@
       </div>
       -->
       <img
-        src="./icon_filled.png"
-        tabindex="-1"
-        class="w-50 h-50 m-10 pointer d-sm-h-none p-5"
-        alt="ico"
+        src='./icon_filled.png'
+        tabindex='-1'
+        class='w-50 h-50 m-10 pointer d-sm-h-none p-5'
+        alt='ico'
         use:click={() => page.navigateTo(page.HOME)}
       />
     {/if}
     <SidebarLink
       click={() => page.navigateTo(page.HOME)}
       _page={page.HOME}
-      icon="home"
-      text="Home"
-      css={!SUPPORTS.isAndroid ? `mt-md-h-auto` : ``}
+      icon='home'
+      text='Home'
+      css={!SUPPORTS.isAndroid ? 'mt-md-h-auto' : ''}
       let:active
     >
       <Home
         size={btnSize}
-        class="flex-shrink-0 p-5 m-5 rounded"
-        strokeWidth="2.5"
-        color={active ? "currentColor" : "var(--gray-color-very-dim)"}
+        class='flex-shrink-0 p-5 m-5 rounded'
+        strokeWidth='2.5'
+        color={active ? 'currentColor' : 'var(--gray-color-very-dim)'}
       />
     </SidebarLink>
     <SidebarLink
       click={() => page.navigateTo(page.SEARCH)}
       _page={page.SEARCH}
-      icon="search"
-      text="Search"
+      icon='search'
+      text='Search'
       let:active
     >
       <Search
         size={btnSize}
-        class="flex-shrink-0 p-5 m-5 rounded"
-        stroke-width="2.5"
-        stroke="currentColor"
-        color={active ? "currentColor" : "var(--gray-color-very-dim)"}
+        class='flex-shrink-0 p-5 m-5 rounded'
+        stroke-width='2.5'
+        stroke='currentColor'
+        color={active ? 'currentColor' : 'var(--gray-color-very-dim)'}
       />
     </SidebarLink>
     <SidebarLink
       click={() => page.navigateTo(page.SCHEDULE)}
       _page={page.SCHEDULE}
-      icon="schedule"
-      text="Schedule"
+      icon='schedule'
+      text='Schedule'
       let:active
     >
       <CalendarSearch
         size={btnSize}
-        class="flex-shrink-0 p-5 m-5 rounded"
-        strokeWidth="2.5"
-        color={active ? "currentColor" : "var(--gray-color-very-dim)"}
+        class='flex-shrink-0 p-5 m-5 rounded'
+        strokeWidth='2.5'
+        color={active ? 'currentColor' : 'var(--gray-color-very-dim)'}
       />
     </SidebarLink>
     <SidebarLink
       click={() => page.navigateTo(page.CATALOGS)}
       _page={page.CATALOGS}
-      icon="catalogs"
-      text="Catalogs"
+      icon='catalogs'
+      text='Catalogs'
       let:active
     >
       <Clapperboard
         size={btnSize}
-        class="flex-shrink-0 p-5 m-5 rounded"
-        strokeWidth="2.5"
-        color={active ? "currentColor" : "var(--gray-color-very-dim)"}
+        class='flex-shrink-0 p-5 m-5 rounded'
+        strokeWidth='2.5'
+        color={active ? 'currentColor' : 'var(--gray-color-very-dim)'}
       />
     </SidebarLink>
     {#if $media?.media}
@@ -176,107 +176,107 @@
       <SidebarLink
         click={() => {
           if ($page !== page.PLAYER) {
-            page.navigateTo(page.PLAYER);
+            page.navigateTo(page.PLAYER)
           } else if (
             currentMedia?.id === $media?.media.id &&
             modal.length === 1
           ) {
-            modal.close(modal.ANIME_DETAILS);
+            modal.close(modal.ANIME_DETAILS)
           } else {
-            modal.open(modal.ANIME_DETAILS, $media?.media);
+            modal.open(modal.ANIME_DETAILS, $media?.media)
           }
         }}
-        icon="queue_music"
-        text={$media?.display ? "Last Watched" : "Now Playing"}
+        icon='queue_music'
+        text={$media?.display ? 'Last Watched' : 'Now Playing'}
         _modal={modal.ANIME_DETAILS}
         let:active
       >
         <svelte:component
           this={$media?.display ? History : ListVideo}
           size={btnSize}
-          class="flex-shrink-0 p-5 m-5 rounded"
-          strokeWidth="2.5"
+          class='flex-shrink-0 p-5 m-5 rounded'
+          strokeWidth='2.5'
           color={active && currentMedia?.id === $media?.media?.id
-            ? "currentColor"
-            : "var(--gray-color-very-dim)"}
+            ? 'currentColor'
+            : 'var(--gray-color-very-dim)'}
         />
       </SidebarLink>
     {/if}
     <SidebarLink
       click={() => page.navigateTo(page.WATCH_TOGETHER)}
       _page={page.WATCH_TOGETHER}
-      icon="groups"
-      text="Watch Together"
+      icon='groups'
+      text='Watch Together'
       let:active
     >
       <Users
         size={btnSize}
-        class="flex-shrink-0 p-5 m-5 rounded"
-        strokeWidth="2.5"
-        color={active ? "currentColor" : "var(--gray-color-very-dim)"}
+        class='flex-shrink-0 p-5 m-5 rounded'
+        strokeWidth='2.5'
+        color={active ? 'currentColor' : 'var(--gray-color-very-dim)'}
       />
     </SidebarLink>
 
-    {#if $updateState === "downloading"}
+    {#if $updateState === 'downloading'}
       <SidebarLink
         click={() => {
-          toast("Update is downloading...", {
+          toast('Update is downloading...', {
             description:
-              "This may take a moment, the update will be ready shortly.",
-          });
+              'This may take a moment, the update will be ready shortly.'
+          })
         }}
-        icon="download"
-        text="Update Downloading..."
-        css="d-sm-h-none"
+        icon='download'
+        text='Update Downloading...'
+        css='d-sm-h-none'
         _modal={modal.UPDATE_PROMPT}
         let:active
         let:hovering
       >
         <CloudDownload
           size={btnSize}
-          class="flex-shrink-0 p-5 m-5 rounded fill-1"
-          strokeWidth="2.5"
-          color="currentColor"
-          style="--fill-button-color: {hovering
-            ? `var(--gray-color-very-dim)`
-            : `var(--tertiary-color-light)`}"
+          class='flex-shrink-0 p-5 m-5 rounded fill-1'
+          strokeWidth='2.5'
+          color='currentColor'
+          style='--fill-button-color: {hovering
+            ? 'var(--gray-color-very-dim)'
+            : 'var(--tertiary-color-light)'}'
         />
       </SidebarLink>
-    {:else if $updateState === "ready" || $updateState === "ignored" || $updateState === "aborted"}
+    {:else if $updateState === 'ready' || $updateState === 'ignored' || $updateState === 'aborted'}
       <SidebarLink
         click={() => {
-          $updateState = "ready";
+          $updateState = 'ready'
         }}
-        icon="download"
-        text="Update Available!"
-        css="d-sm-h-none"
+        icon='download'
+        text='Update Available!'
+        css='d-sm-h-none'
         _modal={modal.UPDATE_PROMPT}
         let:active
         let:hovering
       >
         <CloudDownload
           size={btnSize}
-          class="flex-shrink-0 p-5 m-5 rounded fill-1"
-          strokeWidth="2.5"
-          color="currentColor"
-          style="--fill-button-color: {hovering
-            ? `var(--gray-color-very-dim)`
-            : `var(--success-color-light)`}"
+          class='flex-shrink-0 p-5 m-5 rounded fill-1'
+          strokeWidth='2.5'
+          color='currentColor'
+          style='--fill-button-color: {hovering
+            ? 'var(--gray-color-very-dim)'
+            : 'var(--success-color-light)'}'
         />
       </SidebarLink>
     {/if}
     <SidebarLink
       click={() => {
-        modal.toggle(modal.NOTIFICATIONS);
+        modal.toggle(modal.NOTIFICATIONS)
       }}
-      icon="bell"
-      text="Notifications"
-      css={$updateState !== `downloading` &&
-      $updateState !== `ready` &&
-      $updateState !== `ignored` &&
-      !SUPPORTS.isAndroid
-        ? `mt-md-h-auto`
-        : ``}
+      icon='bell'
+      text='Notifications'
+      css={$updateState !== 'downloading' &&
+        $updateState !== 'ready' &&
+        $updateState !== 'ignored' &&
+        !SUPPORTS.isAndroid
+        ? 'mt-md-h-auto'
+        : ''}
       _modal={modal.NOTIFICATIONS}
       let:active
       let:hovering
@@ -284,45 +284,45 @@
       {#if $hasUnreadNotifications && $hasUnreadNotifications > 0}
         <BellDot
           size={btnSize}
-          class="flex-shrink-0 p-5 m-5 rounded fill-1 notify"
-          strokeWidth="2.5"
-          color="currentColor"
-          style="--fill-button-color: {hovering
-            ? `var(--gray-color-very-dim)`
-            : `var(--notify-color)`}"
+          class='flex-shrink-0 p-5 m-5 rounded fill-1 notify'
+          strokeWidth='2.5'
+          color='currentColor'
+          style='--fill-button-color: {hovering
+            ? 'var(--gray-color-very-dim)'
+            : 'var(--notify-color)'}'
         />
       {:else}
         <Bell
           size={btnSize}
-          class="flex-shrink-0 p-5 m-5 rounded"
-          strokeWidth="2.5"
-          color={active ? "currentColor" : "var(--gray-color-very-dim)"}
+          class='flex-shrink-0 p-5 m-5 rounded'
+          strokeWidth='2.5'
+          color={active ? 'currentColor' : 'var(--gray-color-very-dim)'}
         />
       {/if}
     </SidebarLink>
     <SidebarLink
       click={() => page.navigateTo(page.SETTINGS)}
       _page={page.SETTINGS}
-      icon="settings"
-      text="Settings"
+      icon='settings'
+      text='Settings'
       let:active
     >
       <Settings
         size={btnSize}
-        class="flex-shrink-0 p-5 m-5 rounded"
-        strokeWidth="2.5"
-        color={active ? "currentColor" : "var(--gray-color-very-dim)"}
+        class='flex-shrink-0 p-5 m-5 rounded'
+        strokeWidth='2.5'
+        color={active ? 'currentColor' : 'var(--gray-color-very-dim)'}
       />
     </SidebarLink>
     {#if !SUPPORTS.isAndroid}
       <SidebarLink
         click={() => modal.toggle(modal.PROFILE)}
-        icon="login"
-        text={Helper.getUser() ? "Profiles" : "Login"}
+        icon='login'
+        text={Helper.getUser() ? 'Profiles' : 'Login'}
         _modal={modal.PROFILE}
         image={Helper.getUserAvatar()}
       >
-        <LogIn size={btnSize} class="flex-shrink-0 p-5 m-5 rounded" />
+        <LogIn size={btnSize} class='flex-shrink-0 p-5 m-5 rounded' />
       </SidebarLink>
     {/if}
   </div>

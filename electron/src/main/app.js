@@ -39,11 +39,15 @@ export default class App {
     minHeight: 390,
     frame: process.platform === 'darwin',
     titleBarStyle: 'hidden',
-    ...(process.platform !== 'darwin' ? { titleBarOverlay: {
-        color: 'rgba(47, 50, 65, 0)',
-        symbolColor: '#eee',
-        height: 28
-      } } : {}),
+    ...(process.platform !== 'darwin'
+      ? {
+          titleBarOverlay: {
+            color: 'rgba(47, 50, 65, 0)',
+            symbolColor: '#eee',
+            height: 28
+          }
+        }
+      : {}),
     backgroundColor: '#17191c',
     autoHideMenuBar: true,
     webPreferences: {
@@ -68,7 +72,7 @@ export default class App {
   ready = false
   notifications = {}
 
-  constructor() {
+  constructor () {
     this.mainWindow.setMenuBarVisibility(false)
     this.mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     if (development) this.mainWindow.once('ready-to-show', () => this.showAndFocus(true))
@@ -115,7 +119,7 @@ export default class App {
     }).catch(error => {
       console.warn('Failed to start proxy:', error)
     })
-    
+
     this.mainWindow.on('closed', () => this.destroy())
     ipcMain.on('close', () => { this.close = true; this.destroy() })
 
@@ -234,7 +238,7 @@ export default class App {
         authWindow.webContents.setWindowOpenHandler(() => { return { action: 'deny' } })
         authWindow.webContents.on('did-finish-load', () => authWindow.show())
         authWindow.webContents.on('did-start-loading', () => authWindow.webContents.insertCSS
-          (`
+        (`
             ::-webkit-scrollbar {
               width: 6px;
               height: 6px;
@@ -271,7 +275,7 @@ export default class App {
   }
 
   destroyed = false
-  async destroy(forceRunAfter = false) {
+  async destroy (forceRunAfter = false) {
     if (this.destroyed) return
     this.destroyed = true
     this.updater.destroyed = true
@@ -288,7 +292,7 @@ export default class App {
   }
 
   imageCache = new Map()
-  async getImage(id, url, wideScreen) {
+  async getImage (id, url, wideScreen) {
     const cacheKey = `${id}_${url}_${wideScreen}`
     if (this.imageCache.has(cacheKey)) return this.imageCache.get(cacheKey)
     const res = await fetch(url)
@@ -327,7 +331,7 @@ export default class App {
   }
 
   notificationCount = 0
-  setTrayIcon(notificationCount, verify) {
+  setTrayIcon (notificationCount, verify) {
     if (this.destroyed) return
     if (!this.tray || this.tray.isDestroyed()) {
       this.tray = new Tray(this.trayIcon)
@@ -338,32 +342,35 @@ export default class App {
       this.tray.setImage(this.trayIcon)
       this.mainWindow.setOverlayIcon(null, '')
     } else {
-      this.mainWindow.setOverlayIcon(nativeImage.createFromPath(join(__dirname, `/icon_filled_notify_${this.notificationCount < 10 ? this.notificationCount : `filled`}.png`)), `${this.notificationCount} Unread Notifications`)
+      this.mainWindow.setOverlayIcon(nativeImage.createFromPath(join(__dirname, `/icon_filled_notify_${this.notificationCount < 10 ? this.notificationCount : 'filled'}.png`)), `${this.notificationCount} Unread Notifications`)
       this.tray.setImage(this.trayNotifyIcon)
     }
   }
-  createTray() {
+
+  createTray () {
     if (this.destroyed) return
     this.tray.setToolTip('Tsumi')
     this.setTrayMenu()
     this.tray.on('click', () => this.showAndFocus())
   }
-  setTrayMenu() {
+
+  setTrayMenu () {
     if (this.destroyed || !this.tray || this.tray.isDestroyed()) return
     this.tray.setContextMenu(Menu.buildFromTemplate([
       { label: 'Tsumi', enabled: false },
-      ...(this.ready ? [
-          { type: 'separator' },
-          { label: 'Show', click: () => this.showAndFocus() },
-          { label: 'Restore', click: () => this.restoreWindow() }
-        ]
+      ...(this.ready
+        ? [
+            { type: 'separator' },
+            { label: 'Show', click: () => this.showAndFocus() },
+            { label: 'Restore', click: () => this.restoreWindow() }
+          ]
         : []),
       { type: 'separator' },
       { label: 'Quit', click: () => this.destroy() }
     ]))
   }
 
-  restoreWindow() {
+  restoreWindow () {
     if (this.destroyed || this.mainWindow?.isDestroyed()) return
     const defaultBounds = getDefaultBounds()
     this.mainWindow.unmaximize()
@@ -377,7 +384,7 @@ export default class App {
     })
   }
 
-  showAndFocus(ready = false) {
+  showAndFocus (ready = false) {
     if (!this.ready && !ready) return
     if (!this.ready) {
       this.ready = true

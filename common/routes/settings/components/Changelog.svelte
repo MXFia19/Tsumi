@@ -16,10 +16,10 @@
     }
   })
 
-  async function getChanges() {
+  async function getChanges () {
     try {
       const json = await (await fetch('https://api.github.com/repos/50n50/Tsumi/releases')).json()
-      return json.map(({body, tag_name: version, published_at: date, assets, html_url: url}) => ({
+      return json.map(({ body, tag_name: version, published_at: date, assets, html_url: url }) => ({
         body,
         version,
         date,
@@ -38,7 +38,7 @@
   import { click } from '@/modules/click.js'
   export let body = ''
 
-  export function sanitize(body) {
+  export function sanitize (body) {
     return DOMPurify.sanitize(marked.parse(body.trim(), {
       pedantic: false,
       breaks: true,
@@ -68,7 +68,7 @@
     })
   }
 
-  function hrefListener(event) {
+  function hrefListener (event) {
     const anchor = event.composedPath().find(element => element.tagName === 'A')
     if (!anchor?.href) return
     event.preventDefault()

@@ -19,7 +19,7 @@ try {
   resetSettings()
 }
 
-function setDefaults() {
+function setDefaults () {
   const dynamicCustom = (storedSettings.customSections || defaults.customSections).map(([title]) => [title, 'TRENDING_DESC', ['TV', 'MOVIE']])
   const dynamicWestern = (storedSettings.westernSections || defaults.westernSections).map(([title]) => [title, 'N/A', ['TV', 'MOVIE']])
 
@@ -65,7 +65,7 @@ settings.subscribe(value => {
   cache.setEntry(caches.GENERAL, 'settings', value)
 })
 
-function resetSettings() {
+function resetSettings () {
   storedSettings = { ...defaults }
   setDefaults()
   settings.value = { ...defaults, ...scopedDefaults, ...storedSettings }
@@ -78,7 +78,7 @@ profiles.subscribe(value => {
   localStorage.setItem('profiles', JSON.stringify(value))
 })
 
-export function isAuthorized() {
+export function isAuthorized () {
   return alToken || malToken
 }
 
@@ -122,7 +122,7 @@ window.addEventListener('paste', ({ clipboardData }) => {
   }
 })
 IPC.on('altoken', handleToken)
-async function handleToken(token) {
+async function handleToken (token) {
   const { anilistClient } = await import('./anilist.js')
   const viewer = await anilistClient.viewer({ token })
   if (!viewer.data?.Viewer) {
@@ -134,22 +134,22 @@ async function handleToken(token) {
 }
 
 IPC.on('maltoken', handleMalToken)
-async function handleMalToken(code, state) {
+async function handleMalToken (code, state) {
   const { clientID, malClient } = await import('./myanimelist.js')
   if (!state || !code) {
     toast.error('Failed to sign in with MyAnimeList. Please try again.')
-    debug(`Failed to get the state and code from MyAnimeList.`)
+    debug('Failed to get the state and code from MyAnimeList.')
     return
   }
   const response = await fetch('https://myanimelist.net/v1/oauth2/token', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Type': 'application/x-www-form-urlencoded'
     },
     body: new URLSearchParams({
       client_id: clientID,
       grant_type: 'authorization_code',
-      code: code,
+      code,
       code_verifier: sessionStorage.getItem(state)
     })
   })
@@ -168,7 +168,7 @@ async function handleMalToken(code, state) {
   await swapProfiles({ token: oauth.access_token, refresh: oauth.refresh_token, refresh_in: Math.floor((Date.now() + 14 * 24 * 60 * 60 * 1000) / 1000), reauth: false, viewer }, true)
 }
 
-export async function refreshMalToken(token) {
+export async function refreshMalToken (token) {
   const { clientID } = await import('./myanimelist.js')
   const currentProfile = malToken?.token === token
   const refresh = currentProfile ? malToken.refresh : profiles.value.find(profile => profile.token === token)?.refresh
@@ -178,7 +178,7 @@ export async function refreshMalToken(token) {
     response = await fetch('https://myanimelist.net/v1/oauth2/token', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Type': 'application/x-www-form-urlencoded'
       },
       body: new URLSearchParams({
         client_id: clientID,
@@ -205,13 +205,13 @@ export async function refreshMalToken(token) {
   const viewer = await malClient.viewer(oauth.access_token)
   const refresh_in = Math.floor((Date.now() + 14 * 24 * 60 * 60 * 1000) / 1000)
   if (malToken?.token === token) {
-    malToken = { viewer: viewer, token: oauth.access_token, refresh: oauth.refresh_token, refresh_in: refresh_in, reauth: false }
+    malToken = { viewer, token: oauth.access_token, refresh: oauth.refresh_token, refresh_in, reauth: false }
     localStorage.setItem('MALviewer', JSON.stringify(malToken))
   } else {
     profiles.update(profiles =>
       profiles.map(profile => {
         if (profile.token === token) {
-          return { viewer: viewer, token: oauth.access_token, refresh: oauth.refresh_token, refresh_in: refresh_in, reauth: false }
+          return { viewer, token: oauth.access_token, refresh: oauth.refresh_token, refresh_in, reauth: false }
         }
         return profile
       })
@@ -221,7 +221,7 @@ export async function refreshMalToken(token) {
   return oauth
 }
 
-export async function swapProfiles(profile, newProfile) {
+export async function swapProfiles (profile, newProfile) {
   const currentProfile = isAuthorized()
   if (!isAuthorized() && profile != null) await cache.abandon(profile.viewer.data.Viewer.id)
 
@@ -251,7 +251,7 @@ export async function swapProfiles(profile, newProfile) {
   location.reload()
 }
 
-function setViewer(profile) {
+function setViewer (profile) {
   localStorage.removeItem(alToken ? 'ALviewer' : 'MALviewer')
   if (profile?.viewer?.data?.Viewer?.avatar) {
     alToken = profile

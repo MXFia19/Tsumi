@@ -7,8 +7,8 @@ export default class Protocol {
   protocolMap = {
     alauth: token => this.sendToken(token),
     malauth: token => this.sendMalToken(token),
-    anime: id => IPC.emit('open-anime', {id}),
-    malanime: id => IPC.emit('open-anime', {id, mal: true}),
+    anime: id => IPC.emit('open-anime', { id }),
+    malanime: id => IPC.emit('open-anime', { id, mal: true }),
     search: id => this.play(id),
     w2g: link => IPC.emit('w2glink', link),
     schedule: () => IPC.emit('schedule'),
@@ -19,7 +19,7 @@ export default class Protocol {
 
   protocolRx = /(?:tsumi|shiru):\/\/([a-z0-9]+)\/(.*)/i
 
-  constructor() {
+  constructor () {
     App.getLaunchUrl().then(res => {
       if (location.hash !== '#skipAlLogin') {
         location.hash = '#skipAlLogin'
@@ -32,7 +32,7 @@ export default class Protocol {
   /**
    * @param {string} line
    */
-  sendToken(line) {
+  sendToken (line) {
     let token = line.split('access_token=')[1].split('&token_type')[0]
     if (token) {
       if (token.endsWith('/')) token = token.slice(0, -1)
@@ -43,7 +43,7 @@ export default class Protocol {
   /**
    * @param {string} line
    */
-  sendMalToken(line) {
+  sendMalToken (line) {
     let code = line.split('code=')[1].split('&state')[0]
     let state = line.split('&state=')[1]
     if (code && state) {
@@ -57,7 +57,7 @@ export default class Protocol {
   /**
    * @param {string} id - The media id.
    */
-  play(id) {
+  play (id) {
     IPC.emit('play-anime', id)
     IPC.emit('window-show')
   }
@@ -65,7 +65,7 @@ export default class Protocol {
   /**
    * @param {string} text
    */
-  handleProtocol(text) {
+  handleProtocol (text) {
     const match = text.match(this.protocolRx)
     if (match) this.protocolMap[match[1]]?.(match[2])
   }

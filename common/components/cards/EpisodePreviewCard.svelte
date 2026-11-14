@@ -32,7 +32,7 @@
 
 <div class='position-absolute w-400 mw-full mh-400 absolute-container top-0 m-auto bg-dark-light z-30 rounded overflow-hidden pointer d-flex flex-column fade-change' in:fadeIn out:fadeOut on:introend={() => animating = false} on:outrostart={() => animating = true} bind:this={element}>
   <div class='image h-200 w-full position-relative d-flex justify-content-between align-items-end text-white'>
-    <SmartImage class='img-cover w-full h-full position-absolute rounded p-0 m-0 {!(data.episodeData?.image || media?.bannerImage) && media?.genres?.includes(`Hentai`) ? `cover-rotated cr-400` : ``}' color={media?.coverImage.color || 'var(--tertiary-color)'} images={[episodeThumbnail, './404_episode.png']}/>
+    <SmartImage class='img-cover w-full h-full position-absolute rounded p-0 m-0 {!(data.episodeData?.image || media?.bannerImage) && media?.genres?.includes('Hentai') ? 'cover-rotated cr-400' : ''}' color={media?.coverImage.color || 'var(--tertiary-color)'} images={[episodeThumbnail, './404_episode.png']} />
     {#if data.episodeData?.video && !animating}
       <video src={data.episodeData.video}
         class='img-cover w-full h-full position-absolute'
@@ -42,7 +42,7 @@
         loop
         muted
         on:loadeddata={() => { hide = false }}
-        autoplay />
+        autoplay></video>
     {/if}
     {#if data.failed}
       <div class='pl-10 pt-10 z-10 position-absolute top-0 left-0 text-danger icon-shadow' title='Failed to resolve media'>
@@ -63,11 +63,11 @@
     </div>
     {#if completed}
       <div class='progress container-fluid position-absolute z-10' style='height: 2px; min-height: 2px;'>
-        <div class='progress-bar w-full' />
+        <div class='progress-bar w-full'></div>
       </div>
     {:else if $progress > 0}
       <div class='progress container-fluid position-absolute z-10' style='height: 2px; min-height: 2px;'>
-        <div class='progress-bar' style='width: {$progress}%' />
+        <div class='progress-bar' style='width: {$progress}%'></div>
       </div>
     {/if}
   </div>
@@ -76,7 +76,7 @@
       <div class='col pr-10'>
         <div class='text-white font-weight-very-bold font-size-16 title overflow-hidden' title={anilistClient.title(media) || data.parseObject.anime_title}>
           {#if media?.mediaListEntry?.status}
-            <div style:--statusColor={statusColorMap[media.mediaListEntry.status]} class='list-status-circle d-inline-flex overflow-hidden mr-5' title={media.mediaListEntry.status} />
+            <div style:--statusColor={statusColorMap[media.mediaListEntry.status]} class='list-status-circle d-inline-flex overflow-hidden mr-5' title={media.mediaListEntry.status}></div>
           {/if}
           {anilistClient.title(media) || data.parseObject.anime_title}
         </div>
@@ -88,14 +88,14 @@
           {@const episode = (data.episodeRange || data.parseObject?.episodeRange)?.first || episodeRange?.first || data.episode}
           {#await episodesList.getKitsuEpisodes(media?.id) then mappings}
             {@const kitsuMappings = episode != null && mappings?.data?.find(ep => ep?.attributes?.number === Number(episode) || episode)?.attributes}
-            {@const ep_title =  kitsuMappings?.titles?.en_us || kitsuMappings?.titles?.en_jp || ''}
+            {@const ep_title = kitsuMappings?.titles?.en_us || kitsuMappings?.titles?.en_jp || ''}
             <div class='text-muted font-size-12 title overflow-hidden' title={ep_title}>
               {ep_title}
             </div>
           {/await}
         {/if}
       </div>
-      <div class='col-auto d-flex flex-column align-items-end text-right mt-3' title={data.parseObject?.file_name} >
+      <div class='col-auto d-flex flex-column align-items-end text-right mt-3' title={data.parseObject?.file_name}>
         <div class='text-white font-weight-bold font-weight-very-bold'>
           {#if data.episodeRange || data.parseObject?.episodeRange}
             {`Episodes ${(data.episodeRange || data.parseObject.episodeRange).first} ~ ${(data.episodeRange || data.parseObject.episodeRange).last}`}
@@ -177,7 +177,7 @@
       <Play class='mr-10' fill='currentColor' size='1.6rem' />
       Continue Anyway?
     </button>
-   </div>
+  </div>
 </div>
 
 <style>

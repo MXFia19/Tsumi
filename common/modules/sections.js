@@ -27,7 +27,7 @@ const format = ['TV', 'MOVIE']
 const status_not = ['NOT_YET_RELEASED', 'CANCELLED']
 
 export default class SectionsManager {
-  constructor(data = []) {
+  constructor (data = []) {
     this.sections = []
     for (const section of data) this.add(section)
   }
@@ -35,7 +35,7 @@ export default class SectionsManager {
   /**
    * @param {object} data
    */
-  add(data) {
+  add (data) {
     if (!data) return
     const { title, variables = {}, type, load = SectionsManager.createFallbackLoad(variables, type), preview = writable() } = data
     const section = { ...data, load, title, preview, variables }
@@ -43,11 +43,11 @@ export default class SectionsManager {
     return section
   }
 
-  clear() {
+  clear () {
     this.sections = []
   }
 
-  static createFallbackLoad(variables, type) {
+  static createFallbackLoad (variables, type) {
     return (page = 1, perPage = 50, search = variables) => {
       const res = (search.hideSubs ? malDubs.dubLists.value : Promise.resolve()).then(dubLists => {
         const hideSubs = search.hideSubs ? { idMal: dubLists?.dubbed } : {}
@@ -99,7 +99,7 @@ export default class SectionsManager {
             const anilistMedia = anilistRes?.data?.Page?.media || []
             const tmdbMedia = tmdbRes?.data?.Page?.media || []
 
-            let combinedMedia = []
+            const combinedMedia = []
             const max = Math.max(anilistMedia.length, tmdbMedia.length)
             for (let i = 0; i < max; i++) {
               if (anilistMedia[i]) combinedMedia.push(anilistMedia[i])
@@ -150,14 +150,14 @@ export default class SectionsManager {
     }
   }
 
-  static wrapResponse(res, length, type) {
+  static wrapResponse (res, length, type) {
     res.then(res => {
       hasNextPage.value = res?.data?.Page.pageInfo.hasNextPage
     })
     return Array.from({ length }, (_, i) => ({ type, data: SectionsManager.fromPending(res, i) }))
   }
 
-  static async fromPending(_arr, i) {
+  static async fromPending (_arr, i) {
     const arr = await _arr
     if (!arr) return null
     const { data, errors } = arr
@@ -190,7 +190,7 @@ const debounceUpdate = debounce((value) => {
 }, 3_000)
 settings.subscribe((value) => debounceUpdate(value))
 
-function createSections() {
+function createSections () {
   const sectionFormat = (title) => (settings.value.homeSections.find(([t]) => t === title)?.[2] || [])
   const createSection = (section, variables = {}, staticSort) => ({ ...section, ...(section.sort && staticSort ? { sort: 'N/A' } : {}), variables: { western: false, ...variables, sort: settings.value.homeSections.find(([t]) => !staticSort && t === section.title)?.[1] ?? section.sort, ...(Array.isArray(sectionFormat(section.title)) && sectionFormat(section.title).length > 0 ? { format: sectionFormat(section.title) } : {}) } })
   return [
@@ -206,11 +206,14 @@ function createSections() {
         isRSS: true,
         isSchedule: true,
         load: (page = 1, perPage = 50) => isWestern ? tmdbClient.getMediaForRSS(page, perPage) : animeSchedule.getMediaForRSS(page, perPage, type),
-        preview: writable(isWestern ? tmdbClient.getMediaForRSS(1, 50) : animeSchedule.getMediaForRSS(1, 50, type)),
+        preview: writable(isWestern ? tmdbClient.getMediaForRSS(1, 50) : animeSchedule.getMediaForRSS(1, 50, type))
       }
     }),
     createSection({
-      title: 'Sequels You Missed', sort: 'POPULARITY_DESC', format: [], hide: !Helper.isAuthorized() || Helper.isMalAuth(),
+      title: 'Sequels You Missed',
+      sort: 'POPULARITY_DESC',
+      format: [],
+      hide: !Helper.isAuthorized() || Helper.isMalAuth(),
       load: (page = 1, perPage = 50, variables = {}) => {
         if (Helper.isMalAuth()) return {}
         const res = Helper.userLists(variables).then(res => {
@@ -226,7 +229,10 @@ function createSections() {
       } // disable this section when authenticated with MyAnimeList. API for userLists fail to return relations and likely will never be fixed on their end.
     }, { userList: true, missedList: true, disableHide: true }),
     createSection({
-      title: 'Stories You Missed', sort: 'POPULARITY_DESC', format: [], hide: !Helper.isAuthorized() || Helper.isMalAuth(),
+      title: 'Stories You Missed',
+      sort: 'POPULARITY_DESC',
+      format: [],
+      hide: !Helper.isAuthorized() || Helper.isMalAuth(),
       load: (page = 1, perPage = 50, variables = {}) => {
         if (Helper.isMalAuth()) return {} // same as Sequels You Missed
         const res = Helper.userLists(variables).then(res => {
@@ -242,7 +248,10 @@ function createSections() {
       } // disable this section when authenticated with MyAnimeList. API for userLists fail to return relations and likely will never be fixed on their end.
     }, { userList: true, missedList: true, disableHide: true }),
     createSection({
-      title: 'Continue Watching', sort: 'UPDATED_TIME_DESC', format: [], hide: !Helper.isAuthorized(),
+      title: 'Continue Watching',
+      sort: 'UPDATED_TIME_DESC',
+      format: [],
+      hide: !Helper.isAuthorized(),
       load: (page = 1, perPage = 50, variables = {}) => {
         const res = Helper.userLists(variables).then(res => {
           if (!res?.data && res?.errors) throw res.errors[0]
@@ -288,7 +297,10 @@ function createSections() {
       }
     }, { userList: true, continueWatching: true, disableHide: true, status_not }),
     createSection({
-      title: 'Watching List', sort: 'UPDATED_TIME_DESC', format: [], hide: !Helper.isAuthorized(),
+      title: 'Watching List',
+      sort: 'UPDATED_TIME_DESC',
+      format: [],
+      hide: !Helper.isAuthorized(),
       load: (page = 1, perPage = 50, variables = {}) => {
         const res = Helper.userLists(variables).then(res => {
           if (!res?.data && res?.errors) throw res.errors[0]
@@ -302,7 +314,10 @@ function createSections() {
       }
     }, { userList: true, disableHide: true, status_not }),
     createSection({
-      title: 'Rewatching List', sort: 'UPDATED_TIME_DESC', format: [], hide: !Helper.isAuthorized(),
+      title: 'Rewatching List',
+      sort: 'UPDATED_TIME_DESC',
+      format: [],
+      hide: !Helper.isAuthorized(),
       load: (page = 1, perPage = 50, variables = {}) => {
         const res = Helper.userLists(variables).then(res => {
           if (!res?.data && res?.errors) throw res.errors[0]
@@ -316,7 +331,10 @@ function createSections() {
       }
     }, { userList: true, disableHide: true, status_not }),
     createSection({
-      title: 'Completed List', sort: 'UPDATED_TIME_DESC', format: [], hide: !Helper.isAuthorized(),
+      title: 'Completed List',
+      sort: 'UPDATED_TIME_DESC',
+      format: [],
+      hide: !Helper.isAuthorized(),
       load: (page = 1, perPage = 50, variables = {}) => {
         const res = Helper.userLists(variables).then(res => {
           if (!res?.data && res?.errors) throw res.errors[0]
@@ -330,7 +348,10 @@ function createSections() {
       }
     }, { userList: true, completedList: true, disableHide: true, status_not }),
     createSection({
-      title: 'Planning List', sort: 'POPULARITY_DESC', format: [], hide: !Helper.isAuthorized(),
+      title: 'Planning List',
+      sort: 'POPULARITY_DESC',
+      format: [],
+      hide: !Helper.isAuthorized(),
       load: (page = 1, perPage = 50, variables = {}) => {
         const res = Helper.userLists(variables).then(res => {
           if (!res?.data && res?.errors) throw res.errors[0]
@@ -344,7 +365,10 @@ function createSections() {
       }
     }, { userList: true, planningList: true, disableHide: true, status_not }),
     createSection({
-      title: 'Paused List', sort: 'UPDATED_TIME_DESC', format: [], hide: !Helper.isAuthorized(),
+      title: 'Paused List',
+      sort: 'UPDATED_TIME_DESC',
+      format: [],
+      hide: !Helper.isAuthorized(),
       load: (page = 1, perPage = 50, variables = {}) => {
         const res = Helper.userLists(variables).then(res => {
           if (!res?.data && res?.errors) throw res.errors[0]
@@ -358,7 +382,10 @@ function createSections() {
       }
     }, { userList: true, disableHide: true, status_not }),
     createSection({
-      title: 'Dropped List', sort: 'UPDATED_TIME_DESC', format: [], hide: !Helper.isAuthorized(),
+      title: 'Dropped List',
+      sort: 'UPDATED_TIME_DESC',
+      format: [],
+      hide: !Helper.isAuthorized(),
       load: (page = 1, perPage = 50, variables = {}) => {
         const res = Helper.userLists(variables).then(res => {
           if (!res?.data && res?.errors) throw res.errors[0]

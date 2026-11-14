@@ -30,8 +30,8 @@
       const airingLists = await (variables.hideSubs ? animeSchedule.dubAiringLists.value : animeSchedule.subAiringLists.value)
       if (!airingLists?.length) return results
       let ids = airingLists.map(entry => {
-          const media = variables.hideSubs ? entry.media?.media : entry
-          return media?.id ? { id: media.id, idMal: media.idMal ?? null } : null
+        const media = variables.hideSubs ? entry.media?.media : entry
+        return media?.id ? { id: media.id, idMal: media.idMal ?? null } : null
       }).filter(item => item != null)
       // Hide My Anime / Show My Anime
       if ((variables.hideMyAnime || variables.showMyAnime) && Helper.isAuthorized()) {
@@ -55,17 +55,17 @@
           const numberOfEpisodes = cachedItem.subtractedEpisodeNumber ? (cachedItem.episodeNumber - cachedItem.subtractedEpisodeNumber) : 1
           let predict = false
           if (cachedItem?.media?.media?.airingSchedule?.nodes?.length) {
-              const now = new Date()
-              const futureEpisodes = cachedItem.media.media.airingSchedule.nodes.filter(node => new Date(node.airingAt) > now)
-              predict = futureEpisodes.length === 0
-              if (predict && !((numberOfEpisodes > 4) && !cachedItem.unaired)) {
-                  const latestEpisode = Math.max(...cachedItem.media.media.airingSchedule.nodes.map(node => node.episode))
-                  const latestAiringAt = Math.max(...cachedItem.media.media.airingSchedule.nodes.map(node => new Date(node.airingAt).getTime()))
-                  cachedItem.media.media.airingSchedule.nodes.unshift({
-                      episode: latestEpisode + 1,
-                      airingAt: new Date(latestAiringAt + (cachedItem.delayedIndefinitely ? 6 * 365 * 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000)).toISOString().slice(0, -5) + 'Z'
-                  })
-              }
+            const now = new Date()
+            const futureEpisodes = cachedItem.media.media.airingSchedule.nodes.filter(node => new Date(node.airingAt) > now)
+            predict = futureEpisodes.length === 0
+            if (predict && !((numberOfEpisodes > 4) && !cachedItem.unaired)) {
+              const latestEpisode = Math.max(...cachedItem.media.media.airingSchedule.nodes.map(node => node.episode))
+              const latestAiringAt = Math.max(...cachedItem.media.media.airingSchedule.nodes.map(node => new Date(node.airingAt).getTime()))
+              cachedItem.media.media.airingSchedule.nodes.unshift({
+                episode: latestEpisode + 1,
+                airingAt: new Date(latestAiringAt + (cachedItem.delayedIndefinitely ? 6 * 365 * 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000)).toISOString().slice(0, -5) + 'Z'
+              })
+            }
           }
           return (!(cachedItem?.media?.media?.airingSchedule?.nodes[0]?.episode > media.episodes) || !media.episodes) && (!predict || !((numberOfEpisodes > 4) && !cachedItem.unaired)) && cachedItem?.media?.media?.airingSchedule?.nodes[0]?.airingAt && self.findIndex(m => m.id === media.id) === index
         })
@@ -87,11 +87,11 @@
     if (variables.western !== false) {
       fetches.push(tmdbClient.getSchedule(variables.page || 1).then(res => tmdbRes = res).catch(() => {}))
     }
-    
+
     await Promise.all(fetches)
 
     const mixedMedia = [...(animeRes?.data?.Page?.media || []), ...(tmdbRes?.data?.Page?.media || [])]
-    
+
     // Final duplicate filter and universal sort
     const seenIds = new Set()
     const sortedMedia = mixedMedia
@@ -117,4 +117,4 @@
   $search.load = (page, __, variables) => SectionsManager.wrapResponse(fetchAllScheduleEntries({ ...variables, page }), 150)
 </script>
 
-<SearchPage key={key} search={search}/>
+<SearchPage {key} {search} />

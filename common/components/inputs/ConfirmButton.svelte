@@ -44,7 +44,7 @@
    *
    * @param {boolean} [confirmed=false] Whether the action is confirmed.
    */
-  function confirm(confirmed = false) {
+  function confirm (confirmed = false) {
     if (confirmed) {
       if (!disabled) _click()
       cleanup()
@@ -56,7 +56,7 @@
   }
 
   /** Clears timers and resets state. */
-  function cleanup() {
+  function cleanup () {
     timeRemaining = timeout || 1
     clearTimeout(timeoutId)
     timeoutId = null
@@ -70,20 +70,20 @@
 
 <div class='d-contents'>
   <button type='button' class='{$$restProps.class} {primaryClass} animate' class:hidden={timeoutId !== null} data-toggle={timeoutId === null && dataToggle || ''} data-placement={timeoutId === null && dataPlacement || ''} {title} data-title={timeoutId === null && dataTitle || ''} {disabled} use:click={() => confirm()}>
-    <slot />
+    <slot></slot>
   </button>
 </div>
 <div class='{actionClass} position-relative action-container d-contents animate' class:hidden={timeoutId === null}>
-  <button type='button' class='{sanitize($$restProps.class, confirmClass)} {!confirmClass.includes(`w-auto`) ? `w-full` : ``} d-flex align-items-center justify-content-center position-relative overflow-hidden border-0 {confirmClass.replace(`w-auto`, ``)}' {disabled} use:click={() => confirm(true)}>
+  <button type='button' class='{sanitize($$restProps.class, confirmClass)} {!confirmClass.includes('w-auto') ? 'w-full' : ''} d-flex align-items-center justify-content-center position-relative overflow-hidden border-0 {confirmClass.replace('w-auto', '')}' {disabled} use:click={() => confirm(true)}>
     {#if confirmIcon}
-      <svelte:component this={confirmIcon} size='2rem' strokeWidth='3'/>
+      <svelte:component this={confirmIcon} size='2rem' strokeWidth='3' />
     {/if}
     <span class:ml-5={confirmIcon} class:d-none={!confirmText}>{confirmText}</span>
     <div class='position-absolute left-0 bottom-0 progress-bar' style='width: {reversed ? Math.max((progress - 50) * 2, 0) : Math.min(progress * 2, 100)}%'></div>
   </button>
-  <button type='button' class='{sanitize($$restProps.class, cancelClass)} {!cancelClass.includes(`w-auto`) ? `w-full` : ``} d-flex align-items-center justify-content-center position-relative overflow-hidden border-0 {cancelClass.replace(`w-auto`, ``)}' {disabled} use:click={cleanup}>
+  <button type='button' class='{sanitize($$restProps.class, cancelClass)} {!cancelClass.includes('w-auto') ? 'w-full' : ''} d-flex align-items-center justify-content-center position-relative overflow-hidden border-0 {cancelClass.replace('w-auto', '')}' {disabled} use:click={cleanup}>
     {#if cancelIcon}
-      <svelte:component this={cancelIcon} size='2rem' strokeWidth='3'/>
+      <svelte:component this={cancelIcon} size='2rem' strokeWidth='3' />
     {/if}
     <span class:ml-5={cancelIcon} class:d-none={!cancelText}>{cancelText}</span>
     <div class='position-absolute left-0 bottom-0 progress-bar' style='width: {reversed ? Math.min(progress * 2, 100) : Math.max((progress - 50) * 2, 0)}%'></div>

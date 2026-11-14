@@ -22,29 +22,29 @@
       <NavbarLink
         click={() => {
           if ($page !== page.PLAYER) {
-            page.navigateTo(page.PLAYER);
+            page.navigateTo(page.PLAYER)
           } else if (
             currentMedia?.id === $media?.media.id &&
             modal.length === 1
           ) {
-            modal.close(modal.ANIME_DETAILS);
+            modal.close(modal.ANIME_DETAILS)
           } else {
-            modal.open(modal.ANIME_DETAILS, $media?.media);
+            modal.open(modal.ANIME_DETAILS, $media?.media)
           }
         }}
-        icon="queue_music"
-        text={$media?.display ? "Last Watched" : "Now Playing"}
+        icon='queue_music'
+        text={$media?.display ? 'Last Watched' : 'Now Playing'}
         _modal={modal.ANIME_DETAILS}
         let:active
       >
         <svelte:component
           this={$media?.display ? History : ListVideo}
-          size="3.6rem"
-          class="flex-shrink-0 p-5 m-5 rounded"
-          strokeWidth="2.5"
+          size='3.6rem'
+          class='flex-shrink-0 p-5 m-5 rounded'
+          strokeWidth='2.5'
           color={active && currentMedia?.id === $media?.media?.id
-            ? "currentColor"
-            : "var(--gray-color-very-dim)"}
+            ? 'currentColor'
+            : 'var(--gray-color-very-dim)'}
         />
       </NavbarLink>
     {/if}
@@ -52,10 +52,10 @@
       <Users size='3.6rem' class='flex-shrink-0 p-5 m-5 rounded' strokeWidth='2.5' color={active ? 'currentColor' : 'var(--gray-color-very-dim)'} />
     </NavbarLink>
     <NavbarLink click={() => { modal.toggle(modal.NOTIFICATIONS) }} icon='bell' text='Notifications' _modal={modal.NOTIFICATIONS} let:active let:hovering>
-      {#if $hasUnreadNotifications &&  $hasUnreadNotifications > 0}
-        <BellDot size='3.6rem' class='flex-shrink-0 p-5 m-5 rounded fill-1 notify' strokeWidth='2.5' color='currentColor' style='--fill-button-color: {hovering ? `var(--gray-color-very-dim)` : `var(--notify-color)`}'/>
+      {#if $hasUnreadNotifications && $hasUnreadNotifications > 0}
+        <BellDot size='3.6rem' class='flex-shrink-0 p-5 m-5 rounded fill-1 notify' strokeWidth='2.5' color='currentColor' style='--fill-button-color: {hovering ? 'var(--gray-color-very-dim)' : 'var(--notify-color)'}' />
       {:else}
-        <Bell size='3.6rem' class='flex-shrink-0 p-5 m-5 rounded' strokeWidth='2.5' color={$modal[modal.NOTIFICATIONS] ? 'currentColor' : 'var(--gray-color-very-dim)'}/>
+        <Bell size='3.6rem' class='flex-shrink-0 p-5 m-5 rounded' strokeWidth='2.5' color={$modal[modal.NOTIFICATIONS] ? 'currentColor' : 'var(--gray-color-very-dim)'} />
       {/if}
     </NavbarLink>
     <NavbarLink click={() => page.navigateTo(page.SETTINGS)} _page={page.SETTINGS} icon='settings' text='Settings' let:active>

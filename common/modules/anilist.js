@@ -23,7 +23,7 @@ export const currentYear = date.getFullYear()
  * @param {import('./al.d.ts').Media & {lavenshtein?: number}} media
  * @param {string} name
  */
-export function getDistanceFromTitle(media, name) {
+export function getDistanceFromTitle (media, name) {
   if (media) {
     const titles = Object.values(media.title).filter(v => v).map(title => lavenshtein(title.toLowerCase(), name.toLowerCase()))
     const synonyms = media.synonyms.filter(v => v).map(title => lavenshtein(title.toLowerCase(), name.toLowerCase()) + 2)
@@ -168,7 +168,7 @@ class AnilistClient {
 
   userID = alToken
 
-  constructor() {
+  constructor () {
     debug('Initializing Anilist Client for ID ' + this.userID?.viewer?.data?.Viewer?.id)
     this.limiter.on('failed', async (error) => {
       if (status.value.match(/offline/i)) throw new Error('Failed making request to Anilist, network is offline... not retrying')
@@ -185,16 +185,16 @@ class AnilistClient {
     })
 
     if (this.userID?.viewer?.data?.Viewer) {
-      this.userLists.value = this.getUserLists({ sort: 'UPDATED_TIME_DESC'}, true)
+      this.userLists.value = this.getUserLists({ sort: 'UPDATED_TIME_DESC' }, true)
       setTimeout(async () => {
-        const updatedLists = await this.getUserLists({sort: 'UPDATED_TIME_DESC'})
+        const updatedLists = await this.getUserLists({ sort: 'UPDATED_TIME_DESC' })
         this.userLists.value = Promise.resolve(updatedLists) // no need to have userLists await the entire query process while we already have previous values, (it's awful to wait 15+ seconds for the query to succeed with large lists)
       })
       this.findNewNotifications().catch((error) => debug('Failed to get new anilist notifications at the scheduled interval, this is likely a temporary connection issue:', JSON.stringify(error)))
       // update userLists every 15 mins
       setInterval(async () => {
         try {
-          const updatedLists = await this.getUserLists({sort: 'UPDATED_TIME_DESC'})
+          const updatedLists = await this.getUserLists({ sort: 'UPDATED_TIME_DESC' })
           this.userLists.value = Promise.resolve(updatedLists) // no need to have userLists await the entire query process while we already have previous values, (it's awful to wait 15+ seconds for the query to succeed with large lists)
         } catch (error) {
           debug('Failed to update user lists at the scheduled interval, this is likely a temporary connection issue:', JSON.stringify(error))
@@ -247,7 +247,7 @@ class AnilistClient {
    */
   alRequest (query, variables) {
     if (variables && variables.id && typeof variables.id === 'string') return Promise.resolve({ data: null })
-    const vars =  {
+    const vars = {
       variables: {
         page: 1,
         perPage: 50,
@@ -255,7 +255,7 @@ class AnilistClient {
         ...variables
       }
     }
-    if (vars?.variables?.sort === 'OMIT') { delete vars.variables.sort}
+    if (vars?.variables?.sort === 'OMIT') { delete vars.variables.sort }
 
     /** @type {RequestInit} */
     const options = {
@@ -299,13 +299,13 @@ class AnilistClient {
     return this.alRequest(query, variables)
   }
 
-  async findNewNotifications() {
+  async findNewNotifications () {
     if (settings.value.aniNotify !== 'none') {
       debug('Checking for new AniList notifications')
       const res = await this.getNotifications()
       const notifications = res?.data?.Page?.notifications
       const lastNotified = cache.getEntry(caches.NOTIFICATIONS, 'lastAni')
-      const newNotifications = (lastNotified > 0) && notifications ? notifications.filter(({createdAt}) => createdAt > lastNotified) : []
+      const newNotifications = (lastNotified > 0) && notifications ? notifications.filter(({ createdAt }) => createdAt > lastNotified) : []
       debug(`Found ${newNotifications?.length} new notifications`)
       for (const { media, episode, type, createdAt } of newNotifications) {
         if ((settings.value.aniNotify !== 'limited' || type !== 'AIRING') && media.type === 'ANIME' && media.format !== 'MUSIC' && (!settings.value.preferDubs || (media?.status === 'FINISHED' && !['CURRENT', 'REPEATING']?.includes(media?.mediaListEntry?.status)) || !(await malDubs.isDubMedia(media)) || await isSubbedProgress(await cache.requestMedia(media?.id)))) {
@@ -313,11 +313,11 @@ class AnilistClient {
             detail: {
               id: media?.id,
               title: media.title.userPreferred,
-              message: type === 'AIRING' ? `${media.format !== 'MOVIE' ? `Episode ${episode}` : `The Movie`} (Sub) is out in Japan, ${media.format !== 'MOVIE' ? `it should be available soon.` : `, if this is a theatrical release it will likely a few months before it is available for streaming.`}` : 'Was recently announced!',
+              message: type === 'AIRING' ? `${media.format !== 'MOVIE' ? `Episode ${episode}` : 'The Movie'} (Sub) is out in Japan, ${media.format !== 'MOVIE' ? 'it should be available soon.' : ', if this is a theatrical release it will likely a few months before it is available for streaming.'}` : 'Was recently announced!',
               icon: media.coverImage.medium,
               iconXL: media.coverImage.extraLarge,
               heroImg: media?.bannerImage || (media?.trailer?.id && `https://i.ytimg.com/vi/${media?.trailer?.id}/hqdefault.jpg`),
-              ...(type === 'AIRING' ? { episode: episode } : {}),
+              ...(type === 'AIRING' ? { episode } : {}),
               timestamp: createdAt,
               format: media?.format,
               dub: false,
@@ -336,7 +336,7 @@ class AnilistClient {
   }
 
   /** @returns {Promise<import('./al.d.ts').PagedQuery<{ notifications: { id: number, type: string, createdAt: number, episode: number, media: import('./al.d.ts').Media}[] }>>} */
-  getNotifications(variables = {}) {
+  getNotifications (variables = {}) {
     debug('Getting notifications')
     const cachedEntry = cache.cachedEntry(caches.NOTIFICATIONS, JSON.stringify(variables), ignoreExpiry || status.value.match(/offline/i))
     if (cachedEntry) return cachedEntry
@@ -388,7 +388,7 @@ class AnilistClient {
   }
 
   /** @returns {Promise<import('./al.d.ts').Query<{ MediaListCollection: import('./al.d.ts').MediaListCollection }>>} */
-  async getUserLists(variables = {}, ignoreExpiry) {
+  async getUserLists (variables = {}, ignoreExpiry) {
     debug('Getting user lists')
     variables.id = variables.userID || this.userID?.viewer?.data?.Viewer?.id
     const userSort = variables.sort || 'UPDATED_TIME_DESC'
@@ -402,7 +402,7 @@ class AnilistClient {
             status,
             entries {
               media {
-                ${queryObjects}${settings.value.queryComplexity === 'Complex' ? `, ${queryComplexObjects}` : ``}
+                ${queryObjects}${settings.value.queryComplexity === 'Complex' ? `, ${queryComplexObjects}` : ''}
               }
             }
           }
@@ -430,7 +430,7 @@ class AnilistClient {
    * @param {Object} data - The media list data containing the lists and entries.
    * @returns {Object} The reorganized media list with sorted entries.
    */
-  sortListEntries(sort, data) {
+  sortListEntries (sort, data) {
     if (!data?.data?.MediaListCollection?.lists) return data
     const res = data
     debug('Sorting user lists based on custom sort order:', sort)
@@ -468,7 +468,7 @@ class AnilistClient {
     return res
   }
 
-  async entry(variables) {
+  async entry (variables) {
     debug(`Updating entry for ${variables.id}`)
     const query = /* js */`
       mutation($id: Int, $status: MediaListStatus, $episode: Int, $repeat: Int, $score: Int, $startedAt: FuzzyDateInput, $completedAt: FuzzyDateInput) {
@@ -493,11 +493,11 @@ class AnilistClient {
       }`
     const res = await this.alRequest(query, variables)
     if (!variables.token) await this.updateListEntry(variables.id, res?.data?.SaveMediaListEntry)
-    //TODO: need to implement "else" for anilist syncing functionality. #updateListEntry
+    // TODO: need to implement "else" for anilist syncing functionality. #updateListEntry
     return res
   }
 
-  async delete(variables) {
+  async delete (variables) {
     debug(`Deleting entry for ${variables.id}`)
     const query = /* js */`
       mutation($id: Int) {
@@ -507,11 +507,11 @@ class AnilistClient {
       }`
     const res = await this.alRequest(query, variables)
     if (!variables.token) await this.deleteListEntry(variables.idAni)
-    //TODO: need to implement "else" for anilist syncing functionality. #deleteListEntry
+    // TODO: need to implement "else" for anilist syncing functionality. #deleteListEntry
     return res
   }
 
-  async updateListEntry(mediaId, listEntry) {
+  async updateListEntry (mediaId, listEntry) {
     const lists = (await this.userLists.value).data.MediaListCollection.lists?.map(list => { return { ...list, entries: list.entries.filter(entry => entry.media.id !== mediaId) } })
     let targetList = lists.find(list => list.status === listEntry?.status)
     if (!targetList) {
@@ -523,7 +523,7 @@ class AnilistClient {
     const res = Promise.resolve({
       data: {
         MediaListCollection: {
-          lists: lists
+          lists
         }
       }
     })
@@ -531,13 +531,13 @@ class AnilistClient {
     this.userLists.value = res
   }
 
-  async deleteListEntry(mediaId) {
+  async deleteListEntry (mediaId) {
     await cache.updateMedia([{ ...(await cache.requestMedia(mediaId)), mediaListEntry: null }])
     const res = Promise.resolve({
       data: {
         MediaListCollection: {
           lists: (await this.userLists.value)?.data?.MediaListCollection?.lists?.map(list => {
-            return {...list, entries: list.entries.filter(entry => entry.media.id !== mediaId)}
+            return { ...list, entries: list.entries.filter(entry => entry.media.id !== mediaId) }
           })
         }
       }
@@ -549,9 +549,9 @@ class AnilistClient {
   /**
    * @param {{key: string, title: string, year?: string, isAdult: boolean}[]} flattenedTitles
    **/
-  async alSearchCompound(flattenedTitles) {
+  async alSearchCompound (flattenedTitles) {
     debug(`Searching for ${flattenedTitles?.length} titles via compound search`)
-    const cachedEntry = cache.cachedEntry(caches.COMPOUND, JSON.stringify(flattenedTitles),  status.value.match(/offline/i))
+    const cachedEntry = cache.cachedEntry(caches.COMPOUND, JSON.stringify(flattenedTitles), status.value.match(/offline/i))
     if (cachedEntry) return cachedEntry
 
     if (!flattenedTitles.length) return []
@@ -622,9 +622,9 @@ class AnilistClient {
     return mappedResults ? cache.cacheEntry(caches.COMPOUND, JSON.stringify(flattenedTitles), { mappings: true, ...(malClient.userID ? { fillLists: malClient.userLists.value } : {}) }, mappedResults, Date.now() + getRandomInt(60, 90) * 60 * 1000) : cache.cachedEntry(caches.COMPOUND, JSON.stringify(flattenedTitles), true)
   }
 
-  search(variables = {}) {
+  search (variables = {}) {
     if (settings.value.adult === 'none') variables.isAdult = false
-    if (settings.value.adult !== 'hentai' && (!variables.genre_not || !variables.genre_not.includes('Hentai'))) variables.genre_not = [ ...(variables.genre_not ? variables.genre_not : []), 'Hentai' ]
+    if (settings.value.adult !== 'hentai' && (!variables.genre_not || !variables.genre_not.includes('Hentai'))) variables.genre_not = [...(variables.genre_not ? variables.genre_not : []), 'Hentai']
 
     debug(`Searching ${JSON.stringify(variables)}`)
     const cachedEntry = cache.cachedEntry(caches.SEARCH, JSON.stringify(variables), status.value.match(/offline/i))
@@ -636,7 +636,7 @@ class AnilistClient {
           hasNextPage
         },
         media(id_not_in: $id_not, idMal_not_in: $idMal_not, id_in: $id, idMal_in: $idMal, type: ANIME, search: $search, sort: $sort, onList: $onList, status_in: $status, status_not_in: $status_not, season: $season, seasonYear: $year, genre_in: $genre, genre_not_in: $genre_not, tag_in: $tag, tag_not_in: $tag_not, format_in: $format, format_not: MUSIC, format_not_in: $format_not, isAdult: $isAdult) {
-          ${queryObjects}${settings.value.queryComplexity === 'Complex' ? `, ${queryComplexObjects}` : ``}
+          ${queryObjects}${settings.value.queryComplexity === 'Complex' ? `, ${queryComplexObjects}` : ''}
         }
       }
     }`
@@ -652,7 +652,7 @@ class AnilistClient {
     return cache.cacheEntry(caches.SEARCH, JSON.stringify(variables), { ...variables, ...(malClient.userID ? { fillLists: malClient.userLists.value } : {}) }, request, Date.now() + getRandomInt(75, 100) * 60 * 1000)
   }
 
-  searchIDSingle(variables) {
+  searchIDSingle (variables) {
     variables.sort = variables.sort || 'OMIT'
     debug(`Searching for ID: ${variables?.id || variables?.idMal}`)
     const cachedEntry = cache.cachedEntry(caches.SEARCH_IDS, JSON.stringify(variables), status.value.match(/offline/i))
@@ -660,7 +660,7 @@ class AnilistClient {
     const query = /* js */` 
     query($id: Int, $idMal: Int) { 
       Media(id: $id, idMal: $idMal, type: ANIME) {
-        ${queryObjects}${settings.value.queryComplexity === 'Complex' ? `, ${queryComplexObjects}` : ``}
+        ${queryObjects}${settings.value.queryComplexity === 'Complex' ? `, ${queryComplexObjects}` : ''}
       }
     }`
 
@@ -676,11 +676,11 @@ class AnilistClient {
   }
 
   /** returns {import('./al.d.ts').PagedQuery<{media: import('./al.d.ts').Media[]}>} */
-  searchIDS(variables) {
+  searchIDS (variables) {
     if (variables?.id?.length === 0) return
     variables.sort = variables.sort || 'OMIT'
     if (settings.value.adult === 'none') variables.isAdult = false
-    if (settings.value.adult !== 'hentai' && (!variables.genre_not || !variables.genre_not.includes('Hentai'))) variables.genre_not = [ ...(variables.genre_not ? variables.genre_not : []), 'Hentai' ]
+    if (settings.value.adult !== 'hentai' && (!variables.genre_not || !variables.genre_not.includes('Hentai'))) variables.genre_not = [...(variables.genre_not ? variables.genre_not : []), 'Hentai']
 
     debug(`Searching for IDs ${JSON.stringify(variables)}`)
     const cachedEntry = !variables.skipCache && cache.cachedEntry(caches.SEARCH_IDS, JSON.stringify(variables), status.value.match(/offline/i))
@@ -692,7 +692,7 @@ class AnilistClient {
           hasNextPage
         },
         media(id_in: $id, idMal_in: $idMal, id_not_in: $id_not, type: ANIME, status_in: $status, onList: $onList, search: $search, sort: $sort, season: $season, seasonYear: $year, genre_in: $genre, genre_not_in: $genre_not, tag_in: $tag, tag_not_in: $tag_not, format_in: $format, isAdult: $isAdult) {
-          ${queryObjects}${settings.value.queryComplexity === 'Complex' ? `, ${queryComplexObjects}` : ``}
+          ${queryObjects}${settings.value.queryComplexity === 'Complex' ? `, ${queryComplexObjects}` : ''}
         }
       }
     }`
@@ -709,14 +709,14 @@ class AnilistClient {
   }
 
   /** returns {import('./al.d.ts').PagedQuery<{media: import('./al.d.ts').Media[]}>} */
-  async searchAllIDS(variables) {
+  async searchAllIDS (variables) {
     if (variables && variables.id && Array.isArray(variables.id)) {
       variables.id = variables.id.filter(i => typeof i !== 'string')
       if (variables.id.length === 0) return Promise.resolve({ data: { Page: { pageInfo: { hasNextPage: false }, media: [] } } })
     }
     variables.sort = variables.sort || 'OMIT'
     if (settings.value.adult === 'none') variables.isAdult = false
-    if (settings.value.adult !== 'hentai' && (!variables.genre_not || !variables.genre_not.includes('Hentai'))) variables.genre_not = [ ...(variables.genre_not ? variables.genre_not : []), 'Hentai' ]
+    if (settings.value.adult !== 'hentai' && (!variables.genre_not || !variables.genre_not.includes('Hentai'))) variables.genre_not = [...(variables.genre_not ? variables.genre_not : []), 'Hentai']
     debug(`Searching for (ALL) IDs ${JSON.stringify(variables)}`)
     const cachedEntry = !variables.skipCache && cache.cachedEntry(caches.SEARCH_IDS, JSON.stringify(variables), status.value.match(/offline/i))
     if (cachedEntry) return cachedEntry
@@ -724,17 +724,17 @@ class AnilistClient {
     let currentPage = 1
     let failedRes
     while (true) { // cycle until all paged ids are resolved.
-      const res = await this.searchIDS({ ...variables, page: currentPage, perPage: 50, ...( variables?.id && variables?.id?.length !== 0 ? { id: [...new Set(variables.id)] } : { idMal: [...new Set(variables.idMal)] }) })
+      const res = await this.searchIDS({ ...variables, page: currentPage, perPage: 50, ...(variables?.id && variables?.id?.length !== 0 ? { id: [...new Set(variables.id)] } : { idMal: [...new Set(variables.idMal)] }) })
       if (!res?.data && res?.errors) { failedRes = res }
       if (res?.data?.Page.media) fetchedIDS = fetchedIDS.concat(res?.data?.Page.media)
       if (!res?.data?.Page.pageInfo.hasNextPage) break
       currentPage++
     }
-    return cache.cacheEntry(caches.SEARCH_IDS, JSON.stringify(variables), { ...variables, ...(malClient.userID ? { fillLists: malClient.userLists.value } : {}) }, ({ ...(failedRes || failedRes?.errors ? {errors: failedRes?.errors ? failedRes.errors : failedRes} : {}), data: { Page: {  pageInfo: { hasNextPage: false }, media: fetchedIDS } } }), Date.now() + getRandomInt(34, 46) * 60 * 1000)
+    return cache.cacheEntry(caches.SEARCH_IDS, JSON.stringify(variables), { ...variables, ...(malClient.userID ? { fillLists: malClient.userLists.value } : {}) }, ({ ...(failedRes || failedRes?.errors ? { errors: failedRes?.errors ? failedRes.errors : failedRes } : {}), data: { Page: { pageInfo: { hasNextPage: false }, media: fetchedIDS } } }), Date.now() + getRandomInt(34, 46) * 60 * 1000)
   }
 
   /** @returns {Promise<import('./al.d.ts').PagedQuery<{ airingSchedules: { airingAt: number, episode: number }[]}>>} */
-  episodes(variables = {}) {
+  episodes (variables = {}) {
     debug(`Getting episodes for ${variables.id}`)
     const cachedEntry = cache.cachedEntry(caches.EPISODES, variables.id, status.value.match(/offline/i))
     if (cachedEntry) return cachedEntry
@@ -751,7 +751,7 @@ class AnilistClient {
   }
 
   /** @returns {Promise<import('./al.d.ts').Query<{ AiringSchedule: { airingAt: number }}>>} */
-  episodeDate(variables) {
+  episodeDate (variables) {
     debug(`Searching for episode date: ${variables.id}, ${variables.ep}`)
     const cachedEntry = cache.cachedEntry(caches.EPISODES, JSON.stringify(variables), status.value.match(/offline/i))
     if (cachedEntry) return cachedEntry
@@ -765,7 +765,7 @@ class AnilistClient {
   }
 
   /** @returns {Promise<import('./al.d.ts').PagedQuery<{ mediaList: import('./al.d.ts').Following[]}>>} */
-  following(variables) {
+  following (variables) {
     debug('Getting following')
     const cachedEntry = cache.cachedEntry(caches.FOLLOWING, JSON.stringify(variables), status.value.match(/offline/i))
     if (cachedEntry) return cachedEntry
@@ -811,7 +811,7 @@ class AnilistClient {
   }
 
   /** @returns {Promise<import('./al.d.ts').Query<{Media: import('./al.d.ts').Media}>>} */
-  async recommendations(variables) {
+  async recommendations (variables) {
     debug(`Getting recommendations for ${variables.id}`)
     if (settings.value.queryComplexity === 'Complex' && await cache.requestMedia(variables?.id)) {
       debug(`Complex queries are enabled, returning cached recommendations from media ${variables.id}`)
@@ -831,7 +831,7 @@ class AnilistClient {
     return cache.cacheEntry(caches.RECOMMENDATIONS, variables.id, variables, this.alRequest(query, variables), Date.now() + getRandomInt(1500, 2000) * 60 * 1000)
   }
 
-  favourite(variables) {
+  favourite (variables) {
     debug(`Toggling favourite for ${variables.id}`)
     const query = /* js */`
       mutation($id: Int) {
@@ -845,7 +845,7 @@ class AnilistClient {
   }
 
   /** @param {import('./al.d.ts').Media} media */
-  title(media) {
+  title (media) {
     const cachedMedia = mediaCache.value[media?.id || media] || media
     const preferredTitle = cachedMedia?.title?.userPreferred
     if (alToken) return preferredTitle
@@ -854,7 +854,7 @@ class AnilistClient {
   }
 
   /** @param {import('./al.d.ts').Media} media */
-  reviews(media) {
+  reviews (media) {
     const totalReviewers = media.stats?.scoreDistribution?.reduce((total, score) => total + score.amount, 0)
     return media.averageScore && totalReviewers ? totalReviewers.toLocaleString() : '?'
   }
@@ -900,7 +900,7 @@ class AnilistClient {
    * @param {number} id - AniList media ID
    * @returns {Promise<import('./al.d.ts').Media | null>}
    */
-  requestMediaID(id) {
+  requestMediaID (id) {
     debug(`Requesting media ID: ${id}`, `Current queue: ${Array.from(this.queuedMediaIDs)}`)
     if (!id || typeof id === 'string' || status.value.match(/offline/i)) return Promise.resolve(null)
     if (this.mediaIDHandlers.get(id)?.promise) return this.mediaIDHandlers.get(id).promise
@@ -918,7 +918,7 @@ class AnilistClient {
    * @param {boolean} [single=false] - Whether to return a single media object or a paged result.
    * @returns {Promise<import('./al.d.ts').Media | { data: { Page: { pageInfo: { hasNextPage: boolean }, media: import('./al.d.ts').Media[] } } }>}
    */
-  fallbackSearch(variables, single = false) {
+  fallbackSearch (variables, single = false) {
     debug('AniList search failed, falling back to searching the mediaCache...')
     let media = Object.values(mediaCache.value || {})
 
@@ -999,14 +999,16 @@ class AnilistClient {
     const perPage = variables.perPage || 50
     const start = ((variables.page || 1) - 1) * perPage
     const end = start + perPage
-    return Promise.resolve(single ? { data: { Media: media[0] || null } } : {
-      data: {
-        Page: {
-          pageInfo: { hasNextPage: end < media.length },
-          media: media.slice(start, end)
-        }
-      }
-    })
+    return Promise.resolve(single
+      ? { data: { Media: media[0] || null } }
+      : {
+          data: {
+            Page: {
+              pageInfo: { hasNextPage: end < media.length },
+              media: media.slice(start, end)
+            }
+          }
+        })
   }
 
   // Graveyard of no longer used/needed methods, good for reference.
@@ -1068,7 +1070,6 @@ class AnilistClient {
   //
   //   return res
   // }
-
 
   // customList(variables = {}) {
   //   debug('Updating custom list')

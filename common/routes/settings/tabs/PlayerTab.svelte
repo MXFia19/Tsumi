@@ -123,7 +123,7 @@
 {#if settings.playerAutocomplete}
   <SettingCard title='Auto-Complete Threshold' description='The percentage of an episode that must be watched before it is automatically marked as complete. A higher value means more of the episode must be watched.'>
     <div class='input-group w-100 mw-full'>
-      <ClampedNumber bind:bindTo={settings.playerAutocompleteThreshold} min={1} max={100} class='form-control text-right bg-dark'/>
+      <ClampedNumber bind:bindTo={settings.playerAutocompleteThreshold} min={1} max={100} class='form-control text-right bg-dark' />
       <div class='input-group-append'>
         <span class='input-group-text bg-dark'>%</span>
       </div>
@@ -138,7 +138,7 @@
 </SettingCard>
 <SettingCard title='Seek Duration' description='Seconds to skip forward or backward when using the seek buttons or keyboard shortcuts. Higher values might negatively impact buffering speeds.'>
   <div class='input-group w-100 mw-full'>
-    <ClampedNumber bind:bindTo={settings.playerSeek} min={0.2} max={360} step={0.1} class='form-control text-right bg-dark'/>
+    <ClampedNumber bind:bindTo={settings.playerSeek} min={0.2} max={360} step={0.1} class='form-control text-right bg-dark' />
     <div class='input-group-append'>
       <span class='input-group-text bg-dark'>sec</span>
     </div>

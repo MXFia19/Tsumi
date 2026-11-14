@@ -1,7 +1,7 @@
 import { IPC } from '../preload/preload.js'
 
 export default class Dialog {
-  constructor() {
+  constructor () {
     IPC.on('log-contents', async (log) => {
       try {
         await window.cordova.plugins.saveDialog.saveFile(new Blob([log], { type: 'application/octet-stream' }), `shiru-log-${new Date().toISOString().replace(/[:.]/g, '-')}.log`)

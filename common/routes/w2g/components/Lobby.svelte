@@ -74,7 +74,7 @@
           style='resize: none; min-height: 0 !important'
           autocomplete='off'
           maxlength='2048'
-          placeholder='Message' on:keydown={checkInput} />
+          placeholder='Message' on:keydown={checkInput}></textarea>
         <button class='btn d-flex mt-auto align-items-center justify-content-center ml-20 border-0 px-0 shadow-none' title='Send' type='button' use:click={sendMessage} style='height: 3.75rem !important; width: 3.75rem !important;'>
           <SendHorizontal size='1.8rem' strokeWidth={2.5} />
         </button>

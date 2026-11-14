@@ -11,7 +11,7 @@ const debug = Debug('ui:myanimelist')
 
 export const clientID = atob('ZDZjNTlhNjI4M2U1NWU3NGZlMDQyMDY4OTk0ZTRmYjY=') // app type MUST be set to other, do not generate a seed.
 
-const queryFields =  [
+const queryFields = [
   'synopsis',
   'alternative_titles',
   'mean',
@@ -88,7 +88,7 @@ class MALClient {
     const options = {
       method: `${query.type}`,
       headers: {
-        'Authorization': `Bearer ${query.eToken ? query.eToken : query.token ? query.token : this.userID.token}`,
+        Authorization: `Bearer ${query.eToken ? query.eToken : query.token ? query.token : this.userID.token}`,
         'Content-Type': 'application/x-www-form-urlencoded'
       }
     }
@@ -114,7 +114,7 @@ class MALClient {
         const oauth = await this.refreshToken(query)
         if (oauth) {
           options.headers = {
-            'Authorization': `Bearer ${oauth.access_token}`,
+            Authorization: `Bearer ${oauth.access_token}`,
             'Content-Type': 'application/x-www-form-urlencoded'
           }
         } else return {}
@@ -145,7 +145,7 @@ class MALClient {
               const oauth = await this.refreshToken(query)
               if (oauth) {
                 options.headers = {
-                  'Authorization': `Bearer ${oauth.access_token}`,
+                  Authorization: `Bearer ${oauth.access_token}`,
                   'Content-Type': 'application/x-www-form-urlencoded'
                 }
                 return this.handleRequest(query, options)
@@ -165,7 +165,7 @@ class MALClient {
     return json
   })
 
-  async refreshToken(query) {
+  async refreshToken (query) {
     const oauth = await refreshMalToken(query.token ? query.token : this.userID.token) // refresh authorization token as it typically expires every 31 days. Refresh token also expires every 31 days, so we refresh every two weeks.
     if (oauth) {
       if (!query.token) {
@@ -285,20 +285,22 @@ class MALClient {
     setTimeout(async () => {
       if (!variables.token) this.userLists.value = Promise.resolve(await this.getUserLists({ sort: 'list_updated_at' })) // awaits before setting the value as it is super jarring to have stuff constantly re-rendering when it's not needed.
     })
-    return res ? {
-      data: {
-        SaveMediaListEntry: {
-          id: variables.id,
-          status: variables.status,
-          progress: variables.episode,
-          score: variables.score,
-          repeat: variables.repeat,
-          startedAt: variables.startedAt,
-          completedAt: variables.completedAt,
-          customLists: []
+    return res
+      ? {
+          data: {
+            SaveMediaListEntry: {
+              id: variables.id,
+              status: variables.status,
+              progress: variables.episode,
+              score: variables.score,
+              repeat: variables.repeat,
+              startedAt: variables.startedAt,
+              completedAt: variables.completedAt,
+              customLists: []
+            }
+          }
         }
-      }
-    } : res
+      : res
   }
 
   async delete (variables) {
@@ -311,7 +313,7 @@ class MALClient {
     }
     const res = await this.malRequest(query)
     setTimeout(async () => {
-      if (!variables.token) this.userLists.value = Promise.resolve(await this.getUserLists({sort: 'list_updated_at'})) // awaits before setting the value as it is super jarring to have stuff constantly re-rendering when it's not needed.
+      if (!variables.token) this.userLists.value = Promise.resolve(await this.getUserLists({ sort: 'list_updated_at' })) // awaits before setting the value as it is super jarring to have stuff constantly re-rendering when it's not needed.
     })
     return res
   }

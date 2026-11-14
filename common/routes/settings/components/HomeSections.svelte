@@ -26,14 +26,14 @@
     }
   }
 
-  function swapItem(fromIndex, toIndex) {
+  function swapItem (fromIndex, toIndex) {
     toIndex = Math.min(homeSections.length - 1, Math.max(0, toIndex))
     const [item] = homeSections.splice(fromIndex, 1)
     homeSections.splice(toIndex, 0, item)
     homeSections = [...homeSections]
   }
 
-  function updateGhostPosition() {
+  function updateGhostPosition () {
     setTimeout(() => {
       const element = document.querySelector(`[data-drag-index='${draggingItemIndex}']`)
       if (element) {
@@ -45,7 +45,7 @@
     })
   }
 
-  function calculateHoverIndexFromY(clientY) {
+  function calculateHoverIndexFromY (clientY) {
     let closestIndex = null
     let closestDistance = Infinity
     document.querySelectorAll('[data-drag-index]').forEach((el) => {
@@ -59,7 +59,7 @@
     return closestIndex
   }
 
-  function handleKeyDown(event, index, item) {
+  function handleKeyDown (event, index, item) {
     if (event.key === 'Escape' && controlDragging) {
       event.preventDefault()
       controlDragging = false
@@ -107,7 +107,7 @@
     }
   }
 
-  function handleTouchEnd() {
+  function handleTouchEnd () {
     if (!isDraggingTouch) return
     mouseYCoordinate = null
     draggingItem = null
@@ -118,7 +118,7 @@
     touchStartY = null
   }
 
-  function getListBounds() {
+  function getListBounds () {
     const firstElement = document.querySelector('[data-drag-index="0"]')
     const lastElement = document.querySelector(`[data-drag-index="${homeSections.length - 1}"]`)
     if (!firstElement || !lastElement) return null
@@ -128,7 +128,7 @@
     return { top: firstRow.offsetTop, bottom: lastRow.offsetTop }
   }
 
-  function clampYCoordinate(y) {
+  function clampYCoordinate (y) {
     if (distanceTopGrabbedVsPointer == null) return y
     const bounds = getListBounds()
     if (!bounds) return y
@@ -160,14 +160,14 @@
   {/if}
   <div class='d-flex mb-10 w-509 mw-full not-reactive' class:tp={draggingItem === item} role='menuitem' tabindex='-1'>
     <div class='input-group-prepend grab touch-none' class:tp={draggingItem === item} draggable='true' role='button' tabindex='0' data-drag-index={index} aria-label={controlDragging && draggingItemIndex === index ? 'Dragging. Use arrow keys to move, Space or Enter to drop, Escape to cancel' : 'Press Space or Enter to start dragging'}
-         on:dragstart={({ clientY, target }) => { if (!SUPPORTS.isAndroid) { mouseYCoordinate = clientY; draggingItem = item; draggingItemIndex = index; distanceTopGrabbedVsPointer = target.offsetTop - clientY } }}
-         on:drag={e => { if (e.clientY !== 0 && !SUPPORTS.isAndroid) { mouseYCoordinate = clampYCoordinate(e.clientY); hoveredItemIndex = calculateHoverIndexFromY(e.clientY) } }}
-         on:dragend={() => { if (!SUPPORTS.isAndroid) { mouseYCoordinate = null; draggingItem = null; hoveredItemIndex = null; lastProcessedHoverIndex = null } }}
-         on:touchstart={e => { const touch = e.touches[0]; touchStartY = touch.clientY; isDraggingTouch = true; mouseYCoordinate = touch.clientY; draggingItem = item; draggingItemIndex = index; distanceTopGrabbedVsPointer = e.currentTarget.offsetTop - touch.clientY }}
-         on:touchmove={e => { if (!isDraggingTouch) return; const touch = e.touches[0]; mouseYCoordinate = clampYCoordinate(touch.clientY); hoveredItemIndex = calculateHoverIndexFromY(touch.clientY) }}
-         on:touchend={handleTouchEnd}
-         on:touchcancel={handleTouchEnd}
-         on:keydown={e => handleKeyDown(e, index, item)}>
+      on:dragstart={({ clientY, target }) => { if (!SUPPORTS.isAndroid) { mouseYCoordinate = clientY; draggingItem = item; draggingItemIndex = index; distanceTopGrabbedVsPointer = target.offsetTop - clientY } }}
+      on:drag={e => { if (e.clientY !== 0 && !SUPPORTS.isAndroid) { mouseYCoordinate = clampYCoordinate(e.clientY); hoveredItemIndex = calculateHoverIndexFromY(e.clientY) } }}
+      on:dragend={() => { if (!SUPPORTS.isAndroid) { mouseYCoordinate = null; draggingItem = null; hoveredItemIndex = null; lastProcessedHoverIndex = null } }}
+      on:touchstart={e => { const touch = e.touches[0]; touchStartY = touch.clientY; isDraggingTouch = true; mouseYCoordinate = touch.clientY; draggingItem = item; draggingItemIndex = index; distanceTopGrabbedVsPointer = e.currentTarget.offsetTop - touch.clientY }}
+      on:touchmove={e => { if (!isDraggingTouch) return; const touch = e.touches[0]; mouseYCoordinate = clampYCoordinate(touch.clientY); hoveredItemIndex = calculateHoverIndexFromY(touch.clientY) }}
+      on:touchend={handleTouchEnd}
+      on:touchcancel={handleTouchEnd}
+      on:keydown={e => handleKeyDown(e, index, item)}>
       <span class='input-group-text d-flex align-items-center px-5'>
         <ArrowDownUp size='1.8rem' />
       </span>
@@ -208,7 +208,7 @@
       </select>
     </div>
     <div class='position-relative flex-shrink-1 w-150 bg-dark'>
-      <CustomDropdown id={`format-hs-${index}`} options={{ TV: 'TV Show', MOVIE: 'Movie', TV_SHORT: 'TV Short', SPECIAL: 'Special', OVA: 'OVA', ONA: 'ONA' }} bind:value={homeSections[index][2]} disabled={homeSections[index][2]?.includes('N/A')}/>
+      <CustomDropdown id={`format-hs-${index}`} options={{ TV: 'TV Show', MOVIE: 'Movie', TV_SHORT: 'TV Short', SPECIAL: 'Special', OVA: 'OVA', ONA: 'ONA' }} bind:value={homeSections[index][2]} disabled={homeSections[index][2]?.includes('N/A')} />
     </div>
     <div class='input-group-append'>
       <button type='button' use:click={() => { homeSections.splice(index, 1); homeSections = homeSections }} class='btn btn-danger btn-square input-group-append px-5 d-flex align-items-center'><Trash2 size='1.8rem' /></button>

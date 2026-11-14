@@ -29,8 +29,8 @@
   let preview = false
   let ignoreFocus = false
   let zeroEpisode = false
-  let prompt = writable(false)
-  let clicked = writable(false)
+  const prompt = writable(false)
+  const clicked = writable(false)
 
   /** @type {import('@/modules/al.d.ts').Media | null} */
   let media
@@ -41,7 +41,7 @@
   $: checkForZero(media).then(_zeroEpisode => zeroEpisode = _zeroEpisode)
   $: episodeRange = episodesList.handleArray(data?.episode, data?.parseObject?.file_name)
   $: lastEpisode = (data?.episodeRange || data?.parseObject?.episodeRange)?.last || episodeRange?.last || (isValidNumber(data?.episode) && (data?.episode + (zeroEpisode ? 1 : 0))) || (media?.episodes === 1 && media?.episodes)
-  $: episodeThumbnail = ((data.similarity|| (!media?.mediaListEntry?.status || !(['CURRENT', 'REPEATING', 'PAUSED', 'PLANNING'].includes(media.mediaListEntry.status) && media.mediaListEntry.progress < lastEpisode))) && data.episodeData?.image) || media?.bannerImage || media?.coverImage.extraLarge || ' '
+  $: episodeThumbnail = ((data.similarity || (!media?.mediaListEntry?.status || !(['CURRENT', 'REPEATING', 'PAUSED', 'PLANNING'].includes(media.mediaListEntry.status) && media.mediaListEntry.progress < lastEpisode))) && data.episodeData?.image) || media?.bannerImage || media?.coverImage.extraLarge || ' '
   $: watched = media?.mediaListEntry?.status === 'COMPLETED'
   $: completed = !watched && media?.mediaListEntry?.progress >= lastEpisode
   $: progress = liveAnimeEpisodeProgress(media?.id, data?.episode, completed)
@@ -49,7 +49,7 @@
   function viewMedia () {
     modal.open(modal.ANIME_DETAILS, media)
   }
-  function setClickState() {
+  function setClickState () {
     const episode = isValidNumber(data.episode) ? data.episode : (media?.episodes === 1 && media?.episodes)
     if (!$prompt && !data.similarity && isValidNumber(episode) && !Array.isArray(episode) && (episode - 1) >= 1 && media?.mediaListEntry?.status !== 'COMPLETED' && (media?.mediaListEntry?.progress || -1) < (episode - 1)) prompt.set(true)
     else isValidNumber(episode) ? (media ? playEpisode(media, episode) : data.onclick()) : viewMedia()
@@ -73,7 +73,7 @@
   let previewCard
   let focusTimeout
   let blurTimeout
-  function handleFocus() {
+  function handleFocus () {
     if (ignoreFocus || preview) return
     clearTimeouts()
     focusTimeout = setTimeout(() => {
@@ -85,7 +85,7 @@
     }, 800)
     focusTimeout.unref?.()
   }
-  function handleBlur() {
+  function handleBlur () {
     clearTimeouts()
     blurTimeout = setTimeout(() => {
       const focused = document.activeElement
@@ -102,7 +102,7 @@
     })
     blurTimeout.unref?.()
   }
-  function handleOutsideClick(event) {
+  function handleOutsideClick (event) {
     if (container && previewCard && !container.contains(event.target) && !previewCard.contains(event.target)) {
       preview = false
       setTimeout(() => {
@@ -111,7 +111,7 @@
       document.removeEventListener('pointerup', handleOutsideClick)
     }
   }
-  function clearTimeouts() {
+  function clearTimeouts () {
     clearTimeout(focusTimeout)
     clearTimeout(blurTimeout)
   }
@@ -139,7 +139,7 @@
   {/if}
   <div class='item load-in d-flex flex-column h-full pointer content-visibility-auto' class:opacity-half={completed}>
     <div class='image h-200 w-full position-relative rounded overflow-hidden d-flex justify-content-between align-items-end text-white'>
-      <SmartImage class='cover-img cover-color w-full h-full position-absolute {!(data.episodeData?.image || media?.bannerImage) && media?.genres?.includes(`Hentai`) ? `cover-rotated cr-380` : ``}' color={media?.coverImage?.color || 'var(--tertiary-color)'} images={[episodeThumbnail, './404_episode.png']}/>
+      <SmartImage class='cover-img cover-color w-full h-full position-absolute {!(data.episodeData?.image || media?.bannerImage) && media?.genres?.includes('Hentai') ? 'cover-rotated cr-380' : ''}' color={media?.coverImage?.color || 'var(--tertiary-color)'} images={[episodeThumbnail, './404_episode.png']} />
       {#if data.failed}
         <div class='pl-10 pt-10 z-10 position-absolute top-0 left-0 text-danger icon-shadow' title='Failed to resolve media'>
           <RefreshCwOff size='3rem' />
@@ -159,11 +159,11 @@
       </div>
       {#if completed}
         <div class='progress container-fluid position-absolute z-10' style='height: 2px; min-height: 2px;'>
-          <div class='progress-bar w-full' />
+          <div class='progress-bar w-full'></div>
         </div>
       {:else if $progress > 0}
         <div class='progress container-fluid position-absolute z-10' style='height: 2px; min-height: 2px;'>
-          <div class='progress-bar' style='width: {$progress}%' />
+          <div class='progress-bar' style='width: {$progress}%'></div>
         </div>
       {/if}
     </div>
@@ -171,7 +171,7 @@
       <div class='col pr-10'>
         <div class='text-white font-weight-very-bold font-size-16 title overflow-hidden'>
           {#if media?.mediaListEntry?.status}
-            <div style:--statusColor={statusColorMap[media.mediaListEntry.status]} class='list-status-circle d-inline-flex overflow-hidden mr-5' title={media.mediaListEntry.status} />
+            <div style:--statusColor={statusColorMap[media.mediaListEntry.status]} class='list-status-circle d-inline-flex overflow-hidden mr-5' title={media.mediaListEntry.status}></div>
           {/if}
           {anilistClient.title(media) || data.parseObject?.anime_title}
         </div>

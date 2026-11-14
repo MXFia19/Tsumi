@@ -15,7 +15,7 @@ variables.subscribe(value => {
   setStyle(value)
 })
 
-export function setStyle(value) {
+export function setStyle (value) {
   if (settings.value.presetTheme !== 'default-amoled') {
     settings.update(s => ({ ...s, presetTheme: 'default-amoled' }))
   }
@@ -24,6 +24,6 @@ export function setStyle(value) {
   style.textContent = `:root[data-theme='default-amoled']{${(value || variables.value).replace(/{|}/g, '')}}`
 }
 
-export function setScale() {
+export function setScale () {
   document.documentElement.style.setProperty('--ui-scale', settings.value.uiScale)
 }

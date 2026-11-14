@@ -18,13 +18,13 @@
 </script>
 
 <div role='button' tabindex='0' class='navbar-link navbar-link-with-icon pointer overflow-hidden mx-auto flex-shrink-0 {css}' title={text}
-     on:mouseenter={() => { if (supportsHover) hovering = true }}
-     on:mouseleave={() => { if (supportsHover) hovering = false }}
-     on:focus={(e) => { if (e.relatedTarget != null) hovering = true }}
-     on:blur={() => { hovering = false }}
-     on:pointerdown={() => { if (!supportsHover) hovering = false }}
-     use:click={_click}
-     on:contextmenu|preventDefault={rbClick}>
+  on:mouseenter={() => { if (supportsHover) hovering = true }}
+  on:mouseleave={() => { if (supportsHover) hovering = false }}
+  on:focus={(e) => { if (e.relatedTarget != null) hovering = true }}
+  on:blur={() => { hovering = false }}
+  on:pointerdown={() => { if (!supportsHover) hovering = false }}
+  use:click={_click}
+  on:contextmenu|preventDefault={rbClick}>
   <span class='rounded d-flex'>
     <slot active={!_modal ? ((!$modal || !modal.length) && $page === _page) : _modal === modal.focused} {hovering}>{icon}</slot>
   </span>

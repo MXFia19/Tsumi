@@ -38,7 +38,7 @@ export const codes = {
  * @param {*} value - The value to check.
  * @returns {boolean} True if the value is a finite number.
  */
-export function isValidNumber(value) {
+export function isValidNumber (value) {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
@@ -47,7 +47,7 @@ export function isValidNumber(value) {
  * @param {string} str
  * @returns {string} The full hex color of the string input.
  */
-export function stringToHex(str) {
+export function stringToHex (str) {
   if (!str) return 'var(--highlight-color)'
   let hash = 0
   for (let i = 0; i < str.length; i++) {
@@ -61,7 +61,7 @@ export function stringToHex(str) {
  * Creates a deferred promise that can be resolved or rejected manually.
  * @returns {{ promise: Promise<boolean>, resolve: (value?: boolean) => void, reject: (reason?: any) => void }}
  */
-export function createDeferred() {
+export function createDeferred () {
   let resolveFn
   let rejectFn
   const promise = new Promise((resolve, reject) => {
@@ -89,7 +89,7 @@ export function createDeferred() {
  * @param {number} s - The number of seconds (can be negative for a reverse countdown)
  * @returns {string} A formatted time string like '2h 5m'
  */
-export function countdown(s) {
+export function countdown (s) {
   s = Math.floor(Math.abs(s))
   const d = Math.floor(s / 86400)
   s -= d * 86400
@@ -121,14 +121,14 @@ const ranges = {
  * @param {T[]} arr
  * @param {number} n
  */
-export function* chunks(arr, n) {
+export function * chunks (arr, n) {
   for (let i = 0; i < arr.length; i += n) {
     yield arr.slice(i, i + n)
   }
 }
 
 /** @param {Date} date */
-export function since(date) {
+export function since (date) {
   const secondsElapsed = (date.getTime() - Date.now()) / 1000
   for (const key in ranges) {
     if (ranges[key] < Math.abs(secondsElapsed)) {
@@ -140,7 +140,7 @@ export function since(date) {
 }
 
 /** @param {Date} date */
-export function eta(date) {
+export function eta (date) {
   const secondsElapsed = (date.getTime() - Date.now()) / 1000
   if (!isFinite(secondsElapsed)) return '∞'
   for (const key in ranges) {
@@ -159,7 +159,7 @@ export function eta(date) {
  * @param {boolean} skip Add the specified number of weeks regardless of the episodeDate having past.
  * @returns {Date}
  */
-export function past(episodeDate, weeks = 0, skip) {
+export function past (episodeDate, weeks = 0, skip) {
   if (episodeDate < new Date() || skip) {
     episodeDate.setDate(episodeDate.getDate() + (7 * weeks))
   }
@@ -170,7 +170,7 @@ export function past(episodeDate, weeks = 0, skip) {
  * @param {Date} date
  * @param {boolean} year
  */
-export function monthDay(date, year = false) {
+export function monthDay (date, year = false) {
   const day = date.getDate()
   if (year) {
     return new Intl.DateTimeFormat('en-US', {
@@ -182,7 +182,7 @@ export function monthDay(date, year = false) {
 }
 
 const units = [' B', ' kB', ' MB', ' GB', ' TB']
-export function fastPrettyBytes(num) {
+export function fastPrettyBytes (num) {
   if (isNaN(num)) return '0 B'
   if (num < 1) return num + ' B'
   const exponent = Math.min(Math.floor(Math.log(num) / Math.log(1000)), units.length - 1)
@@ -194,7 +194,7 @@ export const DOMPARSER = (typeof DOMParser !== 'undefined') && DOMParser.prototy
 
 export const sleep = t => new Promise(resolve => setTimeout(resolve, t).unref?.())
 
-export function toTS(sec, full) {
+export function toTS (sec, full) {
   if (isNaN(sec) || sec < 0) {
     switch (full) {
       case 1:
@@ -218,7 +218,7 @@ export function toTS(sec, full) {
 }
 
 const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567'
-export function base32toHex(base32) {
+export function base32toHex (base32) {
   let bits = ''
   for (const char of base32.toLowerCase()) {
     const val = BASE32_ALPHABET.indexOf(char)
@@ -231,20 +231,20 @@ export function base32toHex(base32) {
   return hex
 }
 
-export function generateRandomHexCode(len) {
+export function generateRandomHexCode (len) {
   let hexCode = ''
   while (hexCode.length < len) hexCode += (Math.round(Math.random() * 15)).toString(16)
   return hexCode
 }
 
-export function generateRandomString(length) {
+export function generateRandomString (length) {
   let string = ''
   const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~'
   for (let i = 0; i < length; i++) string += possible.charAt(Math.floor(Math.random() * possible.length))
   return string
 }
 
-export function getRandomInt(min, max) {
+export function getRandomInt (min, max) {
   min = Math.ceil(min)
   max = Math.floor(max)
   return Math.floor(Math.random() * (max - min + 1)) + min
@@ -256,7 +256,7 @@ export function getRandomInt(min, max) {
  * @param {string} path - The dot-separated path (e.g., 'title.userPreferred').
  * @returns {*} - The value at the specified path or undefined.
  */
-function getNestedValue(obj, path) {
+function getNestedValue (obj, path) {
   return path.split('.').reduce((acc, key) => acc && acc[key], obj)
 }
 
@@ -266,7 +266,7 @@ function getNestedValue(obj, path) {
  * @param {string} path - The dot-separated path (e.g., 'title.userPreferred').
  * @param {*} value - The value to set.
  */
-function setNestedValue(obj, path, value) {
+function setNestedValue (obj, path, value) {
   const keys = path.split('.')
   let current = obj
   while (keys.length > 1) {
@@ -277,7 +277,7 @@ function setNestedValue(obj, path, value) {
   current[keys[0]] = value
 }
 
-function replaceSeasonWithWords(text) {
+function replaceSeasonWithWords (text) {
   const numberWords = {
     1: 'One',
     2: 'Two',
@@ -308,7 +308,7 @@ function replaceSeasonWithWords(text) {
 
 const hyphenRegex = /(\w)-(\w)/g
 const regex = !SUPPORTS.isAndroid ? new RegExp('[^\\p{L}\\p{N}\\p{Zs}\\p{Pd}]', 'gu') : /[^a-zA-Z0-9\s\-\u00C0-\u024F\u0400-\u04FF\u0370-\u03FF\u0600-\u06FF\u0900-\u097F\u4E00-\u9FFF]/g
-function cleanText(text) {
+function cleanText (text) {
   if (typeof text !== 'string') return ''
   return replaceSeasonWithWords(text.replace(hyphenRegex, '$1 $2').replace(regex, ''))
 }
@@ -320,7 +320,7 @@ function cleanText(text) {
  * @param {number} threshold The allowed tolerance, typically for misspellings.
  * @returns {boolean} If the target phrase has been found.
  */
-export function matchKeys(nest, phrase, keys, threshold = 0.4) {
+export function matchKeys (nest, phrase, keys, threshold = 0.4) {
   if (!phrase) return true
   if (!nest) return false
   const cleanedNest = {}
@@ -333,7 +333,7 @@ export function matchKeys(nest, phrase, keys, threshold = 0.4) {
       if (cleanedArray.length) setNestedValue(cleanedNest, key, cleanedArray)
     }
   }
-  if (new Fuse([cleanedNest], { includeScore: true, threshold, keys: keys }).search(cleanedPhrase).length > 0) return true
+  if (new Fuse([cleanedNest], { includeScore: true, threshold, keys }).search(cleanedPhrase).length > 0) return true
   const fuse = new Fuse([cleanedPhrase], { includeScore: true, threshold })
   return keys.some((key) => {
     const valueToMatch = cleanedNest[key]
@@ -353,11 +353,11 @@ export function matchKeys(nest, phrase, keys, threshold = 0.4) {
  * @param {boolean} [soft=false] - If true, and initial match fails, it will do a final check using a Fuse search ignoring word location.
  * @returns {boolean} - Returns true if a match is found, otherwise false.
  */
-export function matchPhrase(search, phrase, threshold, strict = false, soft = false) {
+export function matchPhrase (search, phrase, threshold, strict = false, soft = false) {
   if (!search || !phrase) return false
   const normalizedSearch = search.toString().toLowerCase().replace(regex, '')
   phrase = Array.isArray(phrase) ? phrase : [phrase]
-  for (let p of phrase) {
+  for (const p of phrase) {
     if (p) {
       const normalizedPhrase = p.toLowerCase().replace(regex, '')
       if (strict) {
@@ -366,7 +366,7 @@ export function matchPhrase(search, phrase, threshold, strict = false, soft = fa
         if (normalizedSearch.includes(normalizedPhrase)) return true
         const searchWords = normalizedSearch.split(/\s+/)
         if (!soft) {
-          for (let word of searchWords) {
+          for (const word of searchWords) {
             if (levenshtein(word, normalizedPhrase) <= threshold) return true
           }
         } else return new Fuse([normalizedPhrase], { includeScore: true, threshold, ignoreLocation: true, useExtendedSearch: true, isCaseSensitive: false }).search(normalizedSearch)?.length > 0
@@ -383,7 +383,7 @@ export function matchPhrase(search, phrase, threshold, strict = false, soft = fa
  * @param {Readable<any>} store - The original Svelte store.
  * @returns {Readable<any>} A derived store emitting distinct deep values.
  */
-export function uniqueStore(store) {
+export function uniqueStore (store) {
   let last
   return derived(store, ($value, set) => {
     if (last !== $value) {
@@ -393,15 +393,15 @@ export function uniqueStore(store) {
   })
 }
 
-export function capitalize(str) {
+export function capitalize (str) {
   return str?.replace(/\b\w/g, char => char.toUpperCase())
 }
 
-export function toFlags(code) {
+export function toFlags (code) {
   return code.toUpperCase().split('').map(letter => String.fromCodePoint(0x1F1E6 + letter.charCodeAt(0) - 'A'.charCodeAt(0))).join('')
 }
 
-export function throttle(fn, time) {
+export function throttle (fn, time) {
   let wait = false
   return (...args) => {
     if (!wait) {
@@ -415,7 +415,7 @@ export function throttle(fn, time) {
   }
 }
 
-export function debounce(fn, time) {
+export function debounce (fn, time) {
   let timeout
   return (...args) => {
     const later = () => {
@@ -440,7 +440,7 @@ export function debounce(fn, time) {
  * @param {function} [options.easing=cubicOut] Easing function for the transition.
  * @returns {Object} Svelte transition object with delay, duration, easing, and css function.
  */
-export function fadeIn(node, { delay = 0, duration = 300, y = 1.2, startScale = 0.95, easing = cubicOut } = {}) {
+export function fadeIn (node, { delay = 0, duration = 300, y = 1.2, startScale = 0.95, easing = cubicOut } = {}) {
   return {
     delay,
     duration,
@@ -465,7 +465,7 @@ export function fadeIn(node, { delay = 0, duration = 300, y = 1.2, startScale = 
  * @param {function} [options.easing=cubicIn] Easing function for the transition.
  * @returns {Object} Svelte transition object with delay, duration, easing, and css function.
  */
-export function fadeOut(node, { delay = 0, duration = 200, y = 1.2, endScale = 0.95, easing = cubicIn } = {}) {
+export function fadeOut (node, { delay = 0, duration = 200, y = 1.2, endScale = 0.95, easing = cubicIn } = {}) {
   return {
     delay,
     duration,
@@ -485,7 +485,7 @@ export function fadeOut(node, { delay = 0, duration = 200, y = 1.2, endScale = 0
  * @param {[string]} triggerClasses The classes which need to be clicked to prevent reactivity.
  * @returns { { reactive: Writable<boolean>, init: (create: boolean, boundary?: boolean) => void } } The initializer and reactive listener.
  */
-export function createListener(triggerClasses = []) {
+export function createListener (triggerClasses = []) {
   const reactive = writable(true)
   let lastPointerType = null
   let pointerTimeout = null
@@ -493,7 +493,7 @@ export function createListener(triggerClasses = []) {
   let bounds = false
   let pending = null
 
-  function handleDown(event) {
+  function handleDown (event) {
     const pointerType = event.pointerType ?? (event.type === 'touchstart' ? 'touch' : 'mouse')
     if (!lastPointerType) {
       lastPointerType = pointerType
@@ -513,7 +513,7 @@ export function createListener(triggerClasses = []) {
   }
 
   let upTimeout = null
-  function handleUp(event) {
+  function handleUp (event) {
     const pointerType = event.pointerType ?? (event.type === 'touchend' ? 'touch' : 'mouse')
     if (pointerType !== lastPointerType) return
     const handle = Symbol()
@@ -524,7 +524,7 @@ export function createListener(triggerClasses = []) {
     }, pointerType !== 'touch' ? 20 : 500)
   }
 
-  function addListeners() {
+  function addListeners () {
     document.addEventListener('mousedown', handleDown, true)
     document.addEventListener('touchstart', handleDown, true)
     if (!bounds) {
@@ -534,7 +534,7 @@ export function createListener(triggerClasses = []) {
     handling = true
   }
 
-  function removeListeners() {
+  function removeListeners () {
     document.removeEventListener('mousedown', handleDown, true)
     document.removeEventListener('touchstart', handleDown, true)
     if (!bounds) {
@@ -544,7 +544,7 @@ export function createListener(triggerClasses = []) {
     handling = false
   }
 
-  function init(create, boundary = false) {
+  function init (create, boundary = false) {
     bounds = boundary
     if (create && !handling) addListeners()
     else if (handling) removeListeners()

@@ -10,19 +10,19 @@
   export let list
 
   let showMore = false
-  function toggleList() {
+  function toggleList () {
     showMore = !showMore
   }
 
   let container = null
   let previewLength = 4
-  function updateRowLength() {
+  function updateRowLength () {
     if (!container || !settings.value.toggleList) return
     const firstItem = container.querySelector('.small-card')
     if (firstItem) previewLength = Math.floor((container.offsetWidth) / (firstItem.offsetWidth)) || 1
   }
 
-  function updateRowMarkers() {
+  function updateRowMarkers () {
     if (!container) return
     const cards = Array.from(container.querySelectorAll('.small-card'))
     cards.forEach(card => card.classList.remove('first-in-row', 'last-in-row'))
@@ -47,7 +47,7 @@
     }
   }
 
-  function handleUpdate() {
+  function handleUpdate () {
     updateRowLength()
     updateRowMarkers()
   }
@@ -71,17 +71,17 @@
 {#if list?.length}
   {@const canToggle = settings.value.toggleList && list.length > previewLength}
   <span class='d-flex align-items-end mt-20' aria-hidden='true' tabindex='-1' class:pointer={canToggle} class:not-reactive={!canToggle} use:click={toggleList}>
-    <ToggleTitle title={title} class={canToggle ? `more` : ``}/>
+    <ToggleTitle {title} class={canToggle ? 'more' : ''} />
   </span>
   <div class='pt-10 text-capitalize d-flex gallery'
-       class:justify-content-center={list.length <= 2 || settings.value.toggleList}
-       class:justify-content-start={list.length > 2 && !settings.value.toggleList}
-       class:scroll={!settings.value.toggleList && list.length > 2}
-       class:flex-row={!settings.value.toggleList}
-       class:flex-wrap={settings.value.toggleList}
-       bind:this={container}>
+    class:justify-content-center={list.length <= 2 || settings.value.toggleList}
+    class:justify-content-start={list.length > 2 && !settings.value.toggleList}
+    class:scroll={!settings.value.toggleList && list.length > 2}
+    class:flex-row={!settings.value.toggleList}
+    class:flex-wrap={settings.value.toggleList}
+    bind:this={container}>
     {#each !settings.value.toggleList ? list : (showMore ? list : list.slice(0, previewLength)) as item}
-      <slot {item} {promise} />
+      <slot {item} {promise}></slot>
     {/each}
   </div>
   <ToggleFooter {showMore} {toggleList} size={settings.value.toggleList && list.length} rowSize={previewLength} />

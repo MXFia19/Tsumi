@@ -4,7 +4,7 @@ import { development } from './util.js'
 import { App } from '@capacitor/app'
 import YAML from 'yaml'
 
-const versionCodes = { 'arm64-v8a': 1, 'armeabi-v7a': 2, 'x86': 3, 'universal': 4 }
+const versionCodes = { 'arm64-v8a': 1, 'armeabi-v7a': 2, x86: 3, universal: 4 }
 const sanitizeVersion = (version) => ((version || '').match(/[\d.]+/g)?.join('') || '')
 export default class Updater {
   hasUpdate = false
@@ -17,21 +17,21 @@ export default class Updater {
   currentVersion
   versionCode
   latestRelease
-  constructor(updateURL, assetURL) {
+  constructor (updateURL, assetURL) {
     this.updateURL = updateURL
     this.assetURL = assetURL
     this.getInfo()
     IPC.on('update', () => this.checkForUpdates())
   }
 
-  async getInfo() {
+  async getInfo () {
     const appInfo = await App.getInfo()
     this.build = appInfo.build
     this.currentVersion = appInfo.version
     this.versionCode = await this.parseABI()
   }
 
-  async parseABI() {
+  async parseABI () {
     if (this.build?.length === 7) {
       const versionCode = parseInt(this.build.substring(0, 1))
       if (versionCode < 5) {
@@ -43,7 +43,7 @@ export default class Updater {
     return 'universal'
   }
 
-  async checkForUpdates() {
+  async checkForUpdates () {
     if (!development) {
       try {
         this.latestRelease = YAML.parse(await (await fetch(this.updateURL)).text()).version
@@ -56,7 +56,7 @@ export default class Updater {
     } else console.debug('Skip checkForUpdates because application is not packed and dev update config is not forced')
   }
 
-  isOutdated() {
+  isOutdated () {
     const a = sanitizeVersion(this.latestRelease).split('.').map(Number)
     const b = sanitizeVersion(this.currentVersion).split('.').map(Number)
     for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -68,7 +68,7 @@ export default class Updater {
     return false
   }
 
-  startUpdatePolling() {
+  startUpdatePolling () {
     this.updateAvailable = true
     clearInterval(this.availableInterval)
     this.availableInterval = setInterval(() => {
@@ -77,7 +77,7 @@ export default class Updater {
     this.availableInterval.unref?.()
   }
 
-  async install(forceRequestInstall = false) {
+  async install (forceRequestInstall = false) {
     if (!this.hasUpdate && forceRequestInstall) {
       try {
         clearInterval(this.availableInterval)

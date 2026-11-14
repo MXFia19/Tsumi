@@ -6,14 +6,14 @@ const debug = Debug('ui:streaming')
 let hlsLibrary
 let proxyPort = null
 
-function getProxyUrl(streamUrl, headers = {}, proxyPort) {
+function getProxyUrl (streamUrl, headers = {}, proxyPort) {
   if (!proxyPort) return streamUrl
   const encodedUrl = encodeURIComponent(streamUrl)
   const encodedHeaders = encodeURIComponent(JSON.stringify(headers))
   return `http://localhost:${proxyPort}/proxy?url=${encodedUrl}&headers=${encodedHeaders}`
 }
 
-async function loadHLSLibrary() {
+async function loadHLSLibrary () {
   if (hlsLibrary !== undefined) return hlsLibrary
 
   try {
@@ -38,7 +38,7 @@ async function loadHLSLibrary() {
   }
 }
 
-async function getProxyPortInternal() {
+async function getProxyPortInternal () {
   if (proxyPort !== null) return proxyPort
 
   try {
@@ -50,7 +50,7 @@ async function getProxyPortInternal() {
   }
 }
 
-export async function loadStream(video, streamUrl, options = {}) {
+export async function loadStream (video, streamUrl, options = {}) {
   if (!video) throw new Error('No video element provided')
   if (!streamUrl) throw new Error('No stream URL provided')
 
@@ -116,7 +116,7 @@ export async function loadStream(video, streamUrl, options = {}) {
   })
 }
 
-export function stopStream(video) {
+export function stopStream (video) {
   if (!video) return
 
   if (video._hlsInstance) {
@@ -127,7 +127,7 @@ export function stopStream(video) {
   video.src = ''
 }
 
-export function parseStreamResponse(response) {
+export function parseStreamResponse (response) {
   if (typeof response === 'string') {
     return {
       url: response,
@@ -178,7 +178,7 @@ export function parseStreamResponse(response) {
   throw new Error('Invalid stream response')
 }
 
-export function getStreamServers(response) {
+export function getStreamServers (response) {
   if (typeof response === 'string') {
     return [{ title: 'Server', streamUrl: response }]
   }

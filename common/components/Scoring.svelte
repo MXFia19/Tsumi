@@ -57,21 +57,21 @@
     }
   }
 
-  async function deleteEntry() {
+  async function deleteEntry () {
     score = 0
     episode = 0
     status = 'NOT IN LIST'
     if (media.mediaListEntry) {
-      const res = await Helper.delete(media, Helper.isAniAuth() ? {id: media.mediaListEntry.id, idAni: media.id} : {idMal: media.idMal})
+      const res = await Helper.delete(media, Helper.isAniAuth() ? { id: media.mediaListEntry.id, idAni: media.id } : { idMal: media.idMal })
       const description = `${anilistClient.title(media)} has been deleted from your list.`
       printToast(res, description, false, false)
       if (sync.value.length > 0) { // handle profile syncing
         for (const profile of profiles.value) {
           if (sync.value.includes(profile?.viewer?.data?.Viewer?.id)) {
             const anilist = profile.viewer?.data?.Viewer?.avatar
-            const listId = (anilist ? { id: (await anilistClient.getUserLists({userID: profile.viewer.data.Viewer.id, token: profile.token}))?.data?.MediaListCollection?.lists?.flatMap(list => list.entries).find(({ media: listMedia }) => listMedia.id === media.id)?.media?.mediaListEntry?.id } : { idMal: media.idMal })
+            const listId = (anilist ? { id: (await anilistClient.getUserLists({ userID: profile.viewer.data.Viewer.id, token: profile.token }))?.data?.MediaListCollection?.lists?.flatMap(list => list.entries).find(({ media: listMedia }) => listMedia.id === media.id)?.media?.mediaListEntry?.id } : { idMal: media.idMal })
             if (listId?.id || listId?.idMal) {
-              const res = await Helper.delete(media, {...listId, token: profile.token, refresh_in: profile.refresh_in, anilist})
+              const res = await Helper.delete(media, { ...listId, token: profile.token, refresh_in: profile.refresh_in, anilist })
               printToast(res, description, false, profile)
             }
           }
@@ -80,19 +80,19 @@
     }
   }
 
-  async function saveEntry() {
+  async function saveEntry () {
     if (!status.includes('NOT IN LIST')) {
       const fuzzyDate = Helper.getFuzzyDate(media, status)
       const variables = {
-              id: media.id,
-              idMal: media.idMal,
-              status,
-              episode,
-              score: Helper.isAniAuth() ? (score * 10) : score, // AniList score scale is out of 100, others use a scale of 10.
-              repeat: media.mediaListEntry?.repeat || 0,
-              lists: media.mediaListEntry?.customLists?.filter(list => list.enabled).map(list => list.name) || [],
-              ...fuzzyDate
-            }
+        id: media.id,
+        idMal: media.idMal,
+        status,
+        episode,
+        score: Helper.isAniAuth() ? (score * 10) : score, // AniList score scale is out of 100, others use a scale of 10.
+        repeat: media.mediaListEntry?.repeat || 0,
+        lists: media.mediaListEntry?.customLists?.filter(list => list.enabled).map(list => list.name) || [],
+        ...fuzzyDate
+      }
       if (media?.mediaListEntry?.status !== variables.status || media?.mediaListEntry?.progress !== variables.episode || media?.mediaListEntry?.score !== variables.score || media?.mediaListEntry?.repeat !== variables.repeat) {
         const res = await Helper.entry(media, variables)
         const description = `Title: ${anilistClient.title(media)}\nStatus: ${Helper.statusName[status]}\nEpisode: ${episode} / ${totalEpisodes}${score !== 0 ? `\nYour Score: ${score}` : ''}`
@@ -101,7 +101,7 @@
           for (const profile of profiles.value) {
             if (sync.value.includes(profile?.viewer?.data?.Viewer?.id)) {
               const anilist = profile.viewer?.data?.Viewer?.avatar
-              const lists = anilist ? (await anilistClient.getUserLists({userID: profile.viewer.data.Viewer.id, token: profile.token}))?.data?.MediaListCollection?.lists?.flatMap(list => list.entries).find(({ media: listMedia }) => listMedia.id === media.id)?.media?.mediaListEntry?.customLists?.filter(list => list.enabled).map(list => list.name) : []
+              const lists = anilist ? (await anilistClient.getUserLists({ userID: profile.viewer.data.Viewer.id, token: profile.token }))?.data?.MediaListCollection?.lists?.flatMap(list => list.entries).find(({ media: listMedia }) => listMedia.id === media.id)?.media?.mediaListEntry?.customLists?.filter(list => list.enabled).map(list => list.name) : []
               const res = await Helper.entry(media, {
                 ...variables,
                 lists,
@@ -121,12 +121,12 @@
         })
       }
     } else {
-       await deleteEntry()
+      await deleteEntry()
     }
   }
 
-  function printToast(res, description, save, profile) {
-    const who = (profile ? ' for ' + profile.viewer.data.Viewer.name + (profile.viewer?.data?.Viewer?.avatar ? ' (AniList)' : ' (MyAnimeList)')  : '')
+  function printToast (res, description, save, profile) {
+    const who = (profile ? ' for ' + profile.viewer.data.Viewer.name + (profile.viewer?.data?.Viewer?.avatar ? ' (AniList)' : ' (MyAnimeList)') : '')
     if ((save && res?.data?.SaveMediaListEntry) || (!save && res)) {
       debug(`List Updated${who}: ${description.replace(/\n/g, ', ')}`)
       if (!profile) {
@@ -157,7 +157,7 @@
   /**
    * @param {Event & { currentTarget: HTMLInputElement }} event
    */
-  function handleEpisodes(event) {
+  function handleEpisodes (event) {
     const enteredValue = event.currentTarget.value
     if (/^\d+$/.test(enteredValue)) {
       const maxEpisodes = getMediaMaxEp(media) || (media.status === 'RELEASING' ? 12 : 0)
@@ -175,7 +175,7 @@
 
   $: {
     if ($showModal) {
-      const { reactive, init } = createListener([`scoring`, `scoring-btn`])
+      const { reactive, init } = createListener(['scoring', 'scoring-btn'])
       init(true, true)
       reactive.subscribe(value => {
         if (!value) {
@@ -187,9 +187,8 @@
   }
 </script>
 
-
-<div class='score-dropdown {viewAnime ? `z-10` : `z-1`} {$$restProps.class}' class:ml-10={!$$restProps.class}>
-  <button type='button' id='list-btn' data-toggle='tooltip' data-placement={previewAnime ? 'top-right' : 'top'} data-target-breakpoint='md' data-title='List Editor' class='btn scoring-btn font-size-{viewAnime ? `20 btn-lg` : `16`} btn-square shadow-none border-0 d-flex align-items-center justify-content-center' class:bg-dark-light={!previewAnime} use:click={() => toggleModal({ toggle: !$showModal })} disabled={!Helper.isAuthorized()}>
+<div class='score-dropdown {viewAnime ? 'z-10' : 'z-1'} {$$restProps.class}' class:ml-10={!$$restProps.class}>
+  <button type='button' id='list-btn' data-toggle='tooltip' data-placement={previewAnime ? 'top-right' : 'top'} data-target-breakpoint='md' data-title='List Editor' class='btn scoring-btn font-size-{viewAnime ? '20 btn-lg' : '16'} btn-square shadow-none border-0 d-flex align-items-center justify-content-center' class:bg-dark-light={!previewAnime} use:click={() => toggleModal({ toggle: !$showModal })} disabled={!Helper.isAuthorized()}>
     {#if media?.mediaListEntry}
       <PencilLine size='1.7rem' />
     {:else}
@@ -197,10 +196,10 @@
     {/if}
   </button>
   {#if Helper.isAuthorized()}
-    <div bind:this={scoringModal} class='modal scoring position-absolute bg-very-dark shadow-lg rounded-3 p-20 z-30 {$showModal ? `visible` : `invisible`} {!previewAnime && !viewAnime ? `banner ${SUPPORTS.isAndroid ? `ml--255` : ``}` : !previewAnime ? `viewAnime` : `previewAnime`} {(!previewAnime || !viewAnime) ? `w-auto h-auto` : ``}' use:click={() => {}}>
+    <div bind:this={scoringModal} class='modal scoring position-absolute bg-very-dark shadow-lg rounded-3 p-20 z-30 {$showModal ? 'visible' : 'invisible'} {!previewAnime && !viewAnime ? `banner ${SUPPORTS.isAndroid ? 'ml--255' : ''}` : !previewAnime ? 'viewAnime' : 'previewAnime'} {(!previewAnime || !viewAnime) ? 'w-auto h-auto' : ''}' use:click={() => {}}>
       <div class='d-flex justify-content-between align-items-center mb-2'>
         <h5 class='font-weight-bold'>List Editor</h5>
-        <button type='button' class='btn btn-square d-flex align-items-center justify-content-center' use:click={() => toggleModal({ toggle: false })}><X size='1.7rem' strokeWidth='3'/></button>
+        <button type='button' class='btn btn-square d-flex align-items-center justify-content-center' use:click={() => toggleModal({ toggle: false })}><X size='1.7rem' strokeWidth='3' /></button>
       </div>
       <div class='modal-body'>
         <div class='form-group mb-15'>

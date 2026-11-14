@@ -81,7 +81,7 @@ export const page = (() => {
      * Get the current page value
      * @returns {string} Current page value
      */
-    get value() {
+    get value () {
       return store.value
     }
   }
@@ -95,70 +95,70 @@ export const modal = (() => {
     MINIMIZE_PROMPT: {
       id: 'minimize_prompt',
       priority: 1,
-      get siblings() {
+      get siblings () {
         return [MODALS.UPDATE_PROMPT, MODALS.FILE_MANAGER, MODALS.NOTIFICATIONS, MODALS.PROFILE, MODALS.EXTENSION_MENU, MODALS.TRAILER, MODALS.ANIME_DETAILS]
       }
     },
     UPDATE_PROMPT: {
       id: 'update_prompt',
       priority: 2,
-      get siblings() {
+      get siblings () {
         return [MODALS.MINIMIZE_PROMPT, MODALS.FILE_MANAGER, MODALS.NOTIFICATIONS, MODALS.PROFILE, MODALS.EXTENSION_MENU, MODALS.TRAILER, MODALS.ANIME_DETAILS]
       }
     },
     FILE_MANAGER: {
       id: 'file_manager',
       priority: 4,
-      get siblings() {
+      get siblings () {
         return []
       }
     },
     NOTIFICATIONS: {
       id: 'notifications',
       priority: 5,
-      get siblings() {
+      get siblings () {
         return [MODALS.ANIME_DETAILS, MODALS.EXTENSION_MENU]
       }
     },
     PROFILE: {
       id: 'profiles',
       priority: 6,
-      get siblings() {
+      get siblings () {
         return [MODALS.ANIME_DETAILS, MODALS.EXTENSION_MENU]
       }
     },
     EXTENSION_MENU: {
       id: 'extension_menu',
       priority: 7,
-      get siblings() {
+      get siblings () {
         return [MODALS.NOTIFICATIONS, MODALS.PROFILE, MODALS.ANIME_DETAILS]
       }
     },
     SERVER_SELECTOR: {
       id: 'server_selector',
       priority: 6,
-      get siblings() {
+      get siblings () {
         return [MODALS.EXTENSION_MENU, MODALS.DEFAULT_LOADING, MODALS.ANIME_DETAILS]
       }
     },
     DEFAULT_LOADING: {
       id: 'default_loading',
       priority: 7,
-      get siblings() {
+      get siblings () {
         return [MODALS.NOTIFICATIONS, MODALS.PROFILE, MODALS.ANIME_DETAILS]
       }
     },
     TRAILER: {
       id: 'trailer',
       priority: 8,
-      get siblings() {
+      get siblings () {
         return [MODALS.ANIME_DETAILS]
       }
     },
     ANIME_DETAILS: {
       id: 'anime_details',
       priority: 9,
-      get siblings() {
+      get siblings () {
         return []
       }
     }
@@ -207,7 +207,7 @@ export const modal = (() => {
      * Get the highest priority modal currently open
      * @returns {string|null} Modal ID with the highest priority (lowest number), or null if none open
      */
-    get focused() {
+    get focused () {
       const keys = Object.keys(store.value)
       if (keys.length === 0) return null
       return keys.reduce((highest, current) => (Object.values(MODALS).find(modal => modal.id === current)?.priority || 100) < (Object.values(MODALS).find(modal => modal.id === highest)?.priority || 100) ? current : highest)
@@ -216,14 +216,14 @@ export const modal = (() => {
      * Get the number of currently open modals
      * @returns {number} Number of open modals
      */
-    get length() {
+    get length () {
       return Object.keys(store.value).length
     },
     /**
      * Get the current modal state object
      * @returns {Object} Current modal state
      */
-    get value() {
+    get value () {
       return store.value
     },
     /**
@@ -261,11 +261,11 @@ class HistoryManager {
   /** @type {Writable<boolean>} */
   canGoForward = writable(false)
 
-  constructor() {
+  constructor () {
     if (SUPPORTS.isAndroid) {
       let minimizeApp = null
       window.Capacitor.Plugins.App.addListener('backButton', () => {
-        debug('Android back button pressed', JSON.stringify({ canGoBack: canGoBack.value, minimizeApp: minimizeApp, currentIndex: this.currentIndex, historyLength: this.history.length }))
+        debug('Android back button pressed', JSON.stringify({ canGoBack: canGoBack.value, minimizeApp, currentIndex: this.currentIndex, historyLength: this.history.length }))
         if (canGoBack.value) this.goBack()
         else if (minimizeApp) {
           debug('Second back press detected, minimizing app')
@@ -298,7 +298,7 @@ class HistoryManager {
   /**
    * Initializes the HistoryManager, subscribing to stores and adding the initial page entry.
    */
-  initialize() {
+  initialize () {
     if (this.initialized) return
     this.initialized = true
     debug('Initializing HistoryManager')
@@ -319,7 +319,7 @@ class HistoryManager {
    * Navigate to a page (clears modals and sets page)
    * @param {string} pageValue The page to navigate to
    */
-  navigatePage(pageValue) {
+  navigatePage (pageValue) {
     debug('navigatePage called', pageValue)
     const filteredModals = { ...modal.value }
     delete filteredModals[modal.MINIMIZE_PROMPT]
@@ -338,7 +338,7 @@ class HistoryManager {
    * Moves back one step in history if possible.
    * @param {boolean} [skipLock=false] Ignores navigation lock and skips locking navigation
    */
-  goBack(skipLock = false) {
+  goBack (skipLock = false) {
     debug('goBack called', JSON.stringify({ currentIndex: this.currentIndex }))
     if (!skipLock) {
       if (this.navigationLocked) {
@@ -373,7 +373,7 @@ class HistoryManager {
    * Moves forward one step in history if possible.
    * @param {boolean} [skipLock=false] Ignores navigation lock and skips locking navigation
    */
-  goForward(skipLock = false) {
+  goForward (skipLock = false) {
     debug('goForward called', JSON.stringify({ currentIndex: this.currentIndex }))
     if (!skipLock) {
       if (this.navigationLocked) {
@@ -383,7 +383,7 @@ class HistoryManager {
       this.lockNavigation()
     }
     if (this.currentIndex < this.history.length - 1) {
-      let next = this.history[this.currentIndex + 1]
+      const next = this.history[this.currentIndex + 1]
       if (next?.isTemp) {
         debug('Navigating to temp forward entry', JSON.stringify(next))
         if (next.type === 'modal') {
@@ -404,7 +404,7 @@ class HistoryManager {
    * @param {number} index Index to navigate to
    * @param {boolean} [back=false] If navigating backward
    */
-  navigateTo(index, back = false) {
+  navigateTo (index, back = false) {
     debug('navigateTo called', JSON.stringify({ index, back }))
     if (index < 0 || index >= this.history.length) return
     this.isNavigating = true
@@ -434,7 +434,7 @@ class HistoryManager {
    * @param {string} type The type of history entry (e.g., 'page', 'modal')
    * @param {any} value The value to store for this entry
    */
-  addHistoryEntry(type, value) {
+  addHistoryEntry (type, value) {
     if (this.ignoreNext || this.isNavigating) {
       debug(`Skipping addHistoryEntry due to ${this.ignoreNext ? 'ignoreNext' : 'isNavigating'}`, type, JSON.stringify(value))
       this.ignoreNext = false
@@ -459,7 +459,7 @@ class HistoryManager {
    * @param {string} type Store type
    * @param {any} value New store value
    */
-  handleChange(type, value) {
+  handleChange (type, value) {
     if (type === 'page') {
       debug('Page change detected, adding history entry', JSON.stringify(value))
       this.addHistoryEntry(type, value)
@@ -490,7 +490,7 @@ class HistoryManager {
    * Restores parent page for modals.
    * @param {{parentPage?: string}} state Object containing optional parentPage to restore
    */
-  restoreParents(state) {
+  restoreParents (state) {
     if (state.parentPage && page.value !== state.parentPage && !(state.parentPage === 'player' && (!files?.value || files?.value?.length === 0))) {
       this.setIgnoreNext(() => page.set(state.parentPage))
       debug('Restoring parent page', state.parentPage)
@@ -500,7 +500,7 @@ class HistoryManager {
   /**
    * Resets modals.
    */
-  resetModals() {
+  resetModals () {
     if (!modal.length) return
     this.setIgnoreNext(() => modal.clear())
     debug('Modals reset')
@@ -511,7 +511,7 @@ class HistoryManager {
    * @param {string} value The page name to restore
    * @param {boolean} [back=false] Whether this restore is triggered by backward navigation
    */
-  restorePage(value, back = false) {
+  restorePage (value, back = false) {
     debug('restorePage called', value, back)
     if (value === 'player' && (!files?.value || files?.value?.length === 0)) back ? this.goBack(true) : this.goForward(true)
     else {
@@ -524,7 +524,7 @@ class HistoryManager {
    * Restores the entire modal state
    * @param {any} value The complete modal state object
    */
-  restoreModal(value) {
+  restoreModal (value) {
     debug('restoreModal called', JSON.stringify(value))
     const state = this.history[this.currentIndex]
     this.restoreParents(state)
@@ -534,7 +534,7 @@ class HistoryManager {
   /**
    * Updates the writable states for canGoBack and canGoForward.
    */
-  syncState() {
+  syncState () {
     this.canGoBack.set(this.currentIndex > 0)
     this.canGoForward.set(this.currentIndex < this.history.length - 1)
     debug('Navigation state updated', JSON.stringify({ canGoBack: this.currentIndex > 0, canGoForward: this.currentIndex < this.history.length - 1 }))
@@ -544,7 +544,7 @@ class HistoryManager {
    * Temporarily locks navigation actions (back/forward) to prevent rapid repeated input.
    * This helps avoid inconsistent state updates caused by users spamming navigation.
    */
-  lockNavigation() {
+  lockNavigation () {
     this.navigationLocked = true
     setTimeout(() => this.navigationLocked = false, 150).unref?.()
   }
@@ -553,7 +553,7 @@ class HistoryManager {
    * Executes a callback while ignoring the next history addition.
    * @param {() => void} cb The callback function to execute
    */
-  setIgnoreNext(cb) {
+  setIgnoreNext (cb) {
     this.ignoreNext = true
     cb()
   }
@@ -562,7 +562,7 @@ class HistoryManager {
    * Returns debug information about current history and navigation state.
    * @returns {{currentIndex: number, historyLength: number, canGoBack: boolean, canGoForward: boolean, history: Array}}
    */
-  getDebugInfo() {
+  getDebugInfo () {
     return {
       currentIndex: this.currentIndex,
       historyLength: this.history.length,
@@ -575,7 +575,7 @@ class HistoryManager {
   /**
    * Destroys the history manager, unsubscribing from all stores.
    */
-  destroy() {
+  destroy () {
     this.unsubscribers.forEach(unsubscribe => unsubscribe())
     this.unsubscribers = []
     this.initialized = false

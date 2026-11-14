@@ -45,4 +45,4 @@
   })
 </script>
 
-<slot />
+<slot></slot>

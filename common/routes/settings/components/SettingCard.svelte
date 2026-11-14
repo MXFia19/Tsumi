@@ -11,5 +11,5 @@
       {description}
     </div>
   </div>
-  <slot />
+  <slot></slot>
 </div>

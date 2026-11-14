@@ -170,7 +170,7 @@ export async function getChaptersAniSkip (file, duration) {
 export function getMediaMaxEp (media, playable) {
   if (!media) return 0
   else if (playable) return media.nextAiringEpisode?.episode - 1 || lastAired(media.airingSchedule?.nodes)?.episode || (media.status === 'NOT_YET_RELEASED' ? 0 : media.episodes) || (media.status === 'RELEASING' ? (media.mediaListEntry?.progress ?? 1) : 0)
-  else return Math.max(media.airingSchedule?.nodes?.[media.airingSchedule?.nodes?.length - 1]?.episode || 0, media.airingSchedule?.nodes?.length || 0, (!media.streamingEpisodes || (media.status === 'FINISHED' && media.episodes) ? 0 : media.streamingEpisodes?.filter((ep) => { const match = (/Episode (\d+(\.\d+)?) - /).exec(ep.title); return match ? Number.isInteger(parseFloat(match[1])) : false}).length), media.episodes || 0, media.nextAiringEpisode?.episode || 0) || (media.status === 'RELEASING' ? (media.mediaListEntry?.progress ?? 1) : 0)
+  else return Math.max(media.airingSchedule?.nodes?.[media.airingSchedule?.nodes?.length - 1]?.episode || 0, media.airingSchedule?.nodes?.length || 0, (!media.streamingEpisodes || (media.status === 'FINISHED' && media.episodes) ? 0 : media.streamingEpisodes?.filter((ep) => { const match = (/Episode (\d+(\.\d+)?) - /).exec(ep.title); return match ? Number.isInteger(parseFloat(match[1])) : false }).length), media.episodes || 0, media.nextAiringEpisode?.episode || 0) || (media.status === 'RELEASING' ? (media.mediaListEntry?.progress ?? 1) : 0)
 }
 
 // utility method for correcting anitomyscript woes for what's needed
@@ -215,7 +215,7 @@ export async function anitomyscript (...args) {
   return parseObjs
 }
 
-function addAnimeType(obj, newType) {
+function addAnimeType (obj, newType) {
   if (!obj.anime_type) obj.anime_type = newType
   else if (Array.isArray(obj.anime_type) && !obj.anime_type.some(type => type.toUpperCase() === newType.toUpperCase())) obj.anime_type.push(newType)
   else if (typeof obj.anime_type === 'string' && obj.anime_type.toUpperCase() !== newType.toUpperCase()) obj.anime_type = [obj.anime_type, newType]
@@ -228,23 +228,23 @@ function addAnimeType(obj, newType) {
  * @param existingMappings
  * @returns {Promise<[unknown]|[{title: (string|string|*), thumbnail, length, summary, airingAt: *}]|null>}
  */
-export async function hasZeroEpisode(media, existingMappings) { // really wish they could make fetching zero episodes less painful.
+export async function hasZeroEpisode (media, existingMappings) { // really wish they could make fetching zero episodes less painful.
   if (!media) return null
   const mappings = existingMappings || (await getAniMappings(media.id)) || {}
-  const hasZeroEpisode = media.streamingEpisodes?.filter((ep) => { const match = (/Episode (\d+(\.\d+)?) - /).exec(ep.title); return match ? Number.isInteger(parseFloat(match[1])) && Number(parseFloat(match[1])) === 0 : false})
+  const hasZeroEpisode = media.streamingEpisodes?.filter((ep) => { const match = (/Episode (\d+(\.\d+)?) - /).exec(ep.title); return match ? Number.isInteger(parseFloat(match[1])) && Number(parseFloat(match[1])) === 0 : false })
   const zeroAsFirstEpisode = /episode\s*0/i.test(mappings?.episodes?.[1]?.title?.en || mappings?.episodes?.[1]?.title?.jp) // The first episode is titled as Episode 0 so this is likely a Prologue, fixes issues with series like `Fate/stay night: Unlimited Blade Works`
   // no clue what fixed Mushoku but this initial part seems to allow 'Episode 0 : Guardian Fits' to properly be mapped to season 2 part 1, ensure when making changes this doesn't appear on season 1 part 1.
   if (hasZeroEpisode?.length > 0 && ((media.episodes >= media.streamingEpisodes?.length) || zeroAsFirstEpisode)) {
     const title = hasZeroEpisode[0]?.title?.replace('Episode 0 - ', '')
     const prequel = title?.length > 4 && await AnimeResolver.getAnimeById(AnimeResolver.findEdge(media, 'PREQUEL', ['SPECIAL'])?.node?.id)
     if (!prequel || !Object.values(prequel.title).filter(Boolean).some(_title => _title.toLowerCase().includes(title.toLowerCase()))) {
-      return [{...hasZeroEpisode[0], title}]
+      return [{ ...hasZeroEpisode[0], title }]
     }
   }
   if (!(media.episodes && media.episodes === mappings?.episodeCount && media.status === 'FINISHED')) {
     const special = (mappings?.episodes?.S0 || mappings?.episodes?.s0 || mappings?.episodes?.S1 || mappings?.episodes?.s1)
     if (mappings?.specialCount > 0 && special?.airedBeforeEpisodeNumber > 0) { // very likely it's a zero episode, streamingEpisodes were likely just empty...
-      return [{title: special.title?.en, thumbnail: special.image, length: special.length, summary: special.summary, airingAt: special.airDateUtc}]
+      return [{ title: special.title?.en, thumbnail: special.image, length: special.length, summary: special.summary, airingAt: special.airDateUtc }]
     }
   }
   return null
@@ -259,7 +259,7 @@ export const durationMap = { // guesstimate durations based off format type.
   ONA: 25,
   MUSIC: 5,
   undefined: 5,
-  null: 5,
+  null: 5
 }
 
 export const formatMap = {
@@ -284,25 +284,25 @@ export const statusColorMap = {
 }
 
 export const genreIcons = {
-  'Action': Activity,
-  'Adventure': MountainSnow,
-  'Comedy': Laugh,
-  'Drama': Drama,
-  'Ecchi': Droplets,
-  'Fantasy': WandSparkles,
-  'Hentai': Adult,
-  'Horror': Skull,
+  Action: Activity,
+  Adventure: MountainSnow,
+  Comedy: Laugh,
+  Drama,
+  Ecchi: Droplets,
+  Fantasy: WandSparkles,
+  Hentai: Adult,
+  Horror: Skull,
   'Mahou Shoujo': Sparkles,
-  'Mecha': Bot,
-  'Music': Guitar,
-  'Mystery': Footprints,
-  'Psychological': Brain,
-  'Romance': BookHeart,
+  Mecha: Bot,
+  Music: Guitar,
+  Mystery: Footprints,
+  Psychological: Brain,
+  Romance: BookHeart,
   'Sci-Fi': FlaskConical,
   'Slice of Life': Car,
-  'Sports': Volleyball,
-  'Supernatural': Ghost,
-  'Thriller': HeartPulse
+  Sports: Volleyball,
+  Supernatural: Ghost,
+  Thriller: HeartPulse
 }
 
 export const genreList = [
@@ -673,64 +673,66 @@ export const tagList = [
   'Youkai',
   'Zombie',
   'Vertical Video',
-  ...(settings.value.adult === 'hentai' ? [
-  'Ahegao',
-  'Anal Sex',
-  'Armpits',
-  'Ashikoki',
-  'Asphyxiation',
-  'Bondage',
-  'Boobjob',
-  'Cervix Penetration',
-  'Cheating',
-  'Cumflation',
-  'Cunnilingus',
-  'Deepthroat',
-  'Defloration',
-  'DILF',
-  'Double Penetration',
-  'Erotic Piercings',
-  'Facial',
-  'Feet',
-  'Fellatio',
-  'Femdom',
-  'Fisting',
-  'Flat Chest',
-  'Futanari',
-  'Group Sex',
-  'Hair Pulling',
-  'Handjob',
-  'Hypersexuality',
-  'Inseki',
-  'Irrumatio',
-  'Lactation',
-  'Large Breasts',
-  'Male Pregnancy',
-  'Masochism',
-  'Masturbation',
-  'Mating Press',
-  'MILF',
-  'Nakadashi',
-  'Netorare',
-  'Netorase',
-  'Netori',
-  'Pet Play',
-  'Prostitution',
-  'Public Sex',
-  'Rimjob',
-  'Scat',
-  'Scissoring',
-  'Sex Toys',
-  'Shimaidon',
-  'Squirting',
-  'Sumata',
-  'Tentacles',
-  'Threesome',
-  'Virginity',
-  'Vore',
-  'Voyeur',
-  'Zoophilia'
-  ] : [])
+  ...(settings.value.adult === 'hentai'
+    ? [
+        'Ahegao',
+        'Anal Sex',
+        'Armpits',
+        'Ashikoki',
+        'Asphyxiation',
+        'Bondage',
+        'Boobjob',
+        'Cervix Penetration',
+        'Cheating',
+        'Cumflation',
+        'Cunnilingus',
+        'Deepthroat',
+        'Defloration',
+        'DILF',
+        'Double Penetration',
+        'Erotic Piercings',
+        'Facial',
+        'Feet',
+        'Fellatio',
+        'Femdom',
+        'Fisting',
+        'Flat Chest',
+        'Futanari',
+        'Group Sex',
+        'Hair Pulling',
+        'Handjob',
+        'Hypersexuality',
+        'Inseki',
+        'Irrumatio',
+        'Lactation',
+        'Large Breasts',
+        'Male Pregnancy',
+        'Masochism',
+        'Masturbation',
+        'Mating Press',
+        'MILF',
+        'Nakadashi',
+        'Netorare',
+        'Netorase',
+        'Netori',
+        'Pet Play',
+        'Prostitution',
+        'Public Sex',
+        'Rimjob',
+        'Scat',
+        'Scissoring',
+        'Sex Toys',
+        'Shimaidon',
+        'Squirting',
+        'Sumata',
+        'Tentacles',
+        'Threesome',
+        'Virginity',
+        'Vore',
+        'Voyeur',
+        'Zoophilia'
+      ]
+    : [])
 ]
 
 export async function playMedia (media) {
@@ -782,7 +784,7 @@ export async function getEpisodeMetadataForMedia (media) {
   return promiseData
 }
 
-function kitsuToAniEpisodes(data) {
+function kitsuToAniEpisodes (data) {
   if (!data?.data) return {}
   const episodes = {}
   data.data.forEach((episode) => {
@@ -792,12 +794,12 @@ function kitsuToAniEpisodes(data) {
     episodes[episodeNumber] = {
       episode: episodeNumber.toString(),
       seasonNumber: attributes.seasonNumber || 1,
-      episodeNumber: episodeNumber,
+      episodeNumber,
       absoluteEpisodeNumber: episodeNumber,
       title: {
         en: attributes.canonicalTitle || attributes.titles?.en || null,
         ja: attributes.titles?.ja || null,
-        "x-jat": attributes.titles?.["x-jat"] || attributes.titles?.ja_jp || null
+        'x-jat': attributes.titles?.['x-jat'] || attributes.titles?.ja_jp || null
       },
       airDate: attributes.airdate || null,
       airdate: attributes.airdate || null,
@@ -842,18 +844,18 @@ export function episodeByAirDate (alDate, episodes, episode) {
   })
 }
 
-export function getAiringInfo(airingAt) {
+export function getAiringInfo (airingAt) {
   if (!airingAt) return null
   if (airingAt.delayedIndefinitely) return { time: 'Suspended', episode: airingAt.episode }
   const airingIn = (airingAt.time.getTime() - Date.now()) / 1000
   return { time: countdown(airingIn), episode: airingAt.episode.replace('{suffix}', (airingIn <= 0 ? 'out for' : 'in')) }
 }
 
-export function episode(media, variables) {
+export function episode (media, variables) {
   const entry = variables?.hideSubs && animeSchedule.dubAiring.value?.find(entry => entry.media?.media?.id === media.id)
   const nodes = variables?.hideSubs ? entry?.media?.media?.airingSchedule?.nodes : media?.airingSchedule?.nodes
 
-  if (!nodes || nodes.length === 0) return `Episode 1 {suffix}`
+  if (!nodes || nodes.length === 0) return 'Episode 1 {suffix}'
   if (entry?.delayedIndefinitely && nodes[0]) return `Episode ${nodes[0].episode} is`
   if (nodes.length === 1) return `Episode ${nodes[0].episode} {suffix}`
 
@@ -864,7 +866,7 @@ export function episode(media, variables) {
   return `Episode ${firstEpisode === lastEpisode ? `${firstEpisode}` : `${firstEpisode} ~ ${lastEpisode}`} {suffix}`
 }
 
-export function airingAt(media, variables) {
+export function airingAt (media, variables) {
   if (variables?.hideSubs) {
     const entry = animeSchedule.dubAiring.value.find((entry) => entry.media?.media?.id === media.id)
     if (entry?.delayedIndefinitely) return { delayedIndefinitely: true, time: 'Suspended', episode: episode(media, variables) }
@@ -875,21 +877,21 @@ export function airingAt(media, variables) {
   return airingAt ? { time: new Date(airingAt * 1000), episode: episode(media, variables) } : null
 }
 
-export function nextAiring(nodes, variables) {
+export function nextAiring (nodes, variables) {
   const currentTime = new Date()
   return nodes?.filter(node => new Date(variables?.hideSubs ? node.airingAt : (node.airingAt * 1000)) > currentTime)?.sort((a, b) => a.airingAt - b.airingAt)?.shift()
 }
 
-export function lastAired(nodes, variables) {
+export function lastAired (nodes, variables) {
   const currentTime = new Date()
   return nodes?.filter(node => new Date(variables?.hideSubs ? node.airingAt : (node.airingAt * 1000)) < currentTime)?.sort((a, b) => {
-      const timeDiff = b.airingAt - a.airingAt
-      if (timeDiff !== 0) return timeDiff
-      return (b.episode || 0) - (a.episode || 0)
-    })?.shift()
+    const timeDiff = b.airingAt - a.airingAt
+    if (timeDiff !== 0) return timeDiff
+    return (b.episode || 0) - (a.episode || 0)
+  })?.shift()
 }
 
-export async function isSubbedProgress(media) {
+export async function isSubbedProgress (media) {
   if (!media) return true
   if (media.status === 'NOT_YET_RELEASED') return false
   await Helper.getClient().userLists.value
@@ -910,7 +912,7 @@ export async function isSubbedProgress(media) {
 }
 
 const concurrentRequests = new Map()
-export async function getKitsuMappings(anilistID) {
+export async function getKitsuMappings (anilistID) {
   if (!anilistID || typeof anilistID === 'string' || !Number.isInteger(Number(anilistID))) return
   const cachedEntry = cache.cachedEntry(caches.MAPPINGS, `kitsu-${anilistID}`, status.value === 'offline')
   if (cachedEntry) return cachedEntry
@@ -951,8 +953,7 @@ export async function getKitsuMappings(anilistID) {
       if (cachedEntry) {
         debug(`Failed to request Kitsu Mappings for ${anilistID}, this is likely due to an outage... falling back to cached data.`)
         return cachedEntry
-      }
-      else throw e
+      } else throw e
     }
   })().finally(() => {
     concurrentRequests.delete(`kitsu-${anilistID}`)
@@ -981,7 +982,7 @@ aniLimiter.on('failed', async (error) => {
   return time
 })
 
-export async function getAniMappings(anilistID) {
+export async function getAniMappings (anilistID) {
   if (!anilistID || typeof anilistID === 'string' || !Number.isInteger(Number(anilistID))) return
   const cachedEntry = cache.cachedEntry(caches.MAPPINGS, `ani-${anilistID}`, status.value === 'offline')
   if (cachedEntry) return cachedEntry
@@ -1023,8 +1024,7 @@ export async function getAniMappings(anilistID) {
       if (cachedEntry) {
         debug(`Failed to request Anilist Mappings for ${anilistID}, this is likely due to an outage... falling back to cached data.`)
         return cachedEntry
-      }
-      else throw e
+      } else throw e
     }
   })().finally(() => {
     concurrentRequests.delete(`ani-${anilistID}`)
@@ -1033,7 +1033,7 @@ export async function getAniMappings(anilistID) {
   return requestPromise
 }
 
-function checkError(error, type) {
+function checkError (error, type) {
   if (!error || error.status === 404 || error.status === 521) { // api is likely down, we don't need to spam the user with toasts.
     debug(`Error (API Down): ${error.status || 429} - ${error.message || codes[error.status || 429]}`)
     return

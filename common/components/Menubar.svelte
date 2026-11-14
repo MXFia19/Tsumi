@@ -12,7 +12,7 @@
 </script>
 
 <div class='w-full z-101 navbar bg-transparent border-0 p-0 d-none draggable' class:d-flex={!SUPPORTS.isAndroid && !fullScreen} class:ml-sb={!SUPPORTS.isAndroid && (VERSION.platform !== 'darwin' || fullScreen)}>
-  <div class='controls-container d-none position-absolute top-0 {VERSION.platform !== `darwin` ? `right-0 ${VERSION.platform === `win32` ? `right-width-win` : `right-width-linux`}` : `left-0 left-width`} h-full' class:mr-sb={!SUPPORTS.isAndroid && VERSION.platform !== 'darwin'} class:d-flex={!SUPPORTS.isAndroid && !fullScreen}/>
+  <div class='controls-container d-none position-absolute top-0 {VERSION.platform !== 'darwin' ? `right-0 ${VERSION.platform === 'win32' ? 'right-width-win' : 'right-width-linux'}` : 'left-0 left-width'} h-full' class:mr-sb={!SUPPORTS.isAndroid && VERSION.platform !== 'darwin'} class:d-flex={!SUPPORTS.isAndroid && !fullScreen}></div>
 </div>
 <div class='z-100 ribbon text-center position-absolute font-size-16 font-weight-bold pointer-events-none right-0' class:d-none={!$debug}>Debug Mode</div>
 

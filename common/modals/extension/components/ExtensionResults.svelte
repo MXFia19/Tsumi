@@ -1,88 +1,88 @@
-<script context="module">
-  import { settings } from "@/modules/settings.js";
+<script context='module'>
+  import { settings } from '@/modules/settings.js'
   import {
     extensionManager,
-    callExtensionFunction,
-  } from "@/modules/extension.js";
-  import { sessionServer } from "@/modules/session.js";
-  import { shareNowPlaying } from "@/routes/w2g/components/session.js";
+    callExtensionFunction
+  } from '@/modules/extension.js'
+  import { sessionServer } from '@/modules/session.js'
+  import { shareNowPlaying } from '@/routes/w2g/components/session.js'
   import {
     files,
-    nowPlaying as currentMedia,
-  } from "@/components/MediaHandler.svelte";
-  import { page, modal } from "@/modules/navigation.js";
-  import { anilistClient } from "@/modules/anilist.js";
-  import { click } from "@/modules/click.js";
-  import { toast } from "svelte-sonner";
-  import { parseStreamResponse } from "@/modules/streaming.js";
-  import { X, Loader, Play, AlertTriangle } from "lucide-svelte";
-  import Debug from "debug";
-  const debug = Debug("ui:streams");
+    nowPlaying as currentMedia
+  } from '@/components/MediaHandler.svelte'
+  import { page, modal } from '@/modules/navigation.js'
+  import { anilistClient } from '@/modules/anilist.js'
+  import { click } from '@/modules/click.js'
+  import { toast } from 'svelte-sonner'
+  import { parseStreamResponse } from '@/modules/streaming.js'
+  import { X, Loader, Play, AlertTriangle } from 'lucide-svelte'
+  import Debug from 'debug'
+  const debug = Debug('ui:streams')
 
-  function titleScore(searchTitle, resultTitle) {
-    if (!searchTitle || !resultTitle) return 0;
+  function titleScore (searchTitle, resultTitle) {
+    if (!searchTitle || !resultTitle) return 0
     const a = searchTitle
       .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, "")
-      .trim();
+      .replace(/[^a-z0-9\s]/g, '')
+      .trim()
     const b = resultTitle
       .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, "")
-      .trim();
-    if (a === b) return 100;
-    if (b.includes(a) || a.includes(b)) return 90;
-    const aWords = a.split(/\s+/);
-    const bWords = b.split(/\s+/);
+      .replace(/[^a-z0-9\s]/g, '')
+      .trim()
+    if (a === b) return 100
+    if (b.includes(a) || a.includes(b)) return 90
+    const aWords = a.split(/\s+/)
+    const bWords = b.split(/\s+/)
     const matches = aWords.filter((w) =>
-      bWords.some((bw) => bw === w || (w.length > 2 && bw.includes(w))),
-    ).length;
+      bWords.some((bw) => bw === w || (w.length > 2 && bw.includes(w)))
+    ).length
     return Math.min(
       Math.round((matches / Math.max(aWords.length, 1)) * 80),
-      80,
-    );
+      80
+    )
   }
 </script>
 
 <script>
-  import SmartImage from "@/components/visual/SmartImage.svelte";
-  import { onDestroy } from "svelte";
+  import SmartImage from '@/components/visual/SmartImage.svelte'
+  import { onDestroy } from 'svelte'
   import {
     getKitsuMappings,
-    getEpisodeMetadataForMedia,
-  } from "@/modules/anime/anime.js";
+    getEpisodeMetadataForMedia
+  } from '@/modules/anime/anime.js'
 
-  export let search;
-  export let close;
+  export let search
+  export let close
 
-  let loading = true;
-  let groupedResults = [];
-  let playingResult = null;
-  let expandedGroups = {};
-  let autoPlayActive = false;
-  let autoPlayError = null;
+  let loading = true
+  let groupedResults = []
+  let playingResult = null
+  let expandedGroups = {}
+  let autoPlayActive = false
+  let autoPlayError = null
 
-  $: defaultFailed = search?.defaultFailed;
-  $: failReason = search?.failReason;
+  $: defaultFailed = search?.defaultFailed
+  $: failReason = search?.failReason
 
-  async function searchExtensions() {
-    loading = true;
-    groupedResults = [];
-    autoPlayActive = false;
-    autoPlayError = null;
-    const title = anilistClient.title(search?.media);
+  async function searchExtensions () {
+    loading = true
+    groupedResults = []
+    autoPlayActive = false
+    autoPlayError = null
+    const title = anilistClient.title(search?.media)
     if (!title) {
-      loading = false;
-      return;
+      loading = false
+      return
     }
 
-    const enabled = extensionManager.getEnabled();
+    const enabled = extensionManager.getEnabled()
     if (!enabled.length) {
-      loading = false;
-      return;
+      loading = false
+      return
     }
 
-    const defaultKey = settings.value.defaultExtension;
-    const starredKey = settings.value.starredExtension;
+    const defaultKey = settings.value.defaultExtension
+    const starredKey = settings.value.starredExtension
 
     // Default extension auto-play is now handled by DefaultLoadingModal.
     // If we get here with defaultFailed, skip auto-play and do normal search.
@@ -91,20 +91,20 @@
 
     // Normal flow: search all extensions, starred first
     const sorted = [...enabled].sort((a, b) => {
-      if (a.key === starredKey && b.key !== starredKey) return -1;
-      if (b.key === starredKey && a.key !== starredKey) return 1;
-      return 0;
-    });
+      if (a.key === starredKey && b.key !== starredKey) return -1
+      if (b.key === starredKey && a.key !== starredKey) return 1
+      return 0
+    })
 
     const searches = sorted.map((ext) =>
       callExtensionFunction(
         ext,
-        "searchResults",
+        'searchResults',
         title,
-        ...(ext.type === "stremio" ? [search?.media] : []),
+        ...(ext.type === 'stremio' ? [search?.media] : [])
       )
         .then((raw) => {
-          const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+          const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
           if (Array.isArray(parsed) && parsed.length) {
             const scored = parsed
               .map((r) => ({
@@ -112,9 +112,9 @@
                 extensionKey: ext.key,
                 extensionName: ext.manifest?.sourceName || ext.key,
                 extensionIcon: ext.manifest?.iconUrl,
-                score: titleScore(title, r.title),
+                score: titleScore(title, r.title)
               }))
-              .sort((a, b) => b.score - a.score);
+              .sort((a, b) => b.score - a.score)
             groupedResults = [
               ...groupedResults,
               {
@@ -122,190 +122,190 @@
                 extensionName: ext.manifest?.sourceName || ext.key,
                 extensionIcon: ext.manifest?.iconUrl,
                 isStarred: ext.key === starredKey,
-                results: scored,
-              },
-            ];
+                results: scored
+              }
+            ]
           }
         })
-        .catch((error) => debug(`Extension ${ext.key} search failed:`, error)),
-    );
-    await Promise.allSettled(searches);
-    loading = false;
+        .catch((error) => debug(`Extension ${ext.key} search failed:`, error))
+    )
+    await Promise.allSettled(searches)
+    loading = false
   }
 
-  async function selectResult(result) {
-    if (playingResult) return;
-    playingResult = result;
-    const capturedMedia = search?.media;
-    const capturedEpisode = search?.episode;
-    const ext = extensionManager.extensions.get(result.extensionKey);
+  async function selectResult (result) {
+    if (playingResult) return
+    playingResult = result
+    const capturedMedia = search?.media
+    const capturedEpisode = search?.episode
+    const ext = extensionManager.extensions.get(result.extensionKey)
 
     try {
       const rawEpisodes = await callExtensionFunction(
         ext,
-        "extractEpisodes",
-        result.href,
-      );
+        'extractEpisodes',
+        result.href
+      )
       const parsedEpisodes =
-        typeof rawEpisodes === "string" ? JSON.parse(rawEpisodes) : rawEpisodes;
-      const episodes = Array.isArray(parsedEpisodes) ? parsedEpisodes : [];
+        typeof rawEpisodes === 'string' ? JSON.parse(rawEpisodes) : rawEpisodes
+      const episodes = Array.isArray(parsedEpisodes) ? parsedEpisodes : []
 
       if (!episodes.length) {
-        toast.error("No episodes found for this title");
-        playingResult = null;
-        return;
+        toast.error('No episodes found for this title')
+        playingResult = null
+        return
       }
 
-      let targetEp;
+      let targetEp
       const targetNumber =
-        typeof capturedEpisode === "object"
+        typeof capturedEpisode === 'object'
           ? capturedEpisode.number
-          : Number(capturedEpisode);
+          : Number(capturedEpisode)
       const targetLocal =
-        typeof capturedEpisode === "object"
+        typeof capturedEpisode === 'object'
           ? capturedEpisode.localEpisode
-          : null;
+          : null
       const targetSeason =
-        typeof capturedEpisode === "object" ? capturedEpisode.season : null;
+        typeof capturedEpisode === 'object' ? capturedEpisode.season : null
 
       if (targetSeason != null && targetLocal != null) {
         targetEp = episodes.find(
           (ep) =>
             ep.season != null &&
-            Number(ep.season) === targetSeason &&
-            Number(ep.number) === targetLocal,
-        );
+              Number(ep.season) === targetSeason &&
+              Number(ep.number) === targetLocal
+        )
 
         if (!targetEp) {
           targetEp = episodes.find((ep) =>
             ep.href?.match(
-              new RegExp(`/${targetSeason}/${targetLocal}(?:/|$)`),
-            ),
-          );
+              new RegExp(`/${targetSeason}/${targetLocal}(?:/|$)`)
+            )
+          )
         }
 
         if (!targetEp) {
           let currentInferredSeason =
-            episodes[0]?.season != null ? Number(episodes[0].season) : 1;
-          let lastNum = 0;
+            episodes[0]?.season != null ? Number(episodes[0].season) : 1
+          let lastNum = 0
           for (const ep of episodes) {
-            const num = Number(ep.number);
+            const num = Number(ep.number)
             if (ep.season == null) {
-              if (num < lastNum) currentInferredSeason++;
-              ep.inferredSeason = currentInferredSeason;
+              if (num < lastNum) currentInferredSeason++
+              ep.inferredSeason = currentInferredSeason
             } else {
-              currentInferredSeason = Number(ep.season);
-              ep.inferredSeason = currentInferredSeason;
+              currentInferredSeason = Number(ep.season)
+              ep.inferredSeason = currentInferredSeason
             }
-            lastNum = num;
+            lastNum = num
           }
           targetEp = episodes.find(
             (ep) =>
               ep.inferredSeason === targetSeason &&
-              Number(ep.number) === targetLocal,
-          );
+                Number(ep.number) === targetLocal
+          )
         }
 
         if (!targetEp) {
           const localMatches = episodes.filter(
-            (ep) => Number(ep.number) === targetLocal,
-          );
-          if (localMatches.length === 1) targetEp = localMatches[0];
+            (ep) => Number(ep.number) === targetLocal
+          )
+          if (localMatches.length === 1) targetEp = localMatches[0]
         }
       } else {
-        targetEp = episodes.find((ep) => Number(ep.number) === targetNumber);
+        targetEp = episodes.find((ep) => Number(ep.number) === targetNumber)
       }
 
-      targetEp = targetEp || episodes[0];
+      targetEp = targetEp || episodes[0]
 
       const raw = await callExtensionFunction(
         ext,
-        "extractStreamUrl",
-        targetEp.href,
-      );
-      let streamData;
+        'extractStreamUrl',
+        targetEp.href
+      )
+      let streamData
       try {
-        streamData = parseStreamResponse(raw);
+        streamData = parseStreamResponse(raw)
       } catch {
-        const url = typeof raw === "string" ? raw : raw?.url || raw?.streamUrl;
-        if (url) streamData = { url, headers: {}, subtitle: null };
+        const url = typeof raw === 'string' ? raw : raw?.url || raw?.streamUrl
+        if (url) streamData = { url, headers: {}, subtitle: null }
       }
 
       if (!streamData?.url) {
-        toast.error("No stream URL found for this episode");
-        playingResult = null;
-        return;
+        toast.error('No stream URL found for this episode')
+        playingResult = null
+        return
       }
 
       // Show server selector modal if multiple servers available
       if (streamData.servers && streamData.servers.length > 1) {
         const episodeNum =
-          typeof capturedEpisode === "object"
+          typeof capturedEpisode === 'object'
             ? capturedEpisode.number
-            : targetEp.number || capturedEpisode;
-        const capturedStreamData = streamData;
+            : targetEp.number || capturedEpisode
+        const capturedStreamData = streamData
 
-        const sessionPref = sessionServer.value;
+        const sessionPref = sessionServer.value
         if (sessionPref) {
           const matchedIndex = capturedStreamData.servers.findIndex(
-            (s, i) => (s.title || `Server ${i + 1}`) === sessionPref,
-          );
+            (s, i) => (s.title || `Server ${i + 1}`) === sessionPref
+          )
           if (matchedIndex !== -1) {
-            playingResult = null;
+            playingResult = null
             launchPlayer(
               capturedStreamData,
               episodeNum,
               capturedMedia,
               matchedIndex,
-              capturedStreamData.servers[matchedIndex],
-            );
-            return;
+              capturedStreamData.servers[matchedIndex]
+            )
+            return
           }
         }
 
-        playingResult = null;
+        playingResult = null
         modal.open(modal.SERVER_SELECTOR, {
           servers: capturedStreamData.servers,
           onSelect: (serverIndex) => {
-            const server = capturedStreamData.servers[serverIndex];
+            const server = capturedStreamData.servers[serverIndex]
             launchPlayer(
               capturedStreamData,
               episodeNum,
               capturedMedia,
               serverIndex,
-              server,
-            );
+              server
+            )
           },
-          onBack: () => {},
-        });
-        return;
+          onBack: () => {}
+        })
+        return
       }
 
       const episodeNum =
-        typeof capturedEpisode === "object"
+        typeof capturedEpisode === 'object'
           ? capturedEpisode.number
-          : targetEp.number || capturedEpisode;
-      launchPlayer(streamData, episodeNum, capturedMedia, 0);
+          : targetEp.number || capturedEpisode
+      launchPlayer(streamData, episodeNum, capturedMedia, 0)
     } catch (error) {
-      debug("Failed to get stream URL:", error);
-      toast.error("Stream failed: " + (error?.message || error));
-      playingResult = null;
+      debug('Failed to get stream URL:', error)
+      toast.error('Stream failed: ' + (error?.message || error))
+      playingResult = null
     }
   }
 
-  function launchPlayer(
+  function launchPlayer (
     streamData,
     episodeNum,
     capturedMedia,
     serverIndex = 0,
-    server = null,
+    server = null
   ) {
-    const url = server?.streamUrl || streamData.url;
-    const headers = server?.headers || streamData.headers || {};
+    const url = server?.streamUrl || streamData.url
+    const headers = server?.headers || streamData.headers || {}
 
-    $currentMedia = { media: capturedMedia, episode: episodeNum };
+    $currentMedia = { media: capturedMedia, episode: episodeNum }
     // Watch Together: let the other participants start the same episode.
-    shareNowPlaying(capturedMedia, typeof search?.episode === "object" ? search.episode : episodeNum);
+    shareNowPlaying(capturedMedia, typeof search?.episode === 'object' ? search.episode : episodeNum)
     files.set([
       {
         name: `${anilistClient.title(capturedMedia)} - Episode ${episodeNum}.mp4`,
@@ -319,109 +319,109 @@
           episode: episodeNum,
           parseObject: {
             anime_title: anilistClient.title(capturedMedia),
-            episode_number: episodeNum,
-          },
+            episode_number: episodeNum
+          }
         },
-        activeServerIndex: serverIndex,
-      },
-    ]);
+        activeServerIndex: serverIndex
+      }
+    ])
 
-    page.navigateTo(page.PLAYER);
-    close();
+    page.navigateTo(page.PLAYER)
+    close()
   }
 
-  $: if (search) searchExtensions();
+  $: if (search) searchExtensions()
 
-  function toggleGroup(key) {
-    expandedGroups[key] = !expandedGroups[key];
-    expandedGroups = expandedGroups;
+  function toggleGroup (key) {
+    expandedGroups[key] = !expandedGroups[key]
+    expandedGroups = expandedGroups
   }
 
   onDestroy(() => {
-    groupedResults = [];
-    playingResult = null;
-    search = null;
-  });
+    groupedResults = []
+    playingResult = null
+    search = null
+  })
 </script>
 
 <div
-  class="controls w-full bg-very-dark position-sticky top-0 z-10 pt-20 pb-10 px-30 mb-10"
+  class='controls w-full bg-very-dark position-sticky top-0 z-10 pt-20 pb-10 px-30 mb-10'
 >
-  <div class="d-flex">
+  <div class='d-flex'>
     <h3
-      class="mb-0 font-weight-bold text-white header-title mr-5 font-scale-40"
+      class='mb-0 font-weight-bold text-white header-title mr-5 font-scale-40'
     >
       {anilistClient.title(search?.media)}
     </h3>
     <button
-      type="button"
-      class="btn btn-square bg-dark-very-light ml-auto d-flex align-items-center justify-content-center rounded-2 flex-shrink-0"
-      use:click={close}><X size="1.7rem" strokeWidth="3" /></button
+      type='button'
+      class='btn btn-square bg-dark-very-light ml-auto d-flex align-items-center justify-content-center rounded-2 flex-shrink-0'
+      use:click={close}><X size='1.7rem' strokeWidth='3' /></button
     >
-    <div class="position-absolute top-0 left-0 w-full h-full z--1">
-      <div class="position-absolute w-full h-full overflow-hidden">
+    <div class='position-absolute top-0 left-0 w-full h-full z--1'>
+      <div class='position-absolute w-full h-full overflow-hidden'>
         <SmartImage
-          class="img-cover w-full h-full"
+          class='img-cover w-full h-full'
           images={[
             search.media.bannerImage,
             ...(search.media.trailer?.id
               ? [
-                  `https://i.ytimg.com/vi/${search.media.trailer.id}/maxresdefault.jpg`,
-                  `https://i.ytimg.com/vi/${search.media.trailer.id}/hqdefault.jpg`,
-                ]
+                `https://i.ytimg.com/vi/${search.media.trailer.id}/maxresdefault.jpg`,
+                `https://i.ytimg.com/vi/${search.media.trailer.id}/hqdefault.jpg`
+              ]
               : []),
             () =>
               getKitsuMappings(search.media.id).then((metadata) => [
                 metadata?.included?.[0]?.attributes?.coverImage?.original,
                 metadata?.included?.[0]?.attributes?.coverImage?.large,
                 metadata?.included?.[0]?.attributes?.coverImage?.small,
-                metadata?.included?.[0]?.attributes?.coverImage?.tiny,
+                metadata?.included?.[0]?.attributes?.coverImage?.tiny
               ]),
             () =>
               getEpisodeMetadataForMedia(search.media).then(
-                (metadata) => metadata?.[1]?.image,
+                (metadata) => metadata?.[1]?.image
               ),
-            search.media.coverImage?.extraLarge,
+            search.media.coverImage?.extraLarge
           ]}
         />
       </div>
       <div
-        class="position-absolute top-0 left-0 w-full h-full"
-        style="background: var(--extension-banner-gradient)"
-      />
+        class='position-absolute top-0 left-0 w-full h-full'
+        style='background: var(--extension-banner-gradient)'
+      ></div>
     </div>
   </div>
 </div>
 
-<div class="mt-10 mb-sm-10 px-30">
+<div class='mt-10 mb-sm-10 px-30'>
   {#if defaultFailed}
-    <div class="d-flex align-items-center bg-dark-light rounded p-15 mb-20">
-      <AlertTriangle size="2rem" class="text-warning mr-15 flex-shrink-0" />
+    <div class='d-flex align-items-center bg-dark-light rounded p-15 mb-20'>
+      <AlertTriangle size='2rem' class='text-warning mr-15 flex-shrink-0' />
       <div>
-        <span class="font-weight-bold text-white font-scale-16"
-          >Default extension failed</span
+        <span class='font-weight-bold text-white font-scale-16'
+        >Default extension failed</span
         >
-        <span class="text-muted font-scale-14 d-block mt-3"
-          >{failReason || "Unable to auto-play from your default extension."} Showing
-          all results instead.</span
+        <span class='text-muted font-scale-14 d-block mt-3'
+        >{failReason || 'Unable to auto-play from your default extension.'} Showing
+        all results instead.</span
         >
       </div>
     </div>
   {/if}
   {#if loading}
     <div
-      class="d-flex flex-column align-items-center justify-content-center mt-80"
+      class='d-flex flex-column align-items-center justify-content-center mt-80'
     >
-      <Loader size="4rem" class="spinning text-muted" />
-      <span class="text-muted mt-20 font-scale-18">Searching extensions...</span
+      <Loader size='4rem' class='spinning text-muted' />
+      <span class='text-muted mt-20 font-scale-18'>Searching extensions...</span
       >
     </div>
   {:else if !groupedResults.length}
     <div
-      class="d-flex flex-column align-items-center justify-content-center mt-80"
+      class='d-flex flex-column align-items-center justify-content-center mt-80'
     >
-      <h3 class="font-weight-bold">Ooops!</h3>
-      <span class="text-muted font-scale-18">
+      <h3 class='font-weight-bold'>Ooops!</h3>
+      <span class='text-muted font-scale-18'>
         {#if !extensionManager.getEnabled().length}
           No extensions enabled. Add extensions in Settings → Extensions.
         {:else}
@@ -431,67 +431,67 @@
     </div>
   {:else}
     {#each groupedResults as group}
-      <div class="mb-20">
-        <div class="d-flex align-items-center mb-10">
+      <div class='mb-20'>
+        <div class='d-flex align-items-center mb-10'>
           {#if group.extensionIcon}
-            <img class="ext-icon mr-5" src={group.extensionIcon} alt="" />
+            <img class='ext-icon mr-5' src={group.extensionIcon} alt="" />
           {/if}
-          <span class="font-weight-bold font-scale-18 text-white"
-            >{group.extensionName}</span
+          <span class='font-weight-bold font-scale-18 text-white'
+          >{group.extensionName}</span
           >
           {#if group.isStarred}
-            <span class="badge bg-warning border-0 ml-10 font-scale-12"
-              >Starred</span
+            <span class='badge bg-warning border-0 ml-10 font-scale-12'
+            >Starred</span
             >
           {/if}
-          <span class="text-muted ml-10 font-scale-14"
-            >{group.results.length} result{group.results.length === 1
-              ? ""
-              : "s"}</span
+          <span class='text-muted ml-10 font-scale-14'
+          >{group.results.length} result{group.results.length === 1
+            ? ''
+            : 's'}</span
           >
         </div>
         <div
-          class="results-grid"
+          class='results-grid'
           class:results-grid-collapsed={!expandedGroups[group.extensionKey]}
         >
           {#each group.results as result, i}
-            <div class="d-flex p-15 position-relative">
+            <div class='d-flex p-15 position-relative'>
               <button
-                type="button"
-                class="item load-in small-card d-flex flex-column pointer border-0 p-0 text-left w-full"
+                type='button'
+                class='item load-in small-card d-flex flex-column pointer border-0 p-0 text-left w-full'
                 disabled={!!playingResult}
                 use:click={() => selectResult(result)}
               >
-                <div class="d-inline-block position-relative w-full">
+                <div class='d-inline-block position-relative w-full'>
                   {#if playingResult === result}
                     <div
-                      class="position-absolute w-full h-full d-flex align-items-center justify-content-center z-2"
+                      class='position-absolute w-full h-full d-flex align-items-center justify-content-center z-2'
                     >
-                      <Loader size="3rem" class="spinning text-white" />
+                      <Loader size='3rem' class='spinning text-white' />
                     </div>
                   {/if}
                   {#if result.image}
                     <SmartImage
-                      class="cover-img cover-color cover-ratio w-full rounded"
-                      color="var(--tertiary-color)"
-                      images={[result.image, "./404_cover.png"]}
+                      class='cover-img cover-color cover-ratio w-full rounded'
+                      color='var(--tertiary-color)'
+                      images={[result.image, './404_cover.png']}
                     />
                   {:else}
                     <div
-                      class="cover-ratio w-full rounded d-flex align-items-center justify-content-center"
-                      style="background: var(--dark-color-light)"
+                      class='cover-ratio w-full rounded d-flex align-items-center justify-content-center'
+                      style='background: var(--dark-color-light)'
                     >
-                      <Play size="3rem" class="text-muted" />
+                      <Play size='3rem' class='text-muted' />
                     </div>
                   {/if}
                 </div>
                 <div
-                  class="text-white font-weight-very-bold font-size-16 title overflow-hidden mt-5"
+                  class='text-white font-weight-very-bold font-size-16 title overflow-hidden mt-5'
                 >
                   {result.title}
                 </div>
                 <div
-                  class="d-flex flex-row mt-auto font-weight-medium justify-content-between w-full text-muted"
+                  class='d-flex flex-row mt-auto font-weight-medium justify-content-between w-full text-muted'
                 >
                   <span
                     class="badge border-0 font-scale-12 {result.score >= 80
@@ -507,13 +507,13 @@
         </div>
         {#if group.results.length > 5 && !expandedGroups[group.extensionKey]}
           <span
-            class="more-link text-muted font-scale-14 pointer mt-5 ml-15"
+            class='more-link text-muted font-scale-14 pointer mt-5 ml-15'
             use:click={() => toggleGroup(group.extensionKey)}
-            >+ {group.results.length - 5} More</span
+          >+ {group.results.length - 5} More</span
           >
         {:else if group.results.length > 5 && expandedGroups[group.extensionKey]}
           <span
-            class="more-link text-muted font-scale-14 pointer mt-5 ml-15"
+            class='more-link text-muted font-scale-14 pointer mt-5 ml-15'
             use:click={() => toggleGroup(group.extensionKey)}>Show Less</span
           >
         {/if}

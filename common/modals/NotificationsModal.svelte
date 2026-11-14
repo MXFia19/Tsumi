@@ -32,7 +32,7 @@
   })
 </script>
 <script>
-  function close() {
+  function close () {
     modal.close(modal.NOTIFICATIONS)
   }
   $: {
@@ -46,12 +46,12 @@
 
   const incomingNotifications = []
   const debounceNotification = debounce(processNotifications, 15_000)
-  function queueNotification(detail, systemNotify = false) {
+  function queueNotification (detail, systemNotify = false) {
     incomingNotifications.push({ detail, systemNotify })
     debounceNotification()
   }
 
-  function dedupeNotifications(notifications) {
+  function dedupeNotifications (notifications) {
     const map = new Map()
     for (const notification of notifications) {
       const key = `${notification.detail.id}-${notification.detail.episode}-${notification.detail.dub}`
@@ -62,7 +62,7 @@
   }
 
   const SYSTEM_KEYS = ['id', 'title', 'message', 'timestamp', 'icon', 'iconXL', 'heroImg', 'button', 'activation']
-  function splitLocalAndSystem(notifications) {
+  function splitLocalAndSystem (notifications) {
     const localNotifications = []
     const systemNotifications = []
     for (const { detail, systemNotify } of notifications) {
@@ -79,7 +79,7 @@
     return { localNotifications, systemNotifications: systemNotifications.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 20) }
   }
 
-  function processNotifications() {
+  function processNotifications () {
     if (!incomingNotifications.length) return
     const { localNotifications, systemNotifications } = splitLocalAndSystem(dedupeNotifications(incomingNotifications))
     for (const notification of localNotifications) addNotification(notification)
@@ -87,7 +87,7 @@
     incomingNotifications.length = 0
   }
 
-  function addNotification(notification) {
+  function addNotification (notification) {
     notifications.update((n) => {
       const filterDelayed = n.filter((existing) => { // Remove existing notifications based on delayed status and conditions
         if (notification.delayed) return !(existing.id === notification.id && existing.episode === notification.episode && existing.dub === true && existing.click_action === 'PLAY') // If the new notification is delayed, remove all matching notifications
@@ -101,7 +101,7 @@
     })
   }
 
-  function sort(array) {
+  function sort (array) {
     return array.sort((a, b) => {
       const timestampDiff = b.timestamp - a.timestamp
       if (timestampDiff !== 0) return timestampDiff
@@ -114,11 +114,11 @@
     })
   }
 
-  function markAll(read) {
-    notifications.update(items => items.map(notification => ({...notification, read: read })))
+  function markAll (read) {
+    notifications.update(items => items.map(notification => ({ ...notification, read })))
   }
 
-  function markRead(media) {
+  function markRead (media) {
     notifications.update((n) => {
       return n.map((existing) => {
         if (existing.id === media.id && ((media.episode >= existing.episode) || (isValidNumber(existing.season) && (media.episode >= media.episodes)))) existing.read = true
@@ -127,7 +127,7 @@
     })
   }
 
-  async function markWatchedAsRead() {
+  async function markWatchedAsRead () {
     const updates = []
     for (const { notification, media } of await Promise.all($notifications.filter(notification => !notification.read).map(notification => cache.requestMedia(notification.id).then(media => ({ notification, media }))))) {
       const delayed = notification.delayed
@@ -149,7 +149,7 @@
     currentNotifications = filterResults(notifications.value, searchText).slice(0, notificationCount)
   }
 
-  function onclick(notification, view) {
+  function onclick (notification, view) {
     close()
     if (view) {
       window.dispatchEvent(new CustomEvent('open-anime', { detail: { id: notification.id } }))
@@ -158,27 +158,27 @@
     }
   }
 
-  function updateSort() {
+  function updateSort () {
     notifications.update(notifications => sort([...notifications]))
   }
 
   let container
   let searchText = ''
-  function filterResults(results, searchText) {
+  function filterResults (results, searchText) {
     if (!searchText?.length) return results
     return results.filter(({ id, title }) => matchPhrase(searchText, title, 0.4, false, true) || matchKeys(cache.getMedia(id), searchText, ['title.userPreferred', 'title.english', 'title.romaji', 'title.native', 'synonyms'], 0.4)) || []
   }
   const updateSearch = debounce((value) => {
-    container?.scrollTo?.({top: 0})
+    container?.scrollTo?.({ top: 0 })
     notificationCount = notificationCountDefault
     currentNotifications = filterResults($notifications, value).slice(0, notificationCount)
   }, 500)
 
-  let notificationCountDefault = 25
+  const notificationCountDefault = 25
   let notificationCount = notificationCountDefault
   let currentNotifications = []
   let scrollLocked = false
-  function handleScroll(event) {
+  function handleScroll (event) {
     if (scrollLocked) return
     const container = event.target
     if (currentNotifications.length !== $notifications.length && container.scrollTop + container.clientHeight + 10 >= container.scrollHeight) {
@@ -186,7 +186,7 @@
       currentNotifications = [...new Set([...currentNotifications, ...nextBatch])]
     }
   }
-  function preventScroll(position, cb) {
+  function preventScroll (position, cb) {
     scrollLocked = true
     cb()
     requestAnimationFrame(() => {
@@ -200,21 +200,21 @@
 <SoftModal class='m-0 w-1000 mw-0 mh-full d-flex flex-column rounded bg-very-dark pt-0 py-30 pl-md-20 pr-md-30 mx-20 scrollbar-none' bind:showModal={$modal[modal.NOTIFICATIONS]} {close} id={modal.NOTIFICATIONS}>
   <div class='d-flex mt-30'>
     <h3 class='mb-0 font-weight-bold text-white title mr-5 font-size-24 ml-20'>Notifications</h3>
-    <button type='button' class='btn btn-square ml-auto d-flex align-items-center justify-content-center rounded-2 flex-shrink-0 mr-20 mr-md-0' use:click={close}><X size='1.7rem' strokeWidth='3'/></button>
+    <button type='button' class='btn btn-square ml-auto d-flex align-items-center justify-content-center rounded-2 flex-shrink-0 mr-20 mr-md-0' use:click={close}><X size='1.7rem' strokeWidth='3' /></button>
   </div>
   <div class='input-group mt-10 long-input' class:d-none={!$notifications?.length}>
     <Search size='2.6rem' strokeWidth='2.5' class='position-absolute z-10 text-dark-light h-full pl-10 ml-20 pointer-events-none' />
     <input
-        type='search'
-        class='form-control pl-40 ml-20 mr-30 bg-dark-very-light rounded-1 h-40 text-truncate'
-        autocomplete='off'
-        spellcheck='false'
-        data-option='search'
-        placeholder='Filter notifications by their titles' bind:value={searchText} on:input={(event) => updateSearch(event.target.value)} />
+      type='search'
+      class='form-control pl-40 ml-20 mr-30 bg-dark-very-light rounded-1 h-40 text-truncate'
+      autocomplete='off'
+      spellcheck='false'
+      data-option='search'
+      placeholder='Filter notifications by their titles' bind:value={searchText} on:input={(event) => updateSearch(event.target.value)} />
   </div>
-  <div class='shadow-overlay' class:d-none={!$notifications?.length} />
+  <div class='shadow-overlay' class:d-none={!$notifications?.length}></div>
   {#if $notifications?.length && !currentNotifications?.length}
-    <ErrorCard promise={{ errors: [ { message: 'found no results' }]}}/>
+    <ErrorCard promise={{ errors: [{ message: 'found no results' }] }} />
   {/if}
   <div bind:this={container} class='notification-list mt-10 overflow-y-auto' on:scroll={handleScroll}>
     {#each currentNotifications as notification, index}
@@ -226,17 +226,17 @@
         {@const behind = Helper.isAuthorized() && !announcement && !delayed && isValidNumber(notification.episode) && (notification.episode - 1) >= 1 && (media?.mediaListEntry?.status !== 'COMPLETED' && ((media?.mediaListEntry?.progress || -1) < ((!isValidNumber(notification.season) ? notification.episode : media?.episodes) - 1)))}
         {@const completed = !announcement && !delayed && !notWatching && !behind && isValidNumber(notification.episode) && (media?.mediaListEntry?.status === 'COMPLETED' || (media?.mediaListEntry?.progress >= (!isValidNumber(notification.season) ? notification.episode : media?.episodes)))}
         <div class='notification-item shadow-lg position-relative d-flex align-items-center mx-20 my-5 p-5 scale pointer' class:mt-10={index === 0} role='button' tabindex='0' class:not-reactive={!$reactive} class:read={notification.read} class:behind={(behind && !notWatching) || delayed} class:current={!behind && !notWatching && !repeating} class:repeating={!behind && !notWatching && repeating} class:not-watching={notWatching} class:completed={completed} class:announcement={announcement}
-             use:blurExit={ () => { if (notification.prompt) setTimeout(() => preventScroll(container.scrollTop, () => delete notification.prompt)) }}
-             use:hoverExit={() => { if (notification.prompt) setTimeout(() => preventScroll(container.scrollTop, () => delete notification.prompt)) }}
-             use:click={() => {
-               if (!behind || notification.prompt) preventScroll(container.scrollTop, () => { notification.read = true; delete notification.prompt; onclick(notification) })
-               else preventScroll(container.scrollTop, () => notification.prompt = true)
-             }}
-             on:contextmenu|preventDefault={() => { notification.read = true; onclick(notification, true) }}>
+          use:blurExit={ () => { if (notification.prompt) setTimeout(() => preventScroll(container.scrollTop, () => delete notification.prompt)) }}
+          use:hoverExit={() => { if (notification.prompt) setTimeout(() => preventScroll(container.scrollTop, () => delete notification.prompt)) }}
+          use:click={() => {
+            if (!behind || notification.prompt) preventScroll(container.scrollTop, () => { notification.read = true; delete notification.prompt; onclick(notification) })
+            else preventScroll(container.scrollTop, () => notification.prompt = true)
+          }}
+          on:contextmenu|preventDefault={() => { notification.read = true; onclick(notification, true) }}>
           {#if notification.heroImg}
             <div class='position-absolute top-0 left-0 w-full h-full'>
               <img src={notification.heroImg} alt='bannerImage' class='hero-img img-cover w-full h-full' />
-              <div class='position-absolute rounded-5 opacity-transition-hack' style='background: var(--notification-card-gradient);' />
+              <div class='position-absolute rounded-5 opacity-transition-hack' style='background: var(--notification-card-gradient);'></div>
             </div>
           {/if}
           <div class='rounded-5 d-flex justify-content-center align-items-center overflow-hidden mr-10 z-10 notification-icon-container'>
@@ -244,21 +244,21 @@
           </div>
           <div class='notification-content z-10 w-full'>
             <div class='d-flex'>
-              <p class='notification-title overflow-hidden font-weight-bold my-0 mt-5 mr-10 font-scale-18 {SUPPORTS.isAndroid ? `line-clamp-1` : `line-clamp-2`}'>{notification.title}</p>
+              <p class='notification-title overflow-hidden font-weight-bold my-0 mt-5 mr-10 font-scale-18 {SUPPORTS.isAndroid ? 'line-clamp-1' : 'line-clamp-2'}'>{notification.title}</p>
               <div class='ml-auto d-flex'>
-                <button type='button' tabindex='-1' class='position-absolute n-safe-area top-0 right-0 h-50 bg-transparent border-0 shadow-none not-reactive z-1 w-90' use:click={() => {}}/>
+                <button type='button' tabindex='-1' class='position-absolute n-safe-area top-0 right-0 h-50 bg-transparent border-0 shadow-none not-reactive z-1 w-90' use:click={() => {}}></button>
                 {#if isValidNumber(notification.episode)}
                   <button type='button' class='btn btn-square mr-5 z-1 d-flex align-items-center justify-content-center' use:click={() => {
                     window.dispatchEvent(new CustomEvent('play-anime', { detail: { id: notification.id, episode: notification.episode, direct: true } }))
                   }}>
-                    <Play size='1.7rem' strokeWidth='3'/>
+                    <Play size='1.7rem' strokeWidth='3' />
                   </button>
                 {/if}
                 <button type='button' class='read-button btn btn-square d-flex align-items-center justify-content-center z-1' class:not-allowed={completed} class:not-reactive={completed} use:click={() => { preventScroll(container.scrollTop, () => { notification.read = !notification.read; delete notification.prompt }) }}>
                   {#if notification.read}
-                    <MailOpen size='1.7rem' strokeWidth='3'/>
+                    <MailOpen size='1.7rem' strokeWidth='3' />
                   {:else}
-                    <MailCheck size='1.7rem' strokeWidth='3'/>
+                    <MailCheck size='1.7rem' strokeWidth='3' />
                   {/if}
                 </button>
               </div>
@@ -273,7 +273,7 @@
                   <span class='badge text-dark bg-undenary mr-5'>Movie</span>
                 {:else if !isValidNumber(notification.season)}
                   {#if delayed}<span class='badge text-dark bg-denary mr-5'>Delayed</span>{/if}
-                  <span class='badge text-dark bg-undenary mr-5'>{notification.episode != null && (Array.isArray(notification.episode) || isValidNumber(notification.episode)) ? `Episode ${Array.isArray(notification.episode) ? `${Number(notification.episode[0])} ~ ${Number(notification.episode[1])}` : Number(notification.episode)}` : `Batch`} </span>
+                  <span class='badge text-dark bg-undenary mr-5'>{notification.episode != null && (Array.isArray(notification.episode) || isValidNumber(notification.episode)) ? `Episode ${Array.isArray(notification.episode) ? `${Number(notification.episode[0])} ~ ${Number(notification.episode[1])}` : Number(notification.episode)}` : 'Batch'} </span>
                 {:else if isValidNumber(notification.season)}
                   <span class='badge text-dark bg-undenary mr-5'>Season {notification.season}</span>
                 {/if}
@@ -284,7 +284,7 @@
                 {/if}
               </div>
             </div>
-            <div class='position-absolute bd-highlight rounded-5 opacity-transition-hack' style='left: -.5rem' />
+            <div class='position-absolute bd-highlight rounded-5 opacity-transition-hack' style='left: -.5rem'></div>
           </div>
           <div class='prompt position-absolute w-full h-full z-40 d-flex flex-column align-items-center' class:visible={notification.prompt} class:invisible={!notification.prompt}>
             <p class='mx-20 font-scale-20 text-white text-center mt-auto mb-0'>
@@ -305,7 +305,7 @@
   </div>
   <div class='d-flex flex-column justify-content-between align-items-center'>
     {#if $notifications?.length}
-      <button type='button' class='read-button btn text-light font-weight-bold shadow-none border-0 d-flex align-items-center mt-20' disabled={!!searchText?.length} on:click={() => { container.scrollTo({top: 0}); markAll($hasUnreadNotifications && $hasUnreadNotifications > 0) }}>
+      <button type='button' class='read-button btn text-light font-weight-bold shadow-none border-0 d-flex align-items-center mt-20' disabled={!!searchText?.length} on:click={() => { container.scrollTo({ top: 0 }); markAll($hasUnreadNotifications && $hasUnreadNotifications > 0) }}>
         {#if $hasUnreadNotifications && $hasUnreadNotifications > 0}
           <MailCheck strokeWidth='3' class='mr-10' size='1.7rem' />
           Mark All As Read
@@ -316,7 +316,7 @@
       </button>
     {:else}
       <div class='w-800 mw-0'>
-        <ErrorCard promise={{ errors: [ { message: ['Nothing To See Here!', 'Settings > Interface > Notifications Settings']}]}}/>
+        <ErrorCard promise={{ errors: [{ message: ['Nothing To See Here!', 'Settings > Interface > Notifications Settings'] }] }} />
       </div>
     {/if}
   </div>

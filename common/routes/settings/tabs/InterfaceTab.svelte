@@ -32,16 +32,16 @@
 
 <SettingCard title='Scale' description='Adjust the size of text, buttons, and other interface elements to match your preference and screen size.'>
   <div class='form-group w-160 flex-shrink-0 my-auto'>
-    <input class='w-full p-2 bg-dark-light' type='range' id='ui-scale' min='0.5' max='2' step='0.05' bind:value={settings.uiScale} on:change={() => setScale()}/>
+    <input class='w-full p-2 bg-dark-light' type='range' id='ui-scale' min='0.5' max='2' step='0.05' bind:value={settings.uiScale} on:change={() => setScale()} />
     <div class='d-flex align-items-center justify-content-center gap-2 position-relative'>
       <strong>{Math.round(settings.uiScale * 100)}%</strong>
       <button type='button' use:click={() => { settings.uiScale = 1; setScale() }} class='btn btn-danger btn-square px-5 d-flex align-items-center position-absolute right-0' data-toggle='tooltip' data-placement='left' data-title='Reset To Default Interface Scaling' disabled={settings.uiScale === 1}><RotateCcw size='1.8rem' /></button>
     </div>
   </div>
 </SettingCard>
-<SettingCard title='CSS Variables' description='Used for custom themes. Can change colors, sizes, spacing and more. Supports only variables.{!SUPPORTS.isAndroid ? ` Best way to discover variables is to use the built-in devtools.` : ``}'>
+<SettingCard title='CSS Variables' description='Used for custom themes. Can change colors, sizes, spacing and more. Supports only variables.{!SUPPORTS.isAndroid ? ' Best way to discover variables is to use the built-in devtools.' : ''}'>
   <div class='d-flex flex-column'>
-    <textarea class='form-control w-md-500 w-full bg-dark' placeholder='--accent-color: #FFFFFF;' bind:value={$variables} />
+    <textarea class='form-control w-md-500 w-full bg-dark' placeholder='--accent-color: #FFFFFF;' bind:value={$variables}></textarea>
     <button type='button' use:click={() => IPC.emit('ui-devtools')} class='btn btn-primary d-none align-items-center justify-content-center mt-10' class:d-flex={!SUPPORTS.isAndroid}><span class='text-truncate'>Open Devtools</span></button>
   </div>
 </SettingCard>
@@ -93,7 +93,7 @@
     <label for='prefer-dubs'>{settings.preferDubs ? 'On' : 'Off'}</label>
   </div>
 </SettingCard>
-<SettingCard title='Adult Content' description={'Adult enables searching for adult (18+) rated anime, typically series with nudity. Hentai enables searching straight up Hentai. This includes adding the Hentai home feed, Hentai genre, and Hentai related tags for search queries.'}>
+<SettingCard title='Adult Content' description='Adult enables searching for adult (18+) rated anime, typically series with nudity. Hentai enables searching straight up Hentai. This includes adding the Hentai home feed, Hentai genre, and Hentai related tags for search queries.'>
   <select class='form-control bg-dark w-100 mw-full text-truncate' bind:value={settings.adult}>
     <option value='none' selected>None</option>
     <option value='adult'>Adult</option>
@@ -101,7 +101,7 @@
   </select>
 </SettingCard>
 {#if settings.adult === 'hentai'}
-  <SettingCard title='Hentai Banner' description={'Changes the displayed series on the home page banner to be exclusively Hentai.'}>
+  <SettingCard title='Hentai Banner' description='Changes the displayed series on the home page banner to be exclusively Hentai.'>
     <div class='custom-switch'>
       <input type='checkbox' id='hentai-banner' bind:checked={settings.hentaiBanner} />
       <label for='hentai-banner'>{settings.hentaiBanner ? 'On' : 'Off'}</label>
@@ -125,7 +125,7 @@
   </SettingCard>
 {/if}
 <h4 class='mb-10 font-weight-bold'>Notification Settings</h4>
-<SettingCard title='System Notifications' description={'Allows custom system notifications to be sent, with this disabled you will still get in-app notifications. If you enable system notifications and have MULTIPLE Notification Feeds specified, such as Releases and Anilist you WILL be spammed with multiple notifications. Consider choosing a single feed based on your needs.'}>
+<SettingCard title='System Notifications' description='Allows custom system notifications to be sent, with this disabled you will still get in-app notifications. If you enable system notifications and have MULTIPLE Notification Feeds specified, such as Releases and Anilist you WILL be spammed with multiple notifications. Consider choosing a single feed based on your needs.'>
   <div class='custom-switch'>
     <input type='checkbox' id='system-notify' bind:checked={settings.systemNotify} />
     <label for='system-notify'>{settings.systemNotify ? 'On' : 'Off'}</label>
@@ -151,14 +151,14 @@
     </SettingCard>
   {/if}
 {/each}
-<SettingCard title='Releases Notifications' description={`When a new episode is added to any of the Releases feeds, a notification will be sent depending on your list status.`}>
+<SettingCard title='Releases Notifications' description='When a new episode is added to any of the Releases feeds, a notification will be sent depending on your list status.'>
   <div>
     {#each settings.releasesNotify as status, i}
       <div class='input-group mb-10 w-210 mw-full'>
-        <select id='dubs-notify-{i}' class='w-100 form-control mw-full bg-dark text-truncate' bind:value={settings.releasesNotify[i]} >
+        <select id='dubs-notify-{i}' class='w-100 form-control mw-full bg-dark text-truncate' bind:value={settings.releasesNotify[i]}>
           <option disabled value=''>Select a status</option>
           {#each listStatus.filter(option => !settings.releasesNotify.includes(option[1]) || status === option[1]) as option}
-            <option value='{option[1]}'>{option[0]}</option>
+            <option value={option[1]}>{option[0]}</option>
           {/each}
         </select>
         <div class='input-group-append'>
@@ -172,21 +172,21 @@
 
 <h4 class='mb-10 font-weight-bold'>Home Screen Settings</h4>
 {#if Helper.isAuthorized()}
-  <SettingCard title='Hide My Anime' description={'The anime on your Watching, Rewatching, Completed, and Dropped list will automatically be hidden from the default sections, this excludes user specific feeds.'}>
+  <SettingCard title='Hide My Anime' description='The anime on your Watching, Rewatching, Completed, and Dropped list will automatically be hidden from the default sections, this excludes user specific feeds.'>
     <div class='custom-switch'>
       <input type='checkbox' id='hide-my-anime' bind:checked={settings.hideMyAnime} />
       <label for='hide-my-anime'>{settings.hideMyAnime ? 'On' : 'Off'}</label>
     </div>
   </SettingCard>
 {/if}
-<SettingCard title='Hero Content' description={'What content to display on the home screen hero banner section. Balanced interleaves trending Anime and Western media, while the others restrict it to a single source.'}>
+<SettingCard title='Hero Content' description='What content to display on the home screen hero banner section. Balanced interleaves trending Anime and Western media, while the others restrict it to a single source.'>
   <select class='form-control bg-dark w-150 mw-full text-truncate' bind:value={settings.bannerProvider}>
     <option value='mix' selected>Balanced (50/50)</option>
     <option value='anime'>Anime (AniList)</option>
     <option value='western'>Western (TMDB)</option>
   </select>
 </SettingCard>
-<SettingCard title='Anime Sections' description={'Create custom anime sections that can be added to the home screen. These use AniList genres and tags.'}>
+<SettingCard title='Anime Sections' description='Create custom anime sections that can be added to the home screen. These use AniList genres and tags.'>
   <div>
     {#each settings.customSections as _, i}
       {#if i === 0}
@@ -208,10 +208,10 @@
           />
         </div>
         <div class='position-relative flex-shrink-1 w-150'>
-          <CustomDropdown id={`genre-is-${i}`} options={genreList} bind:value={settings.customSections[i][1]} disabled={settings.customSections[i][1]?.includes('N/A')}/>
+          <CustomDropdown id={`genre-is-${i}`} options={genreList} bind:value={settings.customSections[i][1]} disabled={settings.customSections[i][1]?.includes('N/A')} />
         </div>
         <div class='position-relative flex-shrink-1 w-150'>
-          <CustomDropdown id={`tag-is-${i}`} options={tagList} bind:value={settings.customSections[i][2]} disabled={settings.customSections[i][2]?.includes('N/A')}/>
+          <CustomDropdown id={`tag-is-${i}`} options={tagList} bind:value={settings.customSections[i][2]} disabled={settings.customSections[i][2]?.includes('N/A')} />
         </div>
         <div class='input-group-append'>
           <button type='button' use:click={() => { settings.customSections.splice(i, 1); settings.customSections = settings.customSections }} class='btn btn-danger btn-square input-group-append px-5 d-flex align-items-center'><Trash2 size='1.8rem' /></button>
@@ -221,7 +221,7 @@
     <button type='button' use:click={() => { settings.customSections[settings.customSections.length] = ['New Section', [], [], [], []] }} class='btn btn-primary mb-10 d-flex align-items-center justify-content-center'><span>Add Section</span></button>
   </div>
 </SettingCard>
-<SettingCard title='Western Sections (TMDB)' description={'Create custom western media sections powered by TMDB. These filter out anime and use TMDB genres.'}>
+<SettingCard title='Western Sections (TMDB)' description='Create custom western media sections powered by TMDB. These filter out anime and use TMDB genres.'>
   <div>
     {#each (settings.westernSections || []) as _, i}
       {#if i === 0}
@@ -260,7 +260,7 @@
     <button type='button' use:click={() => { if (!settings.westernSections) settings.westernSections = []; settings.westernSections[settings.westernSections.length] = ['New Section', [], 'Both'] }} class='btn btn-primary mb-10 d-flex align-items-center justify-content-center'><span>Add Section</span></button>
   </div>
 </SettingCard>
-<SettingCard title='Sections And Order' description="Sections and their order on the home screen. Custom Anime and Western sections created above can be added here. Drag/drop these sections to re-order them.">
+<SettingCard title='Sections And Order' description='Sections and their order on the home screen. Custom Anime and Western sections created above can be added here. Drag/drop these sections to re-order them.'>
   <div class='position-relative'>
     <HomeSections bind:homeSections={settings.homeSections} />
   </div>
