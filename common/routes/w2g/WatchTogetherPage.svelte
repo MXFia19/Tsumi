@@ -1,20 +1,22 @@
 <script context="module">
   import { copyToClipboard } from "@/modules/clipboard.js";
-  import { EventEmitter } from "events";
-  import { writable } from "simple-store-svelte";
   import { status } from "@/modules/networking.js";
   import { SUPPORTS } from "@/modules/support.js";
   import { page } from "@/modules/navigation.js";
   import { IPC } from "@/modules/bridge.js";
-  import WPC from "@/modules/wpc.js";
+  import { anilistClient } from "@/modules/anilist.js";
+  import { toast } from "svelte-sonner";
+  import {
+    w2gEmitter as sessionEmitter,
+    state as sessionState,
+  } from "@/routes/w2g/components/session.js";
   import "browser-event-target-emitter";
   import Debug from "debug";
   const debug = Debug("ui:w2g");
 
-  export const w2gEmitter = new EventEmitter();
-
-  /** @type {import('simple-store-svelte').Writable<W2GClient | null>} */
-  export const state = writable(null);
+  // Re-exported for existing imports (PlayerPage); the state lives in session.js.
+  export const w2gEmitter = sessionEmitter;
+  export const state = sessionState;
 
   function joinLobby(code) {
     debug("Joining lobby with code:", code);
@@ -22,16 +24,25 @@
     const w2g = new W2GClient(code);
     state.value = w2g;
     w2g.on("index", (i) => w2gEmitter.emit("setindex", i));
-    w2g.on("player", (state) =>
+    w2g.on("player", (playerState) =>
       w2gEmitter.emit("playerupdate", {
-        time: state.time,
-        paused: state.paused,
+        time: playerState.time,
+        paused: playerState.paused,
       }),
     );
+    // Someone started a title: start the same one here with our own extension.
+    w2g.on("media", ({ media, episode }) => {
+      const number = typeof episode === "object" ? episode?.number : episode;
+      toast("Watch Together", {
+        description: `Starting ${anilistClient.title(media) || "the shared title"}${number ? ` - Episode ${number}` : ""}`,
+      });
+      window.dispatchEvent(
+        new CustomEvent("w2g-play", { detail: { media, episode } }),
+      );
+    });
 
     if (!code) invite();
   }
-  WPC.listen("magnet", (detail) => state.value?.magnetLink(detail));
 
   w2gEmitter.on("player", (data) => state.value?.playerStateChanged(data));
   w2gEmitter.on("index", (index) => state.value?.mediaIndexChanged(index));

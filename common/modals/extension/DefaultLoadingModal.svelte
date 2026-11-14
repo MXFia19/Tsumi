@@ -6,6 +6,7 @@
     callExtensionFunction,
   } from "@/modules/extension.js";
   import { sessionServer } from "@/modules/session.js";
+  import { shareNowPlaying } from "@/routes/w2g/components/session.js";
   import { anilistClient } from "@/modules/anilist.js";
   import {
     files,
@@ -79,6 +80,8 @@
     const headers = server?.headers || streamData.headers || {};
 
     $currentMedia = { media: capturedMedia, episode: episodeNum };
+    // Watch Together: let the other participants start the same episode.
+    shareNowPlaying(capturedMedia, typeof episode === "object" ? episode : episodeNum);
     files.set([
       {
         name: `${anilistClient.title(capturedMedia)} - Episode ${episodeNum}.mp4`,

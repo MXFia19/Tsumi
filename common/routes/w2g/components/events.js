@@ -9,7 +9,7 @@ export default class Event {
 
 export const EventTypes = {
   SessionInitEvent: 'init',
-  MagnetLinkEvent: 'magnet',
+  MediaEvent: 'media',
   MediaIndexEvent: 'index',
   PlayerStateEvent: 'player',
   MessageEvent: 'message'

@@ -1,11 +1,12 @@
 <script context='module'>
   import SoftModal from '@/components/modals/SoftModal.svelte'
   import ExtensionResults from '@/modals/extension/components/ExtensionResults.svelte'
-  import { page, modal } from '@/modules/navigation.js'
+  import { modal } from '@/modules/navigation.js'
   import { settings } from '@/modules/settings.js'
+  import { mediaCache } from '@/modules/cache.js'
 
   export function playAnime (media, episode = 1, force = false) {
-    const episodeData = typeof episode === 'object' ? episode : { number: Number(episode) }
+    const episodeData = typeof episode === 'object' && episode !== null ? { ...episode } : { number: Number(episode) }
     episodeData.number = isNaN(episodeData.number) ? 1 : episodeData.number
 
     // Use compact loading dialog when a default extension is set
@@ -15,6 +16,11 @@
       modal.open(modal.EXTENSION_MENU, { media, episode: episodeData })
     }
   }
+
+  // Watch Together: another participant started a title (see routes/w2g).
+  window.addEventListener('w2g-play', ({ detail }) => {
+    if (detail?.media?.id) playAnime(mediaCache.value[detail.media.id] || detail.media, detail.episode)
+  })
 </script>
 
 <script>
