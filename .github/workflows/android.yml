@@ -1,11 +1,7 @@
 name: Android Build
 
 on:
-  workflow_dispatch:  # Allows manual triggering
-  workflow_run:
-    workflows: ["Electron Build and Release"]
-    types:
-      - completed
+  workflow_dispatch:  # Manual only (Windows is the only automatic build)
 
 jobs:
   release:

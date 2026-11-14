@@ -1,18 +1,18 @@
-name: Electron Build and Release
+name: Windows Build
+# Builds the Windows installer and attaches it to the run as an artifact.
+# No release is published (the original 50n50/tsumi release repo no longer exists).
 on:
   workflow_dispatch:  # Allows manual triggering
   push:
     branches:
       - 'main'
-      - 'master'
     paths-ignore:
       - '**.md'
-      - '**.yml'
 env:
   NODE_VERSION: '22.21.1'
   PNPM_VERSION: '10.15.1'
 jobs:
-  release-windows:
+  build-windows:
     runs-on: windows-latest
     steps:
       - name: Check out Git repository
@@ -27,96 +27,14 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
       - name: Install dependencies
-        run: |
-          cd electron
-          pnpm install --frozen-lockfile
-      - name: Build and Publish (Windows x64 + arm64)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd electron
-          pnpm run publish -- --win --x64
-          pnpm run publish -- --win --arm64
-      - name: Upload Windows artifacts
+        run: pnpm install --frozen-lockfile
+      - name: Build installer (Windows x64)
+        working-directory: electron
+        run: pnpm run build -- --win nsis --x64 --publish never
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: windows-build
-          path: |
-            electron/dist/*.exe
-            electron/dist/*.msi
-            electron/dist/*.nsis
-          if-no-files-found: warn
-          retention-days: 14
-
-  release-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out Git repository
-        uses: actions/checkout@v6
-      - name: Setup PNPM
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'pnpm'
-      - name: Install dependencies
-        run: |
-          cd electron
-          pnpm install --frozen-lockfile
-      - name: Build and Publish
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd electron
-          pnpm run publish
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-build
-          path: |
-            electron/dist/*.AppImage
-            electron/dist/*.deb
-            electron/dist/*.rpm
-            electron/dist/*.snap
-          if-no-files-found: warn
-          retention-days: 14
-
-  release-macos:
-    runs-on: macos-latest
-    steps:
-      - name: Check out Git repository
-        uses: actions/checkout@v6
-      - name: Setup PNPM
-        uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'pnpm'
-      - name: Install Setuptools for Python (macOS only)
-        run: pip3 install setuptools --break-system-packages
-      - name: Install dependencies
-        run: |
-          cd electron
-          pnpm install --frozen-lockfile
-      - name: Build and Publish
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd electron
-          pnpm run publish
-      - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-build
-          path: |
-            electron/dist/*.dmg
-            electron/dist/*.pkg
-            electron/dist/*.zip
-          if-no-files-found: warn
-          retention-days: 14
+          name: tsumi-windows-installer
+          path: electron/dist/*-installer.exe
+          if-no-files-found: error
+          retention-days: 30
