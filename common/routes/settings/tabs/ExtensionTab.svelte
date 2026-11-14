@@ -112,7 +112,7 @@
         </div>
       {/if}
       <div class='input-group'>
-        <input placeholder='Extension manifest URL' type='url' class='form-control bg-dark-light mw-full rounded-2 h-36 border text-truncate long-input' disabled={pendingSource} class:cursor-wait={pendingSource} bind:value={sourceUrl} on:keydown={(e) => { if (e.key === 'Enter') addSource() }} />
+        <input placeholder='Sora module or Stremio addon manifest URL' type='url' class='form-control bg-dark-light mw-full rounded-2 h-36 border text-truncate long-input' disabled={pendingSource} class:cursor-wait={pendingSource} bind:value={sourceUrl} on:keydown={(e) => { if (e.key === 'Enter') addSource() }} />
         <button class='ml-10 btn btn-primary d-flex align-items-center justify-content-center rounded-2 w-100 h-36 font-scale-16' disabled={pendingSource || !sourceUrl?.length} class:cursor-wait={pendingSource} type='button' use:click={() => addSource()}>
           <SquarePlus class='mr-5' size='1.6rem' /><span>Add</span>
         </button>

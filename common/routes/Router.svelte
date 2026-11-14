@@ -6,6 +6,7 @@
   import SettingsPage from "@/routes/settings/SettingsPage.svelte";
   import WatchTogetherPage from "@/routes/w2g/WatchTogetherPage.svelte";
   import SchedulePage from "@/routes/SchedulePage.svelte";
+  import CatalogPage from "@/routes/catalogs/CatalogPage.svelte";
   import {
     isMobile,
     isSuperSmall,
@@ -53,6 +54,8 @@
   <SearchPage {search} {key} />
 {:else if $page === page.SCHEDULE}
   <SchedulePage />
+{:else if $page === page.CATALOGS}
+  <CatalogPage />
 {:else if $page === page.WATCH_TOGETHER}
   <WatchTogetherPage />
 {/if}

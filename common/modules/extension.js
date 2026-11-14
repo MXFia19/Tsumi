@@ -1,6 +1,7 @@
 import { writable } from 'simple-store-svelte'
 import { settings } from '@/modules/settings.js'
 import { ELECTRON } from '@/modules/bridge.js'
+import { isStremioManifest, loadStremioAddon, callStremioFunction, normalizeManifestUrl } from '@/modules/stremio.js'
 import Debug from 'debug'
 
 const debug = Debug('ui:extension:manager')
@@ -148,7 +149,7 @@ export async function executeExtensionFunction(scriptCode, functionName, ...args
 }
 
 export async function loadExtension(manifestUrl) {
-  const resolvedManifestUrl = new URL(manifestUrl, window.location.href).href
+  const resolvedManifestUrl = new URL(normalizeManifestUrl(manifestUrl), window.location.href).href
 
   let manifest
   try {
@@ -157,8 +158,13 @@ export async function loadExtension(manifestUrl) {
     throw new Error(`Failed to load manifest from ${resolvedManifestUrl}: ${error.message}`)
   }
 
+  // Stremio addons have no script: they are queried over HTTP instead.
+  if (isStremioManifest(manifest)) {
+    return loadStremioAddon(resolvedManifestUrl, manifest)
+  }
+
   if (!manifest.sourceName || !manifest.scriptUrl) {
-    throw new Error('Invalid manifest: missing sourceName or scriptUrl')
+    throw new Error('Invalid manifest: expected a Sora module (sourceName + scriptUrl) or a Stremio addon')
   }
 
   const resolvedScriptUrl = new URL(manifest.scriptUrl, resolvedManifestUrl).href
@@ -174,6 +180,10 @@ export async function loadExtension(manifestUrl) {
 }
 
 export async function callExtensionFunction(extension, functionName, ...args) {
+  if (extension?.type === 'stremio') {
+    return callStremioFunction(extension, functionName, ...args)
+  }
+
   if (!extension?.script) {
     throw new Error('Extension not loaded')
   }

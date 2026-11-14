@@ -21,6 +21,7 @@
     MoveLeft,
     MoveRight,
     CalendarSearch,
+    Clapperboard,
     CloudDownload,
     Heart,
     Home,
@@ -150,6 +151,20 @@
       let:active
     >
       <CalendarSearch
+        size={btnSize}
+        class="flex-shrink-0 p-5 m-5 rounded"
+        strokeWidth="2.5"
+        color={active ? "currentColor" : "var(--gray-color-very-dim)"}
+      />
+    </SidebarLink>
+    <SidebarLink
+      click={() => page.navigateTo(page.CATALOGS)}
+      _page={page.CATALOGS}
+      icon="catalogs"
+      text="Catalogs"
+      let:active
+    >
+      <Clapperboard
         size={btnSize}
         class="flex-shrink-0 p-5 m-5 rounded"
         strokeWidth="2.5"

@@ -14,6 +14,7 @@ const debug = Debug('ui:history')
  * @property {string} HOME
  * @property {string} SEARCH
  * @property {string} SCHEDULE
+ * @property {string} CATALOGS
  * @property {string} SETTINGS
  * @property {string} PLAYER
  * @property {string} EXTENSION_MANAGER
@@ -61,6 +62,7 @@ export const page = (() => {
     HOME: 'home',
     SEARCH: 'search',
     SCHEDULE: 'schedule',
+    CATALOGS: 'catalogs',
     SETTINGS: 'settings',
     PLAYER: 'player',
     EXTENSION_MANAGER: 'extension_manager',

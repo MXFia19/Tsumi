@@ -129,10 +129,12 @@
 
     try {
       statusText = "Searching...";
+      // Stremio addons look the title up by its TMDB id, so they get the media too.
       const raw = await callExtensionFunction(
         defaultExt,
         "searchResults",
         title,
+        ...(defaultExt.type === "stremio" ? [capturedMedia] : []),
       );
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
 

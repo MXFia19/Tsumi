@@ -96,7 +96,12 @@
     });
 
     const searches = sorted.map((ext) =>
-      callExtensionFunction(ext, "searchResults", title)
+      callExtensionFunction(
+        ext,
+        "searchResults",
+        title,
+        ...(ext.type === "stremio" ? [search?.media] : []),
+      )
         .then((raw) => {
           const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
           if (Array.isArray(parsed) && parsed.length) {
