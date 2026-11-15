@@ -7,7 +7,7 @@
   import User from '@/routes/w2g/components/User.svelte'
   import Prompts from '@/routes/w2g/components/Prompts.svelte'
   import { REACTIONS, BUBBLE_MS, NOTICE_MS, memberName, formatClock } from '@/routes/w2g/components/sync.js'
-  import { Users, X, SendHorizontal, Crown, RefreshCw, Timer, Hand, DoorOpen } from 'lucide-svelte'
+  import { Users, X, SendHorizontal, Crown, RefreshCw, Timer, Hand, DoorOpen, MonitorPlay } from 'lucide-svelte'
 
   /** @type {import('./w2g.js').W2GClient} */
   export let client
@@ -59,6 +59,9 @@
   function listMembers (client, now, ..._stores) {
     return client.describeMembers(now)
   }
+  function readJoinOffer (client, ..._stores) {
+    return client.joinOffer()
+  }
   function readHostPaused (client, ..._stores) {
     return client.hostPaused()
   }
@@ -68,6 +71,11 @@
   $: locked = hostMode && !isHost && $following
   $: canCountdown = $following && (isHost || !hostMode)
   $: hostPaused = open && locked ? readHostPaused(client, $clock, $signals) : false
+  // v2.3 Join card: in the open panel; outside it only while following, until dismissed for that key.
+  $: joinOffer = readJoinOffer(client, $clock, $signals, $localStatus, $lobby, $following, $peers)
+  let joinDismissedKey = null
+  $: floatingJoin = joinOffer && $following && joinOffer.key !== joinDismissedKey ? joinOffer : null
+  $: canInviteAll = isHost && members.some(member => member.canInvite)
   $: watching = $localStatus.state !== 'idle'
   $: chat = open ? $messages.slice(-100) : []
   $: if (open && chat.length) scrollChat()
@@ -213,9 +221,9 @@
 </button>
 
 <!-- Prompts (host requests, invites, rejoin): above everything while the panel is closed, at its top while open -->
-{#if !open && ($requests.length || $invites.length || $rejoinOffer)}
+{#if !open && ($requests.length || $invites.length || $rejoinOffer || floatingJoin)}
   <div class='w2g-prompts d-flex flex-column align-items-end'>
-    <Prompts {client} requests={$requests} invites={$invites} rejoin={$rejoinOffer} />
+    <Prompts {client} requests={$requests} invites={$invites} rejoin={$rejoinOffer} join={floatingJoin} dismissJoin={() => { joinDismissedKey = joinOffer?.key }} />
   </div>
 {/if}
 
@@ -270,9 +278,9 @@
       </button>
     </div>
 
-    {#if $requests.length || $invites.length || $rejoinOffer || notices.length}
+    {#if $requests.length || $invites.length || $rejoinOffer || notices.length || joinOffer}
       <div class='panel-prompts px-15 pt-5 flex-shrink-0'>
-        <Prompts {client} requests={$requests} invites={$invites} rejoin={$rejoinOffer} {notices} dismissNotice={dismiss} />
+        <Prompts {client} requests={$requests} invites={$invites} rejoin={$rejoinOffer} {notices} dismissNotice={dismiss} join={joinOffer} />
       </div>
     {/if}
 
@@ -311,6 +319,11 @@
         {:else if !isHost && watching && $following}
           <button type='button' class='btn btn-sm d-flex align-items-center mr-5 my-5' title='Jump to the host' use:click={() => client.resync()}>
             <RefreshCw size='1.4rem' class='mr-5' /> Resync
+          </button>
+        {/if}
+        {#if canInviteAll}
+          <button type='button' class='btn btn-sm d-flex align-items-center mr-5 my-5' title='Send an invite to each member who is not watching' use:click={() => client.inviteAllNotWatching()}>
+            <MonitorPlay size='1.4rem' class='mr-5' /> Invite everyone not watching
           </button>
         {/if}
       </div>

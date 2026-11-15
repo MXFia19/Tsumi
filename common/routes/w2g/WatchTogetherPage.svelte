@@ -60,6 +60,18 @@
       })
     })
     w2g.on('inviteRemoved', (from) => toast.dismiss(inviteToastId(from)))
+    // v2.3: we arrived in a lobby that is already watching: one app-wide prompt, wherever we are.
+    const joinToastId = `w2g-join-${w2g.code}`
+    w2g.on('joinable', (offer) => {
+      const label = [anilistClient.title(offer.media) || 'a title', w2g.episodeLabel(offer.episode)].filter(Boolean).join(' · ')
+      toast('Watch Together', {
+        id: joinToastId,
+        description: `${offer.name} is watching ${label}`,
+        duration: Infinity,
+        action: { label: 'Join', onClick: () => w2g.joinPlayback() }
+      })
+    })
+    w2g.on('joinableRemoved', () => toast.dismiss(joinToastId))
 
     if (!code) invite()
   }

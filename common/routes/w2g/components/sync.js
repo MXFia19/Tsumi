@@ -205,9 +205,9 @@ export function inferAction (previous, next) {
 /**
  * @typedef {{ mediaId: string | number | null, title: string, episode: string }} NowPlaying
  * @typedef {{ state: string, time: number, mediaKey?: string, rate?: number, source?: string, following?: boolean, nowPlaying?: NowPlaying | null }} Status
- * @typedef {{ status?: Status | null, receivedAt?: number, rtt?: number, protocol?: number, lastSeen?: number }} MemberSignal
+ * @typedef {{ status?: Status | null, receivedAt?: number, rtt?: number, protocol?: number, lastSeen?: number, joinedAt?: number }} MemberSignal
  * @typedef {Status & { at: number }} LocalStatus our own status, `at` = when `time` was read
- * @typedef {{ kind: 'old' | 'nosignal' | 'idle' | 'loading' | 'buffering' | 'other' | 'own' | 'sync' | 'ahead' | 'behind' | 'playing' | 'paused', text: string, drift?: number }} Badge
+ * @typedef {{ kind: 'old' | 'nosignal' | 'connecting' | 'idle' | 'loading' | 'buffering' | 'other' | 'own' | 'sync' | 'ahead' | 'behind' | 'playing' | 'paused', text: string, drift?: number }} Badge
  */
 
 /**
@@ -234,7 +234,12 @@ export function selfBadge (local) {
  */
 export function syncBadge (member, local, now) {
   const status = member?.status
-  if (!status) return member?.protocol === 1 ? { kind: 'old', text: 'Old version' } : { kind: 'nosignal', text: 'No signal' }
+  if (!status) {
+    if (member?.protocol === 1) return { kind: 'old', text: 'Old version' }
+    // v2.3: a v2 member is "No signal" only once 10 s passed after its `init` without any status.
+    if (isFiniteNumber(member?.joinedAt) && now - member.joinedAt < NO_SIGNAL_MS) return { kind: 'connecting', text: 'Connecting…' }
+    return { kind: 'nosignal', text: 'No signal' }
+  }
 
   if (now - (member.receivedAt ?? 0) > NO_SIGNAL_MS) {
     const isStatic = status.state === 'paused' || status.state === 'idle'
@@ -496,20 +501,20 @@ export function describePresence (name, { kind, label, source }) {
 }
 
 /**
- * Whether a member row shows "Invite to watch": the member is idle, on another episode or without
- * signal for 10 s; we are in the player with a media; in `host` mode only the host invites.
- * @param {{ selfWatching: boolean, hasMedia: boolean, effectiveMode: string, isHost: boolean, now: number,
- *   member: { isSelf?: boolean, protocol?: number, badge?: Badge, status?: Status | null, receivedAt?: number, joinedAt?: number } }} input
+ * v2.3 "Invite to watch" on a member row, from anywhere (the inviter does not need to be in the player).
+ * There must be a media to offer (see offeredMedia); in `host` mode only the host invites. Eligible: a v2
+ * member that is idle, on another key than the offered one, independent, or "No signal" (including no
+ * `status` 10 s after its `init`).
+ * @param {{ offeredKey: string | null | undefined, effectiveMode: string, isHost: boolean, now: number,
+ *   member: { isSelf?: boolean, protocol?: number, badge?: Badge, status?: Status | null, joinedAt?: number } }} input
  */
-export function canInvite ({ selfWatching, hasMedia, effectiveMode, isHost, now, member }) {
-  if (!selfWatching || !hasMedia || member.isSelf || !(member.protocol >= 2)) return false
+export function canInvite ({ offeredKey, effectiveMode, isHost, now, member }) {
+  if (!offeredKey || member.isSelf || !(member.protocol >= 2)) return false
   if (effectiveMode === 'host' && !isHost) return false
-  const kind = member.badge?.kind
-  // Independent members (v2.2) can be invited too.
-  if (member.status?.state === 'idle' || kind === 'idle' || kind === 'other' || kind === 'own') return true
-  if (kind !== 'nosignal') return false
-  const since = member.status ? member.receivedAt : member.joinedAt
-  return isFiniteNumber(since) && now - since >= NO_SIGNAL_MS
+  const status = member.status
+  if (!status) return isFiniteNumber(member.joinedAt) && now - member.joinedAt >= NO_SIGNAL_MS
+  if (member.badge?.kind === 'nosignal') return true
+  return status.state === 'idle' || status.following === false || (status.mediaKey || '') !== offeredKey
 }
 
 /**
@@ -593,6 +598,78 @@ export function electFollowingHost ({ selfId, selfFollowing, peers }) {
 export function followBackAction ({ localKey, lobbyKey }) {
   if (!lobbyKey) return 'none'
   return localKey && localKey === lobbyKey ? 'resync' : 'rejoin'
+}
+
+// ---------------------------------------------------------------- v2.3: join the current playback, invite from anywhere
+
+/** A `media` (or `index`) received this soon after its sender's `init` is the lobby state sent to newcomers. */
+export const INITIAL_STATE_MS = 5_000
+/** States in which a member counts as watching the lobby media. */
+export const WATCHING_LOBBY_STATES = ['playing', 'paused', 'buffering', 'loading']
+
+/**
+ * The reference member of the lobby playback, or null when the lobby is not watching. The host when its
+ * last status is on the lobby key in a watching state; if the host is idle or independent (or has no
+ * status), the following member on the lobby key with the smallest userId.
+ * @param {{ lobbyKey: string | null | undefined, hostId: string | null, members: Array<{ userId: string, status?: Status | null }> }} input
+ *   members: every member, ourselves included with our own status
+ * @returns {string | null}
+ */
+export function lobbyReference ({ lobbyKey, hostId, members }) {
+  if (!lobbyKey) return null
+  const onLobby = member => !!member.status && member.status.following !== false &&
+    member.status.mediaKey === lobbyKey && WATCHING_LOBBY_STATES.includes(member.status.state)
+  const host = hostId == null ? null : members.find(member => sameId(member.userId, hostId))
+  if (host) {
+    if (onLobby(host)) return String(host.userId)
+    const hostAway = !host.status || host.status.state === 'idle' || host.status.following === false
+    if (!hostAway) return null
+  }
+  return electHost(members.filter(onLobby).map(member => member.userId))
+}
+
+/**
+ * Whether to show the Join card: the lobby is watching (there is a reference other than us) and we are
+ * not on the lobby media (idle, another key, or independent).
+ * @param {{ reference: string | null, selfId: string, lobbyKey: string | null | undefined, local: { state: string, mediaKey?: string }, following: boolean }} input
+ */
+export function canJoinPlayback ({ reference, selfId, lobbyKey, local, following }) {
+  if (!reference || !lobbyKey || sameId(reference, selfId)) return false
+  return local.state === 'idle' || (local.mediaKey || '') !== lobbyKey || !following
+}
+
+/**
+ * Media an invite offers: ours when we play one, else the lobby media while the lobby is watching.
+ * @param {{ ownKey: string | null | undefined, ownActive: boolean, lobbyKey: string | null | undefined, lobbyWatching: boolean }} input
+ * @returns {{ from: 'own' | 'lobby', key: string } | null}
+ */
+export function offeredMedia ({ ownKey, ownActive, lobbyKey, lobbyWatching }) {
+  if (ownActive && ownKey) return { from: 'own', key: ownKey }
+  if (lobbyWatching && lobbyKey) return { from: 'lobby', key: lobbyKey }
+  return null
+}
+
+/**
+ * Position sent in an invite: our own playback when it plays the offered media, else the reference's
+ * expected time and state.
+ * @param {{ offered: { from: 'own' | 'lobby' } | null, own: { time: number, paused: boolean } | null, reference: { time: number, paused: boolean } | null }} input
+ * @returns {{ time: number, paused: boolean } | null}
+ */
+export function invitePosition ({ offered, own, reference }) {
+  if (!offered) return null
+  const source = offered.from === 'own' ? own : reference
+  if (!source || !isFiniteNumber(source.time)) return null
+  return { time: Math.max(0, source.time), paused: !!source.paused }
+}
+
+/**
+ * A received `media` starts the player only for a following member already watching, and never for the
+ * lobby state sent to newcomers: the others get the Join card (nothing starts on its own).
+ * @param {{ following: boolean, localState: string, senderJoinedAt?: number, now: number }} input
+ */
+export function autoStartsMedia ({ following, localState, senderJoinedAt, now }) {
+  if (!following || localState === 'idle') return false
+  return !(isFiniteNumber(senderJoinedAt) && now - senderJoinedAt < INITIAL_STATE_MS)
 }
 
 /**

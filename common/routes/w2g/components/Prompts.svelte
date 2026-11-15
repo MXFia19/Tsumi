@@ -23,6 +23,10 @@
   export let notices = []
   /** @type {(notice: any) => void} */
   export let dismissNotice = () => {}
+  /** @type {{ name: string, media: any, episode: any, key: string } | null} v2.3 Join card (lobby is watching) */
+  export let join = null
+  /** @type {(() => void) | null} set to make the Join card dismissible */
+  export let dismissJoin = null
 
   function requestText ({ name, kind, time }) {
     if (kind === 'pause') return `${name} wants to pause`
@@ -51,6 +55,20 @@
     {/if}
   </div>
 {/each}
+
+{#if join}
+  <div class='prompt bg-dark rounded p-10 mb-10' transition:fly={{ x: 30, duration: 150 }}>
+    <div class='font-size-14 pb-5 text-break-word'>{join.name} is watching {mediaLabel(join)}</div>
+    <div class='d-flex'>
+      <button type='button' class='btn btn-sm btn-primary d-flex align-items-center' use:click={() => client.joinPlayback()}>
+        <MonitorPlay size='1.4rem' class='mr-5' /> Join
+      </button>
+      {#if dismissJoin}
+        <button type='button' class='btn btn-sm ml-10' use:click={dismissJoin}>Dismiss</button>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 {#each requests as request (request.id)}
   <div class='prompt bg-dark rounded p-10 mb-10 position-relative overflow-hidden' transition:fly={{ x: 30, duration: 150 }}>

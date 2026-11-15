@@ -39,10 +39,17 @@
   function listMembers (client, now, ..._stores) {
     return client?.describeMembers(now) ?? []
   }
+  function readJoinOffer (client, ..._stores) {
+    return client?.joinOffer() ?? null
+  }
   $: members = listMembers(client, $clock, $peers, $lobby, $signals, $localStatus)
   $: isHost = !!client && $lobby?.hostId != null && String($lobby.hostId) === client.selfId
   $: hostMode = $lobby?.hostId != null && $lobby?.mode === 'host'
   $: watching = !!$localStatus && $localStatus.state !== 'idle'
+  // v2.3: "{reference} is watching {title · episode}" with Join, while the lobby watches without us.
+  $: joinOffer = readJoinOffer(client, $clock, $signals, $localStatus, $lobby, $following, $peers)
+  $: joinLabel = joinOffer ? [anilistClient.title(joinOffer.media) || 'a title', client.episodeLabel(joinOffer.episode)].filter(Boolean).join(' · ') : ''
+  $: canInviteAll = isHost && members.some(member => member.canInvite)
   $: rejoinLabel = $rejoinOffer ? [anilistClient.title($rejoinOffer.media) || 'the lobby title', client.episodeLabel($rejoinOffer.episode)].filter(Boolean).join(' · ') : ''
 
   function saveDisplayName () {
@@ -91,6 +98,13 @@
 </script>
 
 <div class='d-flex flex-column root w-full position-relative px-md-20 h-full overflow-hidden'>
+  {#if joinOffer}
+    <div class='join-card bg-dark-light rounded d-flex align-items-center flex-wrap mx-20 mt-20 p-15'>
+      <MonitorPlay size='2.2rem' class='mr-10 flex-shrink-0' />
+      <div class='font-size-16 flex-grow-1 text-break-word mr-10'><b>{joinOffer.name}</b> is watching {joinLabel}</div>
+      <button type='button' class='btn btn-primary d-flex align-items-center my-5' use:click={() => client.joinPlayback()}>Join</button>
+    </div>
+  {/if}
   <div class='d-flex flex-md-row flex-column-reverse w-full h-full pt-20 scroll-container pb-transition'>
     <div class='d-flex flex-column justify-content-end overflow-hidden flex-grow-1 px-20 pb-md-20'>
       {#each groupMessages($messages) as { user, messages, type, date } (date)}
@@ -145,6 +159,11 @@
             <input type='checkbox' id='w2g-own' checked={!$following} on:change={({ target }) => client.setFollowing(!target.checked)} />
             <label for='w2g-own' class='font-size-14'>Watch on my own</label>
           </div>
+          {#if canInviteAll}
+            <button type='button' class='btn btn-sm d-flex align-items-center mb-5 mr-10' title='Send an invite to each member who is not watching' use:click={() => client.inviteAllNotWatching()}>
+              <MonitorPlay size='1.4rem' class='mr-5' /> Invite everyone not watching
+            </button>
+          {/if}
           {#if $rejoinOffer}
             <button type='button' class='btn btn-sm btn-primary d-flex align-items-center mb-5 mw-full' title='Start the lobby episode, then sync' use:click={() => client.rejoin()}>
               <MonitorPlay size='1.4rem' class='mr-5 flex-shrink-0' /><span class='text-truncate'>Rejoin {rejoinLabel}</span>
@@ -190,6 +209,9 @@
   .mode-chip.host {
     background: hsla(45, 90%, 60%, 0.18);
     color: #F5C542;
+  }
+  .join-card {
+    flex-shrink: 0;
   }
   .system-line {
     font-style: italic;

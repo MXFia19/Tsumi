@@ -9,7 +9,7 @@ import {
   memberName, expectedTime, syncBadge, selfBadge, autoSyncStep, hostReference, inferAction,
   describeAction, describeRequest, presenceOnStatus, presenceOnTick, describePresence, canInvite, acceptsInvite,
   inviteTarget, formatSource, normalizeNowPlaying, episodeLabelFor, pickFollowingHost, electFollowingHost,
-  followBackAction, episodeLabelOf
+  followBackAction, episodeLabelOf, lobbyReference, canJoinPlayback, offeredMedia, invitePosition, autoStartsMedia
 } from '@/routes/w2g/components/sync.js'
 import Helper from '@/modules/helper.js'
 import { settings } from '@/modules/settings.js'
@@ -32,6 +32,10 @@ const debug = Debug('ui:w2g')
 
 /** A joined invite seeks once its episode is loaded, if that happens within 2 minutes. */
 const JOIN_TTL_MS = 120_000
+/** v2.3: the one-time "join the current playback" prompt is for a lobby already watching when we arrive. */
+const FIRST_JOIN_WINDOW_MS = 20_000
+/** v2.3 "Invite everyone not watching": one invite every 200 ms. */
+const INVITE_ALL_GAP_MS = 200
 
 const MAX_MESSAGES = 200
 const MAX_MESSAGE_LENGTH = 2048
@@ -146,6 +150,12 @@ export class W2GClient extends EventEmitter {
   #pinger = null
   #presenceTicker = null
   #destroyed = false
+  /** @type {number | null} when the first peer introduced itself (start of the first-join window) */
+  #firstPeerAt = null
+  /** v2.3: the first-connection Join prompt was shown (or its window passed); never for the lobby creator */
+  #joinPrompted = false
+  /** @type {Set<ReturnType<typeof setTimeout>>} */
+  #inviteTimers = new Set()
 
   get inviteLink () {
     return `tsumi://w2g/${this.code}`
@@ -184,7 +194,8 @@ export class W2GClient extends EventEmitter {
 
   /** mediaKey of what we started last, captured by the player when a file starts. */
   get launchedKey () {
-    return this.#launched?.key || this.media?.key || ''
+    // Not the lobby media as a fallback: a lobby media received but not started (v2.3 newcomer) is not ours.
+    return this.#launched?.key || ''
   }
 
   /** "Start together" is for the host, or for anyone in `everyone` mode. */
@@ -206,6 +217,7 @@ export class W2GClient extends EventEmitter {
     this.code = code ?? generateRandomHexCode(16)
     // The lobby creator is the first host.
     if (!code) this.lobby.value = { hostId: this.selfId, mode: 'everyone', tentative: false }
+    this.#joinPrompted = !code
 
     debug(`W2GClient: ${this.code}, ${this.isHost}`)
 
@@ -346,6 +358,13 @@ export class W2GClient extends EventEmitter {
     if (join && now - join.joinedAt > JOIN_TTL_MS) this.#pendingJoin = null
     else if (join && join.key === this.local.mediaKey) {
       this.#pendingJoin = null
+      if (join.kind === 'lobby') {
+        // v2.3 Join: the reference's expected time and play / pause state, read now that we are loaded.
+        const reference = this.#lobbyReferenceId()
+        const target = sameId(reference, this.selfId) ? null : this.#memberPosition(reference, now)
+        if (target) this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: reference })
+        return
+      }
       const target = inviteTarget({ invite: join, host: this.isHost ? null : this.#hostTarget(now), now })
       this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: target.from === 'host' ? this.hostId : join.from })
       return
@@ -404,14 +423,62 @@ export class W2GClient extends EventEmitter {
    */
   invite (userId) {
     const target = String(userId)
-    const media = this.#launched
-    if (!media || media.key !== this.local.mediaKey || target === this.selfId || !this.#hasUser(target)) return false
+    if (target === this.selfId || !this.#hasUser(target)) return false
     if (this.effectiveMode === 'host' && !this.isHost) return false
-    const time = this.#localTime(Date.now())
-    if (time === null) return false
-    const paused = this.local.state !== 'playing' && this.local.state !== 'buffering'
-    this.#sendToPeers(new Event(EventTypes.InviteEvent, { to: target, media: media.media, episode: media.episode, key: media.key, time, paused, by: this.selfId }))
+    // v2.3: our own media when we play one, else the lobby media while the lobby is watching.
+    const offer = this.#offer(Date.now())
+    if (!offer?.position) return false
+    const { media, position } = offer
+    this.#sendToPeers(new Event(EventTypes.InviteEvent, { to: target, media: media.media, episode: media.episode, key: media.key, time: position.time, paused: position.paused, by: this.selfId }))
     this.#system(`You invited ${this.nameOf(target)}`)
+    return true
+  }
+
+  /** v2.3 host tool "Invite everyone not watching": one invite per eligible member, 200 ms apart. */
+  inviteAllNotWatching () {
+    if (!this.isHost) return 0
+    const targets = this.describeMembers().filter(member => member.canInvite).map(member => member.userId)
+    targets.forEach((userId, index) => {
+      const timer = setTimeout(() => {
+        this.#inviteTimers.delete(timer)
+        if (!this.#destroyed) this.invite(userId)
+      }, index * INVITE_ALL_GAP_MS)
+      this.#inviteTimers.add(timer)
+    })
+    return targets.length
+  }
+
+  /**
+   * v2.3: the Join card, while the lobby is watching and we are not on its media.
+   * @returns {{ key: string, media: any, episode: SharedMedia['episode'], referenceId: string, name: string } | null}
+   */
+  joinOffer () {
+    const media = this.media
+    const reference = this.#lobbyReferenceId()
+    if (!canJoinPlayback({ reference, selfId: this.selfId, lobbyKey: media?.key, local: this.local, following: this.isFollowing })) return null
+    return { key: media.key, media: media.media, episode: media.episode, referenceId: reference, name: this.nameOf(reference) }
+  }
+
+  /**
+   * v2.3 Join: play the lobby media like a received `media` (even with an unchanged key), then once
+   * loaded seek to the reference and take its play / pause state. Follows the lobby again if needed.
+   */
+  joinPlayback () {
+    const media = this.media
+    if (!media) return false
+    if (!this.isFollowing) {
+      settings.update(current => ({ ...current, w2gWatchOnMyOwn: false }))
+      this.following.value = true
+      this.#autoSync = null
+      this.#system('You follow the lobby again')
+    }
+    this.rejoinOffer.value = null
+    this.#pendingRejoin = null
+    this.#launched = { media: media.media, episode: media.episode, key: media.key }
+    this.#pendingJoin = { kind: 'lobby', key: media.key, joinedAt: Date.now() }
+    this.#sendStatus()
+    this.emit('joinableRemoved')
+    this.emit('media', media)
     return true
   }
 
@@ -622,8 +689,7 @@ export class W2GClient extends EventEmitter {
     }]
     const seen = new Set([this.selfId])
     const invite = {
-      selfWatching: this.local.state !== 'idle',
-      hasMedia: !!this.#launched && this.#launched.key === this.local.mediaKey,
+      offeredKey: this.#offered().offered?.key ?? null,
       effectiveMode: this.effectiveMode,
       isHost: this.isHost,
       now
@@ -647,7 +713,7 @@ export class W2GClient extends EventEmitter {
         source: signal.status?.source || '',
         nowPlaying: signal.status?.nowPlaying ?? null,
         following: signal.status?.following !== false,
-        canInvite: canInvite({ ...invite, member: { isSelf: false, protocol: entry.protocol, badge, status: signal.status, receivedAt: signal.receivedAt, joinedAt: signal.joinedAt } })
+        canInvite: canInvite({ ...invite, member: { isSelf: false, protocol: entry.protocol, badge, status: signal.status, joinedAt: signal.joinedAt } })
       })
     }
     return list.sort((a, b) => (Number(b.isHost) - Number(a.isHost)) || (Number(b.isSelf) - Number(a.isSelf)) || a.name.localeCompare(b.name))
@@ -660,6 +726,8 @@ export class W2GClient extends EventEmitter {
     clearInterval(this.#heartbeat)
     clearInterval(this.#pinger)
     clearInterval(this.#presenceTicker)
+    for (const timer of this.#inviteTimers) clearTimeout(timer)
+    this.#inviteTimers.clear()
     this.#presence.clear()
     clearTimeout(this.#countdownTimer)
     for (const timer of this.#requestTimers.values()) clearTimeout(timer)
@@ -805,13 +873,13 @@ export class W2GClient extends EventEmitter {
         this.#onInit(peer, payload)
         break
       case EventTypes.MediaEvent:
-        this.#onMedia(payload)
+        this.#onMedia(userId, payload)
         break
       case EventTypes.MediaIndexEvent: {
         if (payload?.index == null) break
         if (this.index?.index !== payload.index) {
           this.index = payload
-          if (this.isFollowing) this.emit('index', payload.index)
+          if (this.#appliesLobbyState(userId) && this.local.mediaKey === this.media?.key) this.emit('index', payload.index)
         }
         break
       }
@@ -881,6 +949,7 @@ export class W2GClient extends EventEmitter {
       return peers
     })
     this.#lastSeen.set(userId, Date.now())
+    if (this.#firstPeerAt === null) this.#firstPeerAt = Date.now()
     if (!known) {
       this.signals.update(signals => {
         signals[userId] = { ...(signals[userId] || {}), joinedAt: Date.now() }
@@ -890,7 +959,7 @@ export class W2GClient extends EventEmitter {
     }
   }
 
-  #onMedia (shared) {
+  #onMedia (senderId, shared) {
     if (!shared?.media?.id) return
     const localKey = mediaKey(shared)
     // Keep the sender's key so every client of the lobby compares the same string.
@@ -902,8 +971,16 @@ export class W2GClient extends EventEmitter {
       if (this.rejoinOffer.value) this.rejoinOffer.value = { media: shared.media, episode: shared.episode, key }
       return
     }
+    // v2.3: nothing starts on its own for a newcomer (the lobby state sent after init) or an idle member:
+    // they get the Join card. A follower already watching moves on to the new title.
+    if (!this.#appliesLobbyState(senderId)) return
     this.#launched = { media: shared.media, episode: shared.episode, key }
     this.emit('media', this.media)
+  }
+
+  /** v2.3: a lobby `media` / `index` starts our player only when following, watching, and not the newcomer state. */
+  #appliesLobbyState (senderId) {
+    return autoStartsMedia({ following: this.isFollowing, localState: this.local.state, senderJoinedAt: this.signals.value[senderId]?.joinedAt, now: Date.now() })
   }
 
   #onPlayer (senderId, payload) {
@@ -925,7 +1002,9 @@ export class W2GClient extends EventEmitter {
     this.player = { time: payload.time, paused }
     if (sameId(by, this.hostId)) this.#lastHostPlayer = { time: payload.time, paused, rate, at: now }
     // Watching on our own: keep track of the lobby, but do not apply nor announce over the video.
-    const following = this.isFollowing
+    // v2.3: neither when our player is on another media (e.g. the sync sent to a newcomer).
+    const otherMedia = !!this.local.mediaKey && !!this.media?.key && this.local.mediaKey !== this.media.key
+    const following = this.isFollowing && !otherMedia
     if (following) {
       this.#cancelCountdown()
       this.emit('player', { time: payload.time, paused, action, by, rate })
@@ -990,6 +1069,7 @@ export class W2GClient extends EventEmitter {
       this.#announce(userId, announcements)
     }
     if (sameId(userId, this.hostId) && !this.isHost) this.#checkAutoSync(now)
+    this.#checkFirstJoin(now)
   }
 
   #onPong (userId, payload) {
@@ -1238,6 +1318,62 @@ export class W2GClient extends EventEmitter {
   }
 
   /** Time-based presence: long buffering, lost connection. */
+  /** v2.3: once, when we arrive in a lobby that is already watching, an app-wide Join prompt. */
+  #checkFirstJoin (now) {
+    if (this.#joinPrompted || this.#firstPeerAt === null) return
+    if (now - this.#firstPeerAt > FIRST_JOIN_WINDOW_MS) {
+      this.#joinPrompted = true
+      return
+    }
+    const offer = this.joinOffer()
+    if (!offer) return
+    this.#joinPrompted = true
+    this.emit('joinable', offer)
+  }
+
+  /** Members (ourselves included) with their last status, for the lobby reference. */
+  #statusMembers () {
+    const signals = this.signals.value
+    const members = [{ userId: this.selfId, status: { ...this.local, following: this.isFollowing } }]
+    for (const { userId, protocol } of this.#peerSummaries()) {
+      if (protocol >= 2 || signals[userId]?.status) members.push({ userId, status: signals[userId]?.status ?? null })
+    }
+    return members
+  }
+
+  /** v2.3 reference member of the lobby playback, null when the lobby is not watching. */
+  #lobbyReferenceId () {
+    return lobbyReference({ lobbyKey: this.media?.key, hostId: this.hostId, members: this.#statusMembers() })
+  }
+
+  /** Expected position of a member: ours, or extrapolated from its last status. */
+  #memberPosition (userId, now) {
+    if (userId == null) return null
+    if (sameId(userId, this.selfId)) {
+      const time = this.#localTime(now)
+      return time === null ? null : { time, paused: this.local.state !== 'playing' && this.local.state !== 'buffering' }
+    }
+    const signal = this.signals.value[userId]
+    return hostReference({ status: signal?.status, receivedAt: signal?.receivedAt, rtt: signal?.rtt }, now)
+  }
+
+  /** v2.3 media an invite offers, and the lobby reference. */
+  #offered () {
+    const ownActive = this.local.state !== 'idle' && !!this.#launched && this.#launched.key === this.local.mediaKey
+    const reference = this.#lobbyReferenceId()
+    const offered = offeredMedia({ ownKey: this.#launched?.key, ownActive, lobbyKey: this.media?.key, lobbyWatching: reference !== null })
+    return { offered, reference }
+  }
+
+  /** v2.3 offer for an invite: media plus the position to send. */
+  #offer (now) {
+    const { offered, reference } = this.#offered()
+    if (!offered) return null
+    const media = offered.from === 'own' ? this.#launched : this.media
+    const position = invitePosition({ offered, own: this.#memberPosition(this.selfId, now), reference: this.#memberPosition(reference, now) })
+    return { offered, media, position }
+  }
+
   #tickPresence () {
     if (this.#destroyed) return
     const now = Date.now()

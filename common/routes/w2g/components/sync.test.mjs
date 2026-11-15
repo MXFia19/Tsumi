@@ -7,7 +7,8 @@ import {
   AUTO_SYNC_COOLDOWN_MS, REACTIONS,
   formatSource, parseMediaKey, formatEpisode, episodeLabelOf, switchLabel, createPresence, presenceOnStatus, presenceOnTick,
   describePresence, canInvite, acceptsInvite, inviteTarget, PRESENCE_DEBOUNCE_MS, LOST_ANNOUNCE_MS,
-  normalizeNowPlaying, nowPlayingLabel, episodeLabelFor, pickFollowingHost, electFollowingHost, followBackAction
+  normalizeNowPlaying, nowPlayingLabel, episodeLabelFor, pickFollowingHost, electFollowingHost, followBackAction,
+  lobbyReference, canJoinPlayback, offeredMedia, invitePosition, autoStartsMedia
 } from './sync.js'
 
 let passed = 0
@@ -408,29 +409,29 @@ test('describePresence wording', () => {
   assert.equal(describePresence('Alice', { kind: 'lost' }), 'Alice lost connection')
 })
 
+// v2.3 rules: an offered media key, no "inviter in the player" requirement.
 const invitable = (over = {}, member = {}) => ({
-  selfWatching: true,
-  hasMedia: true,
+  offeredKey: '123:5',
   effectiveMode: 'everyone',
   isHost: false,
   now: 100_000,
-  member: { isSelf: false, protocol: 2, badge: { kind: 'idle' }, status: { state: 'idle' }, receivedAt: 99_000, ...member },
+  member: { isSelf: false, protocol: 2, badge: { kind: 'idle' }, status: { state: 'idle', mediaKey: '' }, ...member },
   ...over
 })
 
-test('canInvite: idle, other episode or 10 s without signal', () => {
+test('canInvite: idle, another key, independent or no signal', () => {
   assert.equal(canInvite(invitable()), true)
-  assert.equal(canInvite(invitable({}, { badge: { kind: 'other' }, status: { state: 'playing' } })), true)
-  assert.equal(canInvite(invitable({}, { badge: { kind: 'sync' }, status: { state: 'playing' } })), false)
-  assert.equal(canInvite(invitable({}, { badge: { kind: 'nosignal' }, status: { state: 'playing' }, receivedAt: 80_000 })), true)
-  // Just joined, no status yet: wait 10 s.
-  assert.equal(canInvite(invitable({}, { badge: { kind: 'nosignal' }, status: null, joinedAt: 95_000 })), false)
+  assert.equal(canInvite(invitable({}, { badge: { kind: 'other' }, status: { state: 'playing', mediaKey: '123:4' } })), true)
+  assert.equal(canInvite(invitable({}, { badge: { kind: 'sync' }, status: { state: 'playing', mediaKey: '123:5' } })), false)
+  assert.equal(canInvite(invitable({}, { badge: { kind: 'paused' }, status: { state: 'paused', mediaKey: '123:5' } })), false)
+  assert.equal(canInvite(invitable({}, { badge: { kind: 'nosignal' }, status: { state: 'playing', mediaKey: '123:5' } })), true)
+  // No status yet: only 10 s after its init.
+  assert.equal(canInvite(invitable({}, { badge: { kind: 'connecting' }, status: null, joinedAt: 95_000 })), false)
   assert.equal(canInvite(invitable({}, { badge: { kind: 'nosignal' }, status: null, joinedAt: 90_000 })), true)
 })
 
-test('canInvite: needs us in the player with a media, a v2 member, and the host role in host mode', () => {
-  assert.equal(canInvite(invitable({ selfWatching: false })), false)
-  assert.equal(canInvite(invitable({ hasMedia: false })), false)
+test('canInvite: needs a media to offer, a v2 member, and the host role in host mode', () => {
+  assert.equal(canInvite(invitable({ offeredKey: null })), false)
   assert.equal(canInvite(invitable({}, { protocol: 1, badge: { kind: 'old' }, status: null })), false)
   assert.equal(canInvite(invitable({}, { isSelf: true })), false)
   assert.equal(canInvite(invitable({ effectiveMode: 'host' })), false)
@@ -481,7 +482,7 @@ test('autoSyncStep: never against a host that does not follow', () => {
 })
 
 test('canInvite: an independent member can be invited', () => {
-  assert.equal(canInvite(invitable({}, { badge: { kind: 'own' }, status: { state: 'playing', following: false } })), true)
+  assert.equal(canInvite(invitable({}, { badge: { kind: 'own' }, status: { state: 'playing', following: false, mediaKey: '123:5' } })), true)
 })
 
 test('presence: following off / on, and "is watching" replaces "switched to"', () => {
@@ -516,6 +517,71 @@ test('followBackAction: resync on the lobby episode, else offer rejoin', () => {
   assert.equal(followBackAction({ localKey: '1:4', lobbyKey: '1:5' }), 'rejoin')
   assert.equal(followBackAction({ localKey: '', lobbyKey: '1:5' }), 'rejoin')
   assert.equal(followBackAction({ localKey: '1:4', lobbyKey: null }), 'none')
+})
+
+// ---------------------------------------------------------------- v2.3
+
+test('syncBadge: a v2 member without status is "No signal" only 10 s after its init', () => {
+  assert.equal(syncBadge({ protocol: 2, joinedAt: 5_000 }, local(), 14_000).kind, 'connecting')
+  assert.equal(syncBadge({ protocol: 2, joinedAt: 5_000 }, local(), 15_000).text, 'No signal')
+  assert.equal(syncBadge({ protocol: 1, joinedAt: 5_000 }, local(), 6_000).text, 'Old version')
+})
+
+const on = (state, over = {}) => ({ state, time: 10, mediaKey: '123:5', ...over })
+
+test('lobbyReference: the host when it watches the lobby media', () => {
+  const members = [{ userId: 'h', status: on('playing') }, { userId: 'a', status: on('playing') }]
+  assert.equal(lobbyReference({ lobbyKey: '123:5', hostId: 'h', members }), 'h')
+  assert.equal(lobbyReference({ lobbyKey: '123:5', hostId: 'h', members: [{ userId: 'h', status: on('loading') }] }), 'h')
+  assert.equal(lobbyReference({ lobbyKey: null, hostId: 'h', members }), null)
+})
+
+test('lobbyReference: host idle, independent or without status: the smallest following member', () => {
+  const others = [{ userId: 'c', status: on('paused') }, { userId: 'b', status: on('playing') }, { userId: 'a', status: on('playing', { following: false }) }]
+  assert.equal(lobbyReference({ lobbyKey: '123:5', hostId: 'h', members: [{ userId: 'h', status: on('idle', { mediaKey: '' }) }, ...others] }), 'b')
+  assert.equal(lobbyReference({ lobbyKey: '123:5', hostId: 'h', members: [{ userId: 'h', status: on('playing', { following: false }) }, ...others] }), 'b')
+  assert.equal(lobbyReference({ lobbyKey: '123:5', hostId: 'h', members: [{ userId: 'h' }, ...others] }), 'b')
+  assert.equal(lobbyReference({ lobbyKey: '123:5', hostId: null, members: others }), 'b')
+  // Nobody following on the lobby key: not watching.
+  assert.equal(lobbyReference({ lobbyKey: '123:5', hostId: 'h', members: [{ userId: 'h', status: on('idle') }, { userId: 'a', status: on('playing', { mediaKey: '9:1' }) }] }), null)
+})
+
+test('lobbyReference: a host watching something else means the lobby is not watching', () => {
+  const members = [{ userId: 'h', status: on('playing', { mediaKey: '9:1' }) }, { userId: 'a', status: on('playing') }]
+  assert.equal(lobbyReference({ lobbyKey: '123:5', hostId: 'h', members }), null)
+})
+
+test('canJoinPlayback: idle, other key or independent, while someone else is the reference', () => {
+  const base = { reference: 'h', selfId: 'me', lobbyKey: '123:5', local: { state: 'idle', mediaKey: '' }, following: true }
+  assert.equal(canJoinPlayback(base), true)
+  assert.equal(canJoinPlayback({ ...base, local: { state: 'playing', mediaKey: '9:1' } }), true)
+  assert.equal(canJoinPlayback({ ...base, local: { state: 'playing', mediaKey: '123:5' } }), false)
+  assert.equal(canJoinPlayback({ ...base, local: { state: 'playing', mediaKey: '123:5' }, following: false }), true)
+  assert.equal(canJoinPlayback({ ...base, reference: null }), false)
+  assert.equal(canJoinPlayback({ ...base, reference: 'me' }), false)
+})
+
+test('offeredMedia: ours when playing one, else the watched lobby media', () => {
+  assert.deepEqual(offeredMedia({ ownKey: '9:1', ownActive: true, lobbyKey: '123:5', lobbyWatching: true }), { from: 'own', key: '9:1' })
+  assert.deepEqual(offeredMedia({ ownKey: '9:1', ownActive: false, lobbyKey: '123:5', lobbyWatching: true }), { from: 'lobby', key: '123:5' })
+  assert.equal(offeredMedia({ ownKey: null, ownActive: false, lobbyKey: '123:5', lobbyWatching: false }), null)
+})
+
+test('invitePosition: our playback for our media, else the reference', () => {
+  const own = { time: 50, paused: false }
+  const reference = { time: 300, paused: true }
+  assert.deepEqual(invitePosition({ offered: { from: 'own' }, own, reference }), { time: 50, paused: false })
+  assert.deepEqual(invitePosition({ offered: { from: 'lobby' }, own, reference }), { time: 300, paused: true })
+  assert.equal(invitePosition({ offered: { from: 'lobby' }, own, reference: null }), null)
+  assert.equal(invitePosition({ offered: null, own, reference }), null)
+})
+
+test('autoStartsMedia: never for newcomers or idle members, only for followers already watching', () => {
+  assert.equal(autoStartsMedia({ following: true, localState: 'playing', senderJoinedAt: 0, now: 60_000 }), true)
+  // The lobby state the host sends right after init.
+  assert.equal(autoStartsMedia({ following: true, localState: 'playing', senderJoinedAt: 58_000, now: 60_000 }), false)
+  assert.equal(autoStartsMedia({ following: true, localState: 'idle', senderJoinedAt: 0, now: 60_000 }), false)
+  assert.equal(autoStartsMedia({ following: false, localState: 'playing', senderJoinedAt: 0, now: 60_000 }), false)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

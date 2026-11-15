@@ -151,7 +151,8 @@
   }
 
   $: w2gStatus = !current || externalPlayback ? 'idle' : w2gLoading ? 'loading' : paused ? 'paused' : buffering ? 'buffering' : 'playing'
-  $: w2gMediaKey = w2gKey || $state?.media?.key || ''
+  // Only the key captured when the file started: a file started before joining a lobby is not the lobby media.
+  $: w2gMediaKey = w2gKey
   // status.source: extension / addon, then the server ("AnimePahe · Server 2").
   $: w2gSource = formatSource(current?.sourceName, streamServers[activeServerIndex]?.title || (streamServers.length > 1 ? `Server ${activeServerIndex + 1}` : ''))
   // status.nowPlaying: the client turns `episode` into "Episode 5" / "S2 E5" / "Movie".
