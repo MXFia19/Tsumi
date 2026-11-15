@@ -1,4 +1,5 @@
 import { app, ipcMain, dialog, shell, net } from 'electron'
+import log from 'electron-log'
 import { join, resolve, sep, dirname } from 'node:path'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
@@ -36,12 +37,19 @@ class DownloadError extends Error {
   }
 }
 
+const DISK_ERRORS = ['ENOSPC', 'EACCES', 'EPERM']
+
 function friendlyError (error) {
   if (error instanceof DownloadError) return error.message
   const code = error?.code || error?.cause?.code
   if (code === 'ENOSPC') return 'Not enough disk space in the download folder.'
   if (code === 'EACCES' || code === 'EPERM') return 'The download folder is not writable. Pick another one in Settings.'
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ETIMEDOUT' || /fetch failed|network/i.test(error?.message || '')) {
+  if (code === 'ENOTFOUND') {
+    // The host of the link does not exist (any more): retrying the same link won't help.
+    const host = error?.cause?.hostname
+    return `The video server${host ? ` (${host})` : ''} doesn't exist any more: the source gave a dead link. Pick another server or source.`
+  }
+  if (code === 'EAI_AGAIN' || code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ETIMEDOUT' || /fetch failed|network/i.test(error?.message || '')) {
     return 'Network error while downloading. It will continue from where it stopped when you retry.'
   }
   return error?.message || 'Download failed'
@@ -50,7 +58,22 @@ function friendlyError (error) {
 function isRetryable (error) {
   if (error instanceof DownloadError) return !error.final
   const code = error?.code || error?.cause?.code
-  return code !== 'ENOSPC' && code !== 'EACCES' && code !== 'EPERM'
+  return !DISK_ERRORS.includes(code)
+}
+
+/** A failure of the server itself (dead host, refused, HTTP error, unsupported or wrong file): another server may work. */
+function isServerProblem (error) {
+  if (error?.name === 'AbortError') return false
+  return !DISK_ERRORS.includes(error?.code || error?.cause?.code)
+}
+
+/** Host and error code of a failure for the log (never the full URL: links carry tokens). */
+function describeFailure (url, error) {
+  let host = '?'
+  try {
+    host = new URL(url).host
+  } catch {}
+  return `${host}: ${error?.message || error}${error?.cause?.code ? ` (${error.cause.code})` : ''}`
 }
 
 const wait = (ms, signal) => new Promise((resolve, reject) => {
@@ -468,7 +491,7 @@ export default class DownloadManager {
       await fsp.mkdir(item.dir, { recursive: true })
       await this.writeMetadata(item)
       const extras = Promise.allSettled([this.downloadCover(item, signal), this.downloadSubtitles(item, stream, signal)])
-      await this.downloadMedia(item, stream, signal)
+      await this.downloadWithFallback(item, stream, signal)
       await extras
       item.status = 'completed'
       item.completedAt = Date.now()
@@ -508,6 +531,40 @@ export default class DownloadManager {
 
   headers (stream, extra = {}) {
     return { 'User-Agent': UA, ...(stream.headers || {}), ...extra }
+  }
+
+  /**
+   * The chosen server first, then the episode's other servers (stream.alternatives, in the extension's order)
+   * when a server fails before sending anything: a dead link (e.g. a mirror host that no longer exists) must not
+   * stop the download when another server of the same episode works. The server that worked is remembered, so a
+   * retry starts with it.
+   */
+  async downloadWithFallback (item, stream, signal) {
+    const alternatives = Array.isArray(stream.alternatives) ? stream.alternatives.filter(server => server?.url) : []
+    const candidates = [{ url: stream.url, headers: stream.headers, serverTitle: item.source?.serverTitle || null }, ...alternatives]
+    for (const [index, candidate] of candidates.entries()) {
+      const attempt = index === 0 ? stream : { ...stream, url: candidate.url, headers: candidate.headers || {} }
+      if (index > 0) {
+        item.source = { ...(item.source || {}), serverTitle: candidate.serverTitle || null }
+        this.changed(item, true)
+      }
+      const bytesBefore = item.bytes || 0
+      try {
+        await this.downloadMedia(item, attempt, signal)
+        return
+      } catch (error) {
+        if (signal.aborted) throw error
+        log.warn(`[downloads] ${item.id} server ${index + 1}/${candidates.length} failed: ${describeFailure(candidate.url, error)}`)
+        const madeProgress = (item.bytes || 0) > bytesBefore
+        const last = index === candidates.length - 1
+        if (madeProgress || !isServerProblem(error) || !net.isOnline() || last) {
+          if (last && !madeProgress && candidates.length > 1 && isServerProblem(error) && net.isOnline()) {
+            throw new DownloadError(`None of the ${candidates.length} servers of this episode worked. Last one: ${friendlyError(error)}`)
+          }
+          throw error
+        }
+      }
+    }
   }
 
   async downloadMedia (item, stream, signal) {

@@ -12,7 +12,7 @@ import { page } from '@/modules/navigation.js'
 import Helper from '@/modules/helper.js'
 import { files, nowPlaying } from '@/components/MediaHandler.svelte'
 import { shareNowPlaying } from '@/routes/w2g/components/session.js'
-import { bestResult, matchEpisode, normalizeSubtitles, preferredSubtitle, pickServerIndex } from '@/modules/downloads/resolve.js'
+import { bestResult, matchEpisode, normalizeSubtitles, preferredSubtitle, orderServerIndexes } from '@/modules/downloads/resolve.js'
 import Debug from 'debug'
 const debug = Debug('ui:downloads')
 
@@ -234,11 +234,17 @@ export async function resolveFreshStream (media, episode, source) {
   }
   if (!streamData?.url) throw new Error(`${extensionName} returned no stream for this episode.`)
   const servers = (streamData.servers || []).filter(server => server?.streamUrl)
-  const index = pickServerIndex(servers, source?.serverTitle, sessionServer.value)
+  const [index = 0, ...others] = orderServerIndexes(servers, source?.serverTitle, sessionServer.value)
   const server = servers[index]
   return {
     url: server?.streamUrl || streamData.url,
     headers: server?.headers || streamData.headers || {},
+    // The other servers of the episode, tried in this order when the first one is dead.
+    alternatives: others.map(other => ({
+      url: servers[other].streamUrl,
+      headers: servers[other].headers || {},
+      serverTitle: servers[other].title || `Server ${other + 1}`
+    })),
     subtitles: normalizeSubtitles(streamData.subtitle),
     source: {
       extensionKey: ext.key,

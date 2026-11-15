@@ -373,7 +373,7 @@ final class DownloadCenter {
         self.writeMetadata(id)
         await self.saveExtras(id, stream: stream)
         guard self.preparing[id] == token else { return }
-        try await self.startTransfer(id, stream: stream)
+        try await self.startTransferWithFallback(id, stream: stream) { self.preparing[id] == token }
         self.preparing.removeValue(forKey: id)
       } catch {
         guard self.preparing[id] == token else { return }
@@ -420,7 +420,11 @@ final class DownloadCenter {
     if let http = error as? HTTPError, case .status(let code, _) = http { return DownloadNaming.httpMessage(code) }
     if let urlError = error as? URLError {
       switch urlError.code {
-      case .notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotConnectToHost, .cannotFindHost:
+      case .cannotFindHost, .dnsLookupFailed:
+        // The host of the link does not exist (any more): retrying the same link won't help.
+        let host = urlError.failingURL?.host
+        return "The video server\(host.map { " (\($0))" } ?? "") doesn't exist any more: the source gave a dead link. Pick another server or source."
+      case .notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotConnectToHost:
         return "Network error while downloading. Retry to continue."
       default: break
       }
@@ -435,10 +439,64 @@ final class DownloadCenter {
   // MARK: - Fresh stream
 
   struct ResolvedStream {
+    /// Another server of the same episode, tried when the chosen one is dead.
+    struct Server {
+      var url: URL
+      var headers: [String: String]
+      var title: String?
+    }
+
     var url: URL
     var headers: [String: String]
     var subtitleURL: URL?
     var source: DownloadSource?
+    /// The episode's other servers, in the order to try them (DownloadResolver).
+    var alternatives: [Server] = []
+  }
+
+  /// A failure of the server itself (dead host, refused, HTTP error, unsupported or wrong file): another server of
+  /// the episode may work. Not the device's own problems (offline, cancelled, storage full).
+  private static func isServerProblem(_ error: Error) -> Bool {
+    if PlaybackResolver.isCancellation(error) { return false }
+    if let urlError = error as? URLError, [.cancelled, .notConnectedToInternet, .networkConnectionLost].contains(urlError.code) { return false }
+    let nsError = error as NSError
+    if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileWriteOutOfSpaceError { return false }
+    return true
+  }
+
+  /// The chosen server first, then the episode's other servers while a server fails before its transfer starts:
+  /// a dead link (e.g. a mirror host that no longer exists) must not stop the download when another server of the
+  /// same episode works. The server that worked is remembered, so a retry starts with it. Same as the desktop
+  /// downloader (electron/src/main/downloads/manager.js downloadWithFallback).
+  private func startTransferWithFallback(_ id: String, stream: ResolvedStream, isCurrent: () -> Bool) async throws {
+    let candidates = [ResolvedStream.Server(url: stream.url, headers: stream.headers, title: stream.source?.serverTitle)] + stream.alternatives
+    var lastError: Error?
+    for (index, candidate) in candidates.enumerated() {
+      guard isCurrent() else { return }
+      var attempt = stream
+      attempt.url = candidate.url
+      attempt.headers = candidate.headers
+      if index > 0 {
+        update(id) { item in
+          if var source = item.source {
+            source.serverTitle = candidate.title
+            item.source = source
+          }
+        }
+      }
+      do {
+        try await startTransfer(id, stream: attempt)
+        return
+      } catch {
+        if ShellConnectionMonitor.shared.isOffline || !Self.isServerProblem(error) { throw error }
+        lastError = error
+      }
+    }
+    let error = lastError ?? DownloadFailure("Download failed")
+    if candidates.count > 1 {
+      throw DownloadFailure("None of the \(candidates.count) servers of this episode worked. Last one: \(Self.message(error))")
+    }
+    throw error
   }
 
   private func resolve(_ item: DownloadItem) async throws -> ResolvedStream {
@@ -933,12 +991,18 @@ enum DownloadResolver {
     let index = stream.rememberedIndex(item.source?.serverTitle)
       ?? stream.rememberedIndex(StreamSessionMemory.preferredServerTitle)
       ?? 0
-    let server = stream.servers[min(max(index, 0), stream.servers.count - 1)]
+    let chosen = min(max(index, 0), stream.servers.count - 1)
+    let server = stream.servers[chosen]
+    // The other servers, in the extension's order, for a dead first one (resolve.js orderServerIndexes).
+    let alternatives = stream.servers.indices
+      .filter { $0 != chosen }
+      .map { DownloadCenter.ResolvedStream.Server(url: stream.servers[$0].url, headers: stream.servers[$0].headers, title: stream.servers[$0].title) }
     return DownloadCenter.ResolvedStream(
       url: server.url,
       headers: server.headers,
       subtitleURL: stream.subtitleURL,
-      source: DownloadSource(extensionKey: ext.key, extensionName: ext.displayName, href: found.source.href, title: found.source.title, serverTitle: server.title)
+      source: DownloadSource(extensionKey: ext.key, extensionName: ext.displayName, href: found.source.href, title: found.source.title, serverTitle: server.title),
+      alternatives: alternatives
     )
   }
 }

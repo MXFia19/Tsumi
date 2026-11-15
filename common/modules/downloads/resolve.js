@@ -132,6 +132,16 @@ export function pickServerIndex (servers, preferredTitle, sessionTitle) {
   return 0
 }
 
+/**
+ * Every server index, the one to try first (pickServerIndex) then the others in the extension's order: the
+ * downloader moves to the next one when a server is dead (unknown host, refused, HTTP error...).
+ */
+export function orderServerIndexes (servers, preferredTitle, sessionTitle) {
+  if (!Array.isArray(servers) || !servers.length) return []
+  const first = pickServerIndex(servers, preferredTitle, sessionTitle)
+  return [first, ...servers.map((_, index) => index).filter(index => index !== first)]
+}
+
 /** Episodes to download for "Download next N episodes": after the list progress, up to the last released one. */
 export function nextEpisodeNumbers ({ progress = 0, released = 0, count = 1, zeroEpisode = false } = {}) {
   const first = Math.max(Number(progress) || 0, 0) + (zeroEpisode ? 0 : 1)

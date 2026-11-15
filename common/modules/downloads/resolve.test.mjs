@@ -1,6 +1,6 @@
 // Offline downloads: renderer helpers. Run with: node common/modules/downloads/resolve.test.mjs
 import assert from 'node:assert/strict'
-import { titleScore, bestResult, matchEpisode, normalizeSubtitles, preferredSubtitle, pickServerIndex, nextEpisodeNumbers, formatBytes } from './resolve.js'
+import { titleScore, bestResult, matchEpisode, normalizeSubtitles, preferredSubtitle, pickServerIndex, orderServerIndexes, nextEpisodeNumbers, formatBytes } from './resolve.js'
 
 let passed = 0
 let failed = 0
@@ -80,6 +80,14 @@ test('nextEpisodeNumbers stops at the last released episode', () => {
   assert.deepEqual(nextEpisodeNumbers({ progress: 10, released: 12, count: 5 }), [11, 12])
   assert.deepEqual(nextEpisodeNumbers({ progress: 12, released: 12, count: 5 }), [])
   assert.deepEqual(nextEpisodeNumbers({ progress: 0, released: 2, count: 5, zeroEpisode: true }), [0, 1, 2])
+})
+
+test('orderServerIndexes tries the chosen server first, then the others in order', () => {
+  const servers = [{ title: 'SUB' }, { title: 'DUB' }, {}]
+  assert.deepEqual(orderServerIndexes(servers, 'DUB', null), [1, 0, 2])
+  assert.deepEqual(orderServerIndexes(servers, null, null), [0, 1, 2])
+  assert.deepEqual(orderServerIndexes(servers, null, 'Server 3'), [2, 0, 1])
+  assert.deepEqual(orderServerIndexes([], 'DUB', null), [])
 })
 
 test('formatBytes', () => {
