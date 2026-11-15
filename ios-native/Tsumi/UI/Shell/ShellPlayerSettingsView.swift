@@ -22,6 +22,9 @@ struct ShellPlayerSettingsView: View {
       ShellPlaybackSettingsSection()
       ShellPictureInPictureSection()
       ShellWatchTogetherSettingsSection()
+      // Cross-device resume and Trakt (ShellSyncSettingsView.swift).
+      ShellSyncSettingsSection()
+      ShellTraktSettingsSection()
     }
     .navigationTitle("Player")
   }

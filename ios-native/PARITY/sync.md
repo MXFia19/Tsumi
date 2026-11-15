@@ -1,0 +1,18 @@
+# Parity: cross-device resume and Trakt
+
+Svelte / Electron sources and their Swift counterparts.
+
+| Svelte / Electron | Swift | Notes |
+|---|---|---|
+| `common/modules/sync/position.js` (+ `position.test.mjs`) | `Services/PlaybackPositionNote.swift` | Same line format and rules: `[Tsumi] Ep 5 · 12:34 / 23:40 · iPhone · 2026-11-15T12:00:00Z`, lenient parser (`·`, `|`, `•`), user text kept, offer / write thresholds. Change both together. |
+| `common/modules/sync/store.js` (`remotePositions`) | `PlaybackSyncService.remotePositions`, `RemotePosition` | Keyed by media id (`123` / `"al-123"`). |
+| `common/modules/anime/animeprogress.js` (`liveAnimeProgress`, `liveAnimeEpisodeProgress`) | `AnimeProgressService.progress(mediaKey:)`, `episodeProgress(...)` | A remote position newer than the local record shows on the episode progress bars. |
+| `common/modules/sync/remote.js` (`noteService`, `fetchNotePosition`, `saveNotePosition`, user list ingestion) | `PlaybackSyncService.noteService`, `fetchNotePosition`, `saveNotePosition`, `ingestListNotes` | AniList `notes` (`Media.mediaListEntry` query, `SaveMediaListEntry(notes)`), MyAnimeList `comments` (`my_list_status{comments}`, PUT `comments`). Read-modify-write, one at a time per entry, never written when the note could not be read. `notes` is requested with the list entries (`anilist.js` `queryObjects`, `AniListService.baseMediaFields`). |
+| `common/modules/sync/session.js` (`playbackSync.attach`, PlayerPage.svelte) | `PlaybackSyncSession` (wired in `ShellPlayback.wire`: `onEpisodeStarted`, `onProgress`, `onPlaybackEnded`, `onClose`) | Note write on pause (3 s), every 2 min while playing, on close / episode change, when the app goes to the background (PC: `visibilitychange`, quit through `app-before-quit`; iOS: `didEnterBackground` with a background task). Line removed at the auto-complete threshold. Trakt start / pause / stop. |
+| Toast "Resume at 12:34 (from iPhone)" with a Resume action (session.js `checkRemote`) | `PlayerResumeOfferView` (PlayerView `promptLayers`) | 15 s, seeks 2 s before the position. |
+| `common/modals/details/components/RemoteResume.svelte` (DetailsModal) | `BrowseRemoteResume` modifier on the play button (MediaDetailHeader) | "Resume Episode 5 at 12:34 (from PC)" / "Resume S2E3 at 53% (from Trakt)"; sets the local position then plays (`requestResume` / `pendingResume` applies a Trakt percentage once the duration is known). |
+| `electron/src/main/trakt.js` (device code flow, safeStorage tokens, refresh, revoke, 1 write per second) | `Services/TraktService.swift` (Keychain `trakt.v1`) | Credentials: PC `__TRAKT_CLIENT_ID__` / `__TRAKT_CLIENT_SECRET__` (DefinePlugin in `electron/webpack.config.cjs` from `TRAKT_CLIENT_ID` / `TRAKT_CLIENT_SECRET`), iOS Info.plist `TraktClientID` / `TraktClientSecret` = `$(TRAKT_CLIENT_ID)` / `$(TRAKT_CLIENT_SECRET)` (xcodebuild imports the environment as build settings). Empty: "Trakt is not available in this build". |
+| `common/modules/sync/trakt.js` (`traktTarget`, `matchesTarget`, `getTraktPlayback`, `scrobble`) | `TraktTarget`, `TraktService.target(for:episode:)`, `playback(fresh:)`, `scrobble` | TMDB shows: season / episode from the episode list order (seasons > 0); anime (setting): ani.zip `thetvdb_id` + `seasonNumber` / `episodeNumber`, movies by IMDb / TMDB id. |
+| `common/routes/settings/components/SyncSettings.svelte` (Settings > Player) | `ShellSyncSettingsSection`, `ShellTraktSettingsSection` (Settings > Player) | `syncPlaybackPosition` (on), `traktScrobble` (on), `traktScrobbleAnime` (off). |
+
+Device names written in the line: `PC` (Windows / Linux), `Mac`, `iPhone`, `iPad`; Trakt positions show `(from Trakt)`.

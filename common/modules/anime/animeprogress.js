@@ -1,6 +1,7 @@
 import { writable, derived } from 'simple-store-svelte'
 import { cache, caches } from '@/modules/cache.js'
 import { isValidNumber } from '@/modules/util.js'
+import { remotePositions, remotePercent } from '@/modules/sync/store.js'
 
 // Maximum number of entries to keep in the cache
 // const maxEntries = 10000
@@ -20,24 +21,32 @@ const animeProgressStore = writable(read())
 
 // Return an object with the progress of each episode in percent (0-100), keyed by episode number
 export function liveAnimeProgress (mediaId) {
-  return derived(animeProgressStore, (data) => {
+  return derived([animeProgressStore, remotePositions], ([data, remote]) => {
     if (!mediaId) return {}
     const results = data.filter(item => item.mediaId === mediaId)
     if (!results) return {}
     // Return an object with the episode as the key and the progress as the value
-    return Object.fromEntries(results.map(result => [
+    const progress = Object.fromEntries(results.map(result => [
       result.episode,
       Math.ceil(result.currentTime / result.safeduration * 100)
     ]))
+    // Cross-device resume: an episode played more recently on another device (see modules/sync).
+    const other = remote[mediaId]
+    const local = other && results.find(result => result.episode === other.episode)
+    if (other && remotePercent(other) && (!local || local.updatedAt < other.at)) progress[other.episode] = remotePercent(other)
+    return progress
   })
 }
 
 // Return an individual episode's progress in percent (0-100)
 export function liveAnimeEpisodeProgress (mediaId, episode, completed) {
   if (completed) return null
-  return derived(animeProgressStore, (data) => {
+  return derived([animeProgressStore, remotePositions], ([data, remote]) => {
     if (!mediaId || !isValidNumber(episode)) return 0
     const result = data.find(item => item.mediaId === mediaId && item.episode === episode)
+    // Cross-device resume: this episode played more recently on another device (see modules/sync).
+    const other = remote[mediaId]
+    if (other && other.episode === episode && remotePercent(other) && (!result || result.updatedAt < other.at)) return remotePercent(other)
     if (!result) return 0
     return Math.ceil(result.currentTime / result.safeduration * 100)
   })

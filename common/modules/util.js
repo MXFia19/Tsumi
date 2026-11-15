@@ -586,6 +586,11 @@ export const defaults = {
   rpcSecondButton: 'mal',
   // Presence while watching adult content (AniList isAdult / Hentai genre): 'title' (generic "Watching something"), 'hidden' (no presence) or 'off' (shown normally).
   rpcHideAdult: 'title',
+  // Cross-device resume: playback position kept in the note of the AniList / MyAnimeList entry (modules/sync).
+  syncPlaybackPosition: true,
+  // Trakt (modules/sync/trakt.js): scrobble TMDB shows and movies, and anime too (ani.zip mappings) when on.
+  traktScrobble: true,
+  traktScrobbleAnime: false,
   cards: 'small',
   cardPreview: true,
   cardAudio: false,

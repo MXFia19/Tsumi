@@ -56,6 +56,11 @@ struct SettingsValues: Codable, Equatable {
   var rpcSecondButton = "mal"        // mal | download: second presence button outside Watch Together
   var rpcHideAdult = "title"         // title (generic "Watching something") | hidden (no presence) | off: adult content
 
+  // Sync (Settings > Player > Sync Settings: PlaybackSyncService, TraktService)
+  var syncPlaybackPosition = true    // playback position in the note of the AniList / MyAnimeList entry
+  var traktScrobble = true           // scrobble shows and movies to Trakt when connected
+  var traktScrobbleAnime = false     // also anime, through the ani.zip TVDB / TMDB mappings
+
   // App
   var queryComplexity = "Complex"    // Complex | Simple (anilist.js queryComplexObjects)
 
@@ -71,6 +76,7 @@ struct SettingsValues: Codable, Equatable {
     case adult, hentaiBanner, toasts, homeSections, customSections, westernSections
     case systemNotify, aniNotify, releasesNotify, releasesNotifyNotOnList, subAnnounce, dubAnnounce, hentaiAnnounce
     case enableRPC, rpcSecondButton, rpcHideAdult
+    case syncPlaybackPosition, traktScrobble, traktScrobbleAnime
     case queryComplexity, defaultExtension, starredExtension
   }
 
@@ -87,6 +93,7 @@ struct SettingsValues: Codable, Equatable {
       .adult, .hentaiBanner, .toasts, .homeSections, .customSections, .westernSections,
       .systemNotify, .aniNotify, .releasesNotify, .releasesNotifyNotOnList, .subAnnounce, .dubAnnounce, .hentaiAnnounce,
       .enableRPC, .rpcSecondButton, .rpcHideAdult,
+      .syncPlaybackPosition, .traktScrobble, .traktScrobbleAnime,
       .queryComplexity, .defaultExtension, .starredExtension
     ]
     return keys.map { $0.stringValue }
@@ -153,6 +160,10 @@ extension SettingsValues {
     if let mode = container.settingsValue(String.self, .rpcHideAdult), ["title", "hidden", "off"].contains(mode) {
       rpcHideAdult = mode
     }
+
+    syncPlaybackPosition = container.svcLossyBool(.syncPlaybackPosition) ?? syncPlaybackPosition
+    traktScrobble = container.svcLossyBool(.traktScrobble) ?? traktScrobble
+    traktScrobbleAnime = container.svcLossyBool(.traktScrobbleAnime) ?? traktScrobbleAnime
 
     queryComplexity = container.settingsValue(String.self, .queryComplexity) ?? queryComplexity
 

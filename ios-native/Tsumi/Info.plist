@@ -46,13 +46,10 @@
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-<<<<<<< HEAD
 	<key>NSSupportsLiveActivities</key>
 	<true/>
-=======
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Save your Year in Review image to your photo library.</string>
->>>>>>> feat/year-review
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Watch Together connects directly to the other people in your lobby, including devices on the same network.</string>
 	<key>NSAppTransportSecurity</key>
@@ -91,5 +88,9 @@
 	</array>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
+	<key>TraktClientID</key>
+	<string>$(TRAKT_CLIENT_ID)</string>
+	<key>TraktClientSecret</key>
+	<string>$(TRAKT_CLIENT_SECRET)</string>
 </dict>
 </plist>

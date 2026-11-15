@@ -1,4 +1,5 @@
 const { join, resolve } = require('path')
+const { DefinePlugin } = require('webpack')
 
 const mode = process.env.NODE_ENV?.trim() || 'development'
 
@@ -52,6 +53,14 @@ module.exports = [
         '@': resolve(__dirname, '..', 'common')
       }
     },
+    plugins: [
+      // Trakt app credentials (electron/src/main/trakt.js), from the environment of the build (repository secrets
+      // on CI). Missing: the app shows "Trakt is not available in this build".
+      new DefinePlugin({
+        __TRAKT_CLIENT_ID__: JSON.stringify(process.env.TRAKT_CLIENT_ID?.trim() || ''),
+        __TRAKT_CLIENT_SECRET__: JSON.stringify(process.env.TRAKT_CLIENT_SECRET?.trim() || '')
+      })
+    ],
     mode,
     target: 'electron39.0-main'
   }

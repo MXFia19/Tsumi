@@ -43,12 +43,23 @@ final class AnimeProgressService {
     for record in records where record.mediaKey == mediaKey {
       if let episode = record.episode { result[episode] = record.percent }
     }
+    // Cross-device resume: an episode played more recently on another device (PlaybackSyncService).
+    if let remote = remotePercent(mediaKey: mediaKey) { result[remote.episode] = remote.percent }
     return result
+  }
+
+  /// Position of another device when it is newer than this device's record of that episode.
+  private func remotePercent(mediaKey: String) -> (episode: Int, percent: Int)? {
+    guard let remote = PlaybackSyncService.shared.remotePositions[mediaKey], remote.watchedPercent > 0 else { return nil }
+    let local = records.first { $0.mediaKey == mediaKey && $0.episode == remote.episode }
+    if let local, local.updatedAt >= remote.at { return nil }
+    return (remote.episode, remote.watchedPercent)
   }
 
   /// liveAnimeEpisodeProgress: percent of one episode (nil when the episode is completed on the list).
   func episodeProgress(mediaKey: String, episode: Int, completed: Bool = false) -> Int? {
     if completed { return nil }
+    if let remote = remotePercent(mediaKey: mediaKey), remote.episode == episode { return remote.percent }
     return records.first { $0.mediaKey == mediaKey && $0.episode == episode }?.percent ?? 0
   }
 

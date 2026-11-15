@@ -21,6 +21,7 @@
   import { click } from '@/modules/click.js'
   import VideoDeband from 'video-deband'
   import Helper from '@/modules/helper.js'
+  import { playbackSync } from '@/modules/sync/session.js'
 
   import { w2gEmitter, state } from '@/routes/w2g/WatchTogetherPage.svelte'
   import PlayerW2G from '@/routes/w2g/components/PlayerW2G.svelte'
@@ -444,6 +445,8 @@
     }
   }
   $: loadDeband($settings.playerDeband, video)
+  // Cross-device resume (AniList / MyAnimeList note) and Trakt scrobbling, see modules/sync/session.js.
+  $: playbackSync.attach(video, current?.media)
 
   let externalReadyListener
   async function handleCurrent (file) {
