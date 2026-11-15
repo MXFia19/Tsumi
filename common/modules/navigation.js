@@ -2,6 +2,7 @@ import { files } from '@/components/MediaHandler.svelte'
 import { SUPPORTS } from '@/modules/support.js'
 import { writable } from 'simple-store-svelte'
 import { settings } from '@/modules/settings.js'
+import { navigationKeyDirection, isTypingTarget } from '@/modules/navkeys.js'
 import Debug from 'debug'
 const debug = Debug('ui:history')
 
@@ -295,6 +296,17 @@ class HistoryManager {
         this.goForward()
       }
     })
+    // Alt+Left / Alt+Right and the BrowserBack / BrowserForward keys (navkeys.js), not while typing. Capture phase,
+    // stopped there: the player's ArrowLeft / ArrowRight keybinds and the D-pad focus ignore modifiers.
+    window.addEventListener('keydown', (event) => {
+      const direction = navigationKeyDirection(event)
+      if (!direction || isTypingTarget(event.target)) return
+      debug('Navigation key pressed', event.key)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      if (direction === 'back') this.goBack()
+      else this.goForward()
+    }, true)
   }
 
   /**

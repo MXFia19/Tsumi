@@ -19,6 +19,8 @@ struct SettingsValues: Codable, Equatable {
   var audioLanguage = "jpn"
   var preferDubs = false
   var onlineSubtitlesAuto = false    // add online subtitles (subs.wing.st) when the source has none
+  var playerHoldSpeedUp = true       // hold the video (or Space) to play faster (PlayerHoldSpeed.swift)
+  var playerHoldSpeed = 2.0          // rate while held: 1.5 | 2 | 3
 
   // Watch Together
   var w2gAutoSync = true             // follow the host when drifting more than 2 s (PROTOCOL.md "Auto-sync")
@@ -79,6 +81,7 @@ struct SettingsValues: Codable, Equatable {
     case volume, playerAutoplay, playerPause, playerAutocomplete, playerAutocompleteThreshold, playerSeek, playerSkip
     case subtitleLanguage, audioLanguage, preferDubs
     case onlineSubtitlesAuto
+    case playerHoldSpeedUp, playerHoldSpeed
     case w2gAutoSync, w2gDisplayName, w2gWatchOnMyOwn, w2gVoiceDucking, w2gPushToTalk
     case titleLang, bannerProvider, hideMyAnime, cardPreview, cardAudio, toggleList, uiScale, accentColor
     case adult, hentaiBanner, toasts, homeSections, customSections, westernSections
@@ -98,6 +101,7 @@ struct SettingsValues: Codable, Equatable {
       .volume, .playerAutoplay, .playerPause, .playerAutocomplete, .playerAutocompleteThreshold, .playerSeek, .playerSkip,
       .subtitleLanguage, .audioLanguage, .preferDubs,
       .onlineSubtitlesAuto,
+      .playerHoldSpeedUp, .playerHoldSpeed,
       .w2gAutoSync, .w2gDisplayName, .w2gWatchOnMyOwn, .w2gVoiceDucking, .w2gPushToTalk,
       .titleLang, .bannerProvider, .hideMyAnime, .cardPreview, .cardAudio, .toggleList, .uiScale, .accentColor,
       .adult, .hentaiBanner, .toasts, .homeSections, .customSections, .westernSections,
@@ -127,6 +131,8 @@ extension SettingsValues {
     audioLanguage = container.settingsValue(String.self, .audioLanguage) ?? audioLanguage
     preferDubs = container.svcLossyBool(.preferDubs) ?? preferDubs
     onlineSubtitlesAuto = container.svcLossyBool(.onlineSubtitlesAuto) ?? onlineSubtitlesAuto
+    playerHoldSpeedUp = container.svcLossyBool(.playerHoldSpeedUp) ?? playerHoldSpeedUp
+    if let speed = container.svcLossyDouble(.playerHoldSpeed), PlayerHoldSpeed.speeds.contains(speed) { playerHoldSpeed = speed }
     w2gAutoSync = container.svcLossyBool(.w2gAutoSync) ?? w2gAutoSync
     w2gDisplayName = container.settingsValue(String.self, .w2gDisplayName) ?? w2gDisplayName
     w2gWatchOnMyOwn = container.svcLossyBool(.w2gWatchOnMyOwn) ?? w2gWatchOnMyOwn

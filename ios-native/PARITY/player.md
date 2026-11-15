@@ -26,11 +26,11 @@ given); **app** = the player exposes the hook, the app/other module wires it.
 
 | Status | Count |
 |---|---|
-| done | 118 |
+| done | 119 |
 | partial | 14 |
 | n.a. | 22 |
 | app (hook exposed, wired by the app) | 8 |
-| **total** | **162** |
+| **total** | **163** |
 
 Audit items handled in this pass (ids of `AUDIT.md`): M1 (8.6), M2 (7.17), M3 (4.3), L1 (4.8, 4.9), L2 (3.5),
 L3 (2.12), L4 (3.11), L5 (2.7), L6 (6.10), L8 (8.1, 8.7), L9 (2.37), L10 (5.12), L11 (2.24), L12 (2.27),
@@ -98,6 +98,7 @@ L13 (2.28), L14 (2.29), L15 (7.21), L17 (4.16), L18 (4.17), the PiP restore devi
 | 2.35 | Video tracks menu (`selectVideo`) | PP 860-867, 2604-2643 | AVPlayer picks the HLS variant automatically | n.a. |
 | 2.36 | Status bar / home indicator hidden in fullscreen | PP 258-265 | `.statusBarHidden`, `.persistentSystemOverlays(.hidden)`, idle timer disabled while playing | done |
 | 2.37 | Playback speed kept between episodes | PP 1112-1141 | `PlayerPreferences.playbackRate` (read by `PlayerController.init`, written by `setRate`) | done (L9; also kept across launches, reset by `PlayerPreferences.resetAll()`) |
+| 2.38 | Hold to speed up (Space keybind / mouse hold on the video, `playerHoldSpeedUp` / `playerHoldSpeed`, "2× ▶▶" indicator, off while following a Watch Together lobby; `modules/holdspeed.js`) | PP Space keybind, `holdSpeed` | `PlayerHoldSpeed.swift`: long press on the video (haptic) and Space held on a hardware keyboard, `PlayerHoldSpeedIndicator`; settings in Player > Playback Settings | done (rates above 2× fall back to 2× when the item cannot fast forward) |
 
 ## 3. Title, episode info and now playing (PP + MH)
 

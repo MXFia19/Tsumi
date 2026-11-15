@@ -490,7 +490,7 @@ struct PlayerKeybind: Identifiable, Hashable, Sendable {
   let description: String
 
   static let all: [PlayerKeybind] = [
-    PlayerKeybind(key: "Space", description: "Play/Pause"),
+    PlayerKeybind(key: "Space", description: "Play/Pause (Hold to Speed Up)"),
     PlayerKeybind(key: "N", description: "Next Episode"),
     PlayerKeybind(key: "B", description: "Previous Episode"),
     PlayerKeybind(key: "←", description: "Rewind"),
