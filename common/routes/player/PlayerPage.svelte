@@ -33,6 +33,12 @@
   import WPC from '@/modules/wpc.js'
   import { X, Captions, CircleHelp, Contrast, FastForward, Keyboard, EllipsisVertical, SquareArrowOutUpRight, List, Eye, FilePlus2, ListMusic, ListVideo, Maximize, Minimize, Pause, PictureInPicture, PictureInPicture2, Play, Proportions, RefreshCcw, Rewind, RotateCcw, RotateCw, ScreenShare, SkipBack, SkipForward, Volume1, Volume2, VolumeX, SlidersVertical, SquarePen, Milestone, Server } from 'lucide-svelte'
   import Debug from 'debug'
+  // Chromecast (PC) and online subtitles: logic in modules/cast.js and modules/onlinesubs/.
+  import CastButton from './CastButton.svelte'
+  import CastOverlay from './CastOverlay.svelte'
+  import OnlineSubtitles from './OnlineSubtitles.svelte'
+  import { castState } from '@/modules/cast.js'
+  import { Globe } from 'lucide-svelte'
   const debug = Debug('ui:player')
 
   const emit = createEventDispatcher()
@@ -678,6 +684,12 @@
 
   let subDelay = 0
   $: updateDelay(subDelay)
+  // "Search online subtitles…" panel (OnlineSubtitles.svelte), and ±0.5 s offset steps.
+  let onlineSubsOpen = false
+  $: if (miniplayer) onlineSubsOpen = false
+  function stepDelay (step) {
+    subDelay = Math.round(((Number(subDelay) || 0) + step) * 10) / 10
+  }
   function updateDelay (delay) {
     if (subs?.renderer) subs.renderer.timeOffset = Number(delay)
   }
@@ -700,7 +712,7 @@
   $: pagePause($page, $playPage, $modal)
   let pagePaused = 0
   function pagePause (_page, _playPage, _modal) {
-    if (externalPlayback) return
+    if (externalPlayback || $castState.active) return
     if (buffer === 0 && pagePaused) {
       pagePaused = 1
       return
@@ -830,7 +842,7 @@
   let hidden = false
   let visibilityPaused = true
   const handleVisibility = (visible) => {
-    if ($settings.playerPause && !pip) {
+    if ($settings.playerPause && !pip && !$castState.active) {
       hidden = !visible
       if (!video?.ended) {
         if (hidden) {
@@ -1646,7 +1658,7 @@
     )
   }
   function createThumbnail (vid = video) {
-    if (vid?.readyState >= 2) {
+    if (vid?.readyState >= 2 && !$castState.active) {
       const index = Math.floor(vid.currentTime / thumbnailData.interval)
       if (!thumbnailData.thumbnails[index]) {
         thumbnailData.context.fillRect(0, 0, 200, thumbnailData.canvas.height)
@@ -2155,6 +2167,8 @@
         pip = false
       }}><track kind='captions' src="" srclang='en' label='English' /></video
     >
+    <CastOverlay {miniplayer} />
+    <OnlineSubtitles bind:open={onlineSubsOpen} {subs} media={current?.media?.media || media?.media} episode={current?.media?.episode ?? media?.episode} />
     {#if stats && !miniplayer}
       <div
         class='position-absolute top-0 bg-tp p-10 ml-20 mt-100 text-monospace rounded z-50'
@@ -2773,7 +2787,7 @@
             </div>
           </div>
         {/if}
-        {#if subHeaders?.length && !externalPlayback}
+        {#if (subHeaders?.length || current) && !externalPlayback}
           <div
             class='subtitles dropdown dropup with-arrow'
             use:click={toggleDropdown}
@@ -2813,7 +2827,7 @@
                   OFF
                 </label>
                 <!-- stupid fix (resize) because video metadata doesn't update for multiple frames -->
-                {#each subHeaders as track}
+                {#each subHeaders || [] as track}
                   {#if track}
                     {@const trackName =
                       (track.language ||
@@ -2851,6 +2865,16 @@
                     </label>
                   {/if}
                 {/each}
+                <div
+                  class='pb-5 pointer text-nowrap online-subs-entry'
+                  title='Search online subtitles'
+                  use:click={({ target }) => {
+                    onlineSubsOpen = true
+                    target.closest('.dropdown')?.classList.remove('show')
+                  }}
+                >
+                  <Globe size='1.6rem' class='mr-5' />Search online subtitles…
+                </div>
                 <div class='mb-5 invisible'></div>
                 <div class='subtitle-offset'>
                   <div
@@ -2877,6 +2901,10 @@
                     class='form-control text-right form-control-sm not-reactive'
                   />
                 </div>
+                <div class='d-flex justify-content-between mt-5'>
+                  <button type='button' class='btn btn-sm not-reactive' title='Show subtitles 0.5 s later' on:click|stopPropagation={() => stepDelay(-0.5)}>-0.5 s</button>
+                  <button type='button' class='btn btn-sm not-reactive' title='Show subtitles 0.5 s earlier' on:click|stopPropagation={() => stepDelay(0.5)}>+0.5 s</button>
+                </div>
               </div>
             </div>
           </div>
@@ -2890,6 +2918,7 @@
         <!--    {/if} -->
         <!--  </span> -->
         <!-- {/if} -->
+        <CastButton {video} {current} {media} {streamServers} {activeServerIndex} {subs} {subHeaders} delay={subDelay} disabled={externalPlayback} />
         {#if 'pictureInPictureEnabled' in document}
           <span
             class='icon text-white ctrl mr-5 d-none align-items-center'

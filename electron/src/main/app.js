@@ -21,6 +21,7 @@ import Updater from './updater.js'
 import Dialog from './dialog.js'
 import Debug from './debugger.js'
 import { startStreamProxy } from './streamProxy.js'
+import CastManager from './cast/index.js'
 
 export default class App {
   icon = nativeImage.createFromPath(join(__dirname, process.platform === 'win32' ? '/icon_filled.ico' : '/icon_filled.png'))
@@ -65,6 +66,7 @@ export default class App {
   protocol = new Protocol(this.mainWindow)
   updater = new Updater(this.mainWindow)
   dialog = new Dialog()
+  cast = new CastManager(this.mainWindow)
   tray = new Tray(this.trayIcon)
   imageDir = join(app.getPath('userData'), 'Cache', 'Image_Data')
   debug = new Debug()
@@ -284,6 +286,7 @@ export default class App {
     this.mainWindow.webContents?.closeDevTools?.()
     this.tray?.destroy()
     this.discord.destroy()
+    this.cast.destroy()
     for (const timeout of this.timeouts) clearTimeout(timeout)
     this.timeouts.clear()
     clearTimeout(this.stateTimeout)

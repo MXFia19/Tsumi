@@ -578,6 +578,8 @@ export const defaults = {
   subtitleRenderHeight: SUPPORTS.isAndroid ? '720' : '0',
   subtitleLanguage: 'eng',
   audioLanguage: 'jpn',
+  // Add online subtitles (subs.wing.st) in the preferred subtitle language when the source has none.
+  onlineSubtitlesAuto: false,
   enableDoH: false,
   doHURL: 'https://cloudflare-dns.com/dns-query',
   disableSubtitleBlur: SUPPORTS.isAndroid,
