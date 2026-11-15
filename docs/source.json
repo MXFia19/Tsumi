@@ -1,0 +1,33 @@
+{
+  "name": "Tsumi",
+  "identifier": "io.github.mxfia19.tsumi",
+  "subtitle": "Anime and shows, alone or together.",
+  "description": "Official source of Tsumi for iPhone and iPad. Add it to Feather (or AltStore / SideStore) to install Tsumi and get its updates.",
+  "iconURL": "https://mxfia19.github.io/Tsumi/icon.png",
+  "website": "https://mxfia19.github.io/Tsumi/",
+  "tintColor": "#3DB4F2",
+  "featuredApps": [
+    "org.tsumi.app"
+  ],
+  "apps": [
+    {
+      "name": "Tsumi",
+      "bundleIdentifier": "org.tsumi.app",
+      "developerName": "MXFia19",
+      "subtitle": "Watch anime and shows, alone or with friends.",
+      "localizedDescription": "Tsumi is a native iPhone and iPad app to watch anime and shows from the sources you add (extensions).\n\n- Browse, search and follow the airing schedule\n- Sync your list and progress with AniList or MyAnimeList\n- Watch Together: shared playback with friends\n- Discord rich presence\n\nThe IPA is unsigned: Feather, AltStore, SideStore or Sideloadly signs it on install.",
+      "iconURL": "https://mxfia19.github.io/Tsumi/icon.png",
+      "tintColor": "#3DB4F2",
+      "category": "entertainment",
+      "screenshotURLs": [],
+      "versions": [],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {
+          "NSLocalNetworkUsageDescription": "Watch Together connects directly to the other people in your lobby, including devices on the same network."
+        }
+      }
+    }
+  ],
+  "news": []
+}

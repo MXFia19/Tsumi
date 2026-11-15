@@ -19,6 +19,8 @@ struct RootView: View {
       .safeAreaInset(edge: .top, spacing: 0) {
         ShellConnectionBanner()
       }
+      // New release on GitHub: "Update available" banner (ShellUpdateViews.swift).
+      .modifier(ShellUpdateCheck())
       // In-app miniplayer over every tab (App.svelte global player layer, Miniplayer.svelte).
       .overlay {
         ShellMiniPlayerOverlay(layer: .root)

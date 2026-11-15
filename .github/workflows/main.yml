@@ -1,15 +1,28 @@
 name: Windows Build
-# Builds the Windows installer and attaches it to the run as an artifact.
-# No release is published (the original 50n50/tsumi release repo no longer exists).
+# Builds the Windows installer and attaches it to the run as an artifact (installer + latest.yml + blockmap).
+# Releases are published by release.yml, which calls this workflow (workflow_call).
 on:
   workflow_dispatch:  # Allows manual triggering
+  workflow_call:      # Used by release.yml
+    secrets:
+      DISCORD_SDK_KEY:
+        required: false
+      TRAKT_CLIENT_ID:
+        required: false
+      TRAKT_CLIENT_SECRET:
+        required: false
   push:
     branches:
       - 'main'
     paths-ignore:
       - '**.md'
+      - 'docs/**'
       - 'ios-native/**'
       - '.github/workflows/ios-native.yml'
+      - '.github/workflows/release.yml'
+      - '.github/scripts/**'
+permissions:
+  contents: read
 env:
   NODE_VERSION: '22.21.1'
   PNPM_VERSION: '10.15.1'
@@ -43,13 +56,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download electron-codecs-39.2.7 --pattern "electron-v39.2.7-win32-x64.zip" --dir electron-dist
-      # The Discord Social SDK (presence without the Discord app) is proprietary, so it is kept as an asset of a
-      # private release of this repo. The DLL is shipped next to the app (electron-builder extraResources).
+      # The Discord Social SDK (presence without the Discord app) is proprietary: the release asset is encrypted
+      # (openssl enc -aes-256-cbc -md sha256) with the DISCORD_SDK_KEY secret and decrypted here with Git's openssl
+      # (bash). The DLL is shipped next to the app (electron-builder extraResources).
       - name: Download Discord Social SDK
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          DISCORD_SDK_KEY: ${{ secrets.DISCORD_SDK_KEY }}
         run: |
-          gh release download discord-social-sdk-1.10.19337 --pattern "discord-social-sdk-windows.zip" --dir discord-sdk-download
+          set -euo pipefail
+          if [ -z "${DISCORD_SDK_KEY:-}" ]; then
+            echo "::error::The DISCORD_SDK_KEY secret is not set: the Discord Social SDK can't be decrypted"
+            exit 1
+          fi
+          gh release download discord-social-sdk-1.10.19337 --pattern "discord-social-sdk-windows.zip.enc" --dir discord-sdk-download
+          openssl enc -d -aes-256-cbc -md sha256 -in discord-sdk-download/discord-social-sdk-windows.zip.enc -out discord-sdk-download/discord-social-sdk-windows.zip -pass env:DISCORD_SDK_KEY
+          rm discord-sdk-download/discord-social-sdk-windows.zip.enc
+      - name: Unpack Discord Social SDK
+        run: |
           Expand-Archive discord-sdk-download/discord-social-sdk-windows.zip -DestinationPath discord-sdk-download/extracted
           New-Item -ItemType Directory -Force electron/discord-social-sdk | Out-Null
           Get-ChildItem discord-sdk-download/extracted -Recurse -Include discord_partner_sdk.dll, License-Notices.txt | Copy-Item -Destination electron/discord-social-sdk
@@ -58,9 +83,13 @@ jobs:
         working-directory: electron
         env:
           NODE_ENV: production
+          TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
         run: pnpm run web:build
       # electron-builder is called directly: "pnpm run build -- <args>" would forward
       # a literal "--" and electron-builder would ignore the options after it.
+      # "--publish never": release.yml uploads the files itself. latest.yml and the .blockmap are still written
+      # (from the "publish" config of electron/package.json): they are what electron-updater reads.
       - name: Build installer (Windows x64)
         working-directory: electron
         shell: bash  # PowerShell splits "-c.npmRebuild=false" into "-c" ".npmRebuild=false"
@@ -73,10 +102,24 @@ jobs:
           foreach ($file in 'discord-social-sdk/discord_partner_sdk.dll', 'koffi/win32_x64/koffi.node') {
             if (-not (Test-Path $file)) { throw "$file is missing from the packaged app" }
           }
+      # Auto-update: latest.yml (version, file name, sha512) and the .blockmap (differential download) go to the
+      # release; app-update.yml (inside the app) says where to look for updates.
+      - name: Check update files
+        working-directory: electron/dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l *-installer.exe *-installer.exe.blockmap latest.yml
+          cat latest.yml
+          cat win-unpacked/resources/app-update.yml
+          grep -q 'owner: MXFia19' win-unpacked/resources/app-update.yml
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: tsumi-windows-installer
-          path: electron/dist/*-installer.exe
+          path: |
+            electron/dist/*-installer.exe
+            electron/dist/*-installer.exe.blockmap
+            electron/dist/latest.yml
           if-no-files-found: error
           retention-days: 30

@@ -1,220 +1,124 @@
 <div align="center">
-  <img src="https://i.ibb.co/TBjgmCp6/header.png" alt="Tsumi" width="50%">
-
- <p><sub>I am not trying to be better, I just want to help people by providing more options.</sub></p>
+  <img src="../docs/icon.png" alt="Tsumi" width="96">
+  <h1>Tsumi</h1>
+  <p>Watch your anime and shows, alone or with friends using Watch Together.</p>
+  <p>
+    <a href="https://github.com/MXFia19/Tsumi/releases/latest"><b>Latest release</b></a> ·
+    <a href="https://mxfia19.github.io/Tsumi/"><b>Download page</b></a>
+  </p>
 </div>
 
-#
-
-A modern, feature-rich anime streaming application. **Tsumi** is an old fork of [Hayase](https://hayase.watch/) by ThaUnknown, modified to use **Sora extensions** for seamless anime discovery and playback.
-
-> **Note:** This project is a community fork focused on extension-based streaming. It's not affiliated with the original Shiru project.
-
-#
-
-**For any issues or support please join the [Discord server!](https://discord.gg/tKNhqkDnW2)**
+Tsumi is a streaming app for anime and shows that plays the streams found by the extensions you add, and keeps your
+lists in sync with AniList or MyAnimeList. This repository is a fork of Tsumi with a Windows app and a native iPhone
+and iPad app.
 
 ## Features
 
-### 🎬 Streaming & Playback
-- **Extension-based streaming** - Supports Sora extensions for flexible anime source management
-- **Multi-server support** - Switch between different streaming servers without losing playback position
-- **Advanced player** - Built-in video player with:
-  - HLS/MP4 playback support
-  - Subtitle support (SRT, VTT, ASS, SSA)
-  - Keyboard shortcuts and playlist controls
-  - Download speed monitoring
-  - Auto-skip opening/ending detection
+- **Windows app** (Electron) and **native iPhone / iPad app** (SwiftUI, iOS 17+)
+- **Extensions**: Sora modules and Stremio addons as sources, switch servers during playback
+- **AniList and MyAnimeList**: browse, search, airing schedule, lists and progress sync; **Trakt** sync
+- **Watch Together**: synced playback with friends, shared queue and voice chat, invite links
+- **Discord Rich Presence** (on Windows it also works with the Discord app closed)
+- **Downloads** to watch offline
+- **Chromecast** and **online subtitles**
+- **Home Screen widgets** on iPhone
+- **Updates**: the Windows app updates itself; the iPhone app tells you when a new version is out
 
-### 📚 Library Management
-- **Anime information** - Integrated with AniList and MyAnimeList
-- **Personal library** - Track your anime across multiple platforms
-- **Episode tracking** - Automatic progress saving and resume playback
-- **Smart search** - Find anime across all enabled extensions instantly
+## Download
 
-### 🎨 Customization
-- **Dark theme** - Easy on the eyes for late-night anime sessions
-- **Customizable UI** - Adjustable fonts, colors, and layout options
-- **Multiple subtitle languages** - Choose your preferred subtitle language
-- **External player support** - Use your favorite external video player if desired
+| Platform | Get it |
+| --- | --- |
+| Windows 10 / 11 (64-bit) | `win-Tsumi-vX.Y.Z-installer.exe` from the [latest release](https://github.com/MXFia19/Tsumi/releases/latest) |
+| iPhone / iPad (iOS 17+) | the Feather source below, or `Tsumi.ipa` from the [latest release](https://github.com/MXFia19/Tsumi/releases/latest/download/Tsumi.ipa) |
 
-### 🛠️ Advanced Features
-- **Watch parties** (W2G) - Stream anime together with friends
-- **Discord Rich Presence** - Show what you're watching to your friends
-- **Cross-platform** - Windows, macOS, and Linux support
-- **Offline progress** - Your anime history works offline and syncs when online
+The [download page](https://mxfia19.github.io/Tsumi/) always links the files of the latest release.
 
-## Installation
+The Windows installer is not code-signed: if SmartScreen warns about it, click **More info**, then **Run anyway**.
 
-### Windows
+### Installing on iPhone
 
-1. **Download** the latest installer from [Releases](https://github.com/50n50/Tsumi/releases)
-2. **Run** `Tsumi-v*.*.*.exe` and follow the installation wizard
-3. **Launch** Tsumi from your Start Menu or desktop shortcut
+The app is not on the App Store: the `.ipa` is unsigned and is signed on install by a sideloading app.
 
-**Portable Version:**
-- Download the `Tsumi-Windows-v*.*.*-portable.exe`
-- No installation required, just run the executable
+**Feather (recommended).** In Feather, open **Sources**, tap **+** and add:
 
-### macOS
-
-1. **Download** the latest DMG from [Releases](https://github.com/50n50/Tsumi/releases)
-2. **Mount** the DMG file and drag Tsumi to your Applications folder
-3. **Launch** from Applications
-
-> Note: On first launch, macOS may ask for permission. This is normal for unsigned apps.
-
-### Linux
-
-#### AppImage (Recommended)
-1. **Download** `Linux-Tsumi-v*.*.*.AppImage` from [Releases](https://github.com/50n50/Tsumi/releases)
-2. **Make executable:**
-   ```bash
-   chmod +x Linux-Tsumi-v*.*.*.AppImage
-   ```
-3. **Run:**
-   ```bash
-   ./Linux-Tsumi-v*.*.*.AppImage
-   ```
-
-#### Debian/Ubuntu (DEB)
-1. **Download** `Linux-Tsumi-v*.*.*.deb` from [Releases](https://github.com/50n50/Tsumi/releases)
-2. **Install:**
-   ```bash
-   sudo dpkg -i Linux-Tsumi-v*.*.*.deb
-   ```
-3. **Launch:** Open Tsumi from your application menu
-
-## First Time Setup
-
-### Adding Extensions
-
-1. Open **Settings** → **Extensions**
-2. Install Sora or compatible extensions
-3. Enable the extensions you want to use
-4. Set a default extension (recommended)
-
-### Configuring Playback
-
-1. Go to **Settings** → **Player**
-2. Adjust playback preferences:
-   - Set your preferred subtitle language
-   - Configure external player (optional)
-   - Adjust video quality settings
-
-### Syncing with AniList/MAL
-
-1. Open **Settings** → **Profiles**
-2. Connect your AniList or MyAnimeList account
-3. Your anime library will sync automatically
-
-## Usage
-
-### Finding Anime
-
-1. Use the **Search** tab to find anime
-2. Results from all enabled extensions appear instantly
-3. Click a result to load episodes
-
-### Watching Anime
-
-1. Select an episode to start playback
-2. If multiple servers available, choose your preferred one
-3. Use keyboard shortcuts:
-   - **Space** - Play/Pause
-   - **F** - Fullscreen
-   - **C** - Cycle subtitles
-   - **M** - Mute
-   - **← →** - Skip/Rewind
-   - **↑ ↓** - Volume
-   - **P** - Picture-in-picture
-
-### Watch Parties
-
-1. Go to **Settings** → **W2G**
-2. Create a watch party session
-3. Share the generated link with friends
-4. Watch together in real-time
-
-## Building from Source
-
-### Requirements
-- Node.js 18+
-- pnpm (or npm)
-- Git
-
-### Setup
-
-```bash
-# Clone the repository
-git clone https://github.com/50n50/Tsumi.git
-cd Tsumi
-
-# Install dependencies
-pnpm install
-
-# Development mode
-pnpm run dev
-
-# Build for production
-cd electron
-pnpm run build
+```
+https://mxfia19.github.io/Tsumi/source.json
 ```
 
-## Troubleshooting
+(or open the [download page](https://mxfia19.github.io/Tsumi/) on the iPhone and tap **Add to Feather**), then install
+Tsumi from the source. New versions show up in the same source. AltStore and SideStore can use the same source URL.
 
-### "No stream available" error
-- Check that you have at least one extension enabled
-- Try a different extension or server
-- Some extensions may not have all anime
+**Sideloadly.** Download `Tsumi.ipa` on your computer, open [Sideloadly](https://sideloadly.io/), connect the iPhone,
+drop the `.ipa` and sign in with your Apple ID. With a free Apple ID the app must be signed again every 7 days.
 
-### Subtitles not showing
-- Verify subtitle format is supported (SRT, VTT, ASS, SSA)
-- Check subtitle language matches available tracks
-- Try "Add Subtitles" to manually load a file
+## Build from source
 
-### Playback issues on Linux
-- Install FFMPEG: `sudo apt install ffmpeg`
-- Some distributions may need additional codecs
+The Discord Social SDK (used for Discord presence) is proprietary and is **not** in this repository. CI downloads it
+from an encrypted release asset. Without it:
 
-### Performance issues
-- Close unnecessary browser tabs
-- Lower video quality settings
-- Update GPU drivers
+- the **Windows** app builds and runs; Discord presence then goes through the Discord app (local RPC);
+- the **iOS** app does not build: get the Discord Social SDK 1.10.19337 from the
+  [Discord Developer Portal](https://discord.com/developers/) and copy `discord_partner_sdk.xcframework` to
+  `ios-native/Vendor/` and `cdiscord.h` to `ios-native/Vendor/CDiscord/`.
 
-## Project Structure
+Trakt sync needs your own Trakt API application: set `TRAKT_CLIENT_ID` and `TRAKT_CLIENT_SECRET` in the environment of
+the build (optional, Trakt is unavailable without them).
 
-- `common/` - Shared UI components and utilities
-- `electron/` - Desktop app (Windows, macOS, Linux)
-- `capacitor/` - Mobile app framework (Android)
-- `extensions/` - Example extensions and extension system
+### Windows app
 
-## Contributing
+Requirements: Node.js 22, pnpm 10, Git.
 
-Contributions are welcome! This is a community project. Whether it's bug fixes, features, or translations:
+```bash
+git clone https://github.com/MXFia19/Tsumi.git
+cd Tsumi
+pnpm install
+pnpm run dev            # development: webpack + Electron
+```
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+To build the installer (`electron/dist/`), as [`main.yml`](workflows/main.yml) does:
 
-## License
+```bash
+# Native shutdown handler (prebuilt, no Visual Studio needed)
+dest=$(ls -d node_modules/.pnpm/@paymoapp+electron-shutdown-handler@*/node_modules/@paymoapp/electron-shutdown-handler)
+mkdir -p "$dest/build/Release" && cp electron/prebuilt/PaymoWinShutdownHandler.node "$dest/build/Release/"
+# Electron with extra codecs (HEVC, AC3...): electron-v39.2.7-win32-x64.zip from the electron-codecs-39.2.7 release
+gh release download electron-codecs-39.2.7 --repo MXFia19/Tsumi --pattern "electron-v39.2.7-win32-x64.zip" --dir electron-dist
+cd electron
+NODE_ENV=production pnpm run web:build
+pnpm exec electron-builder --win nsis --x64 --publish never --config.npmRebuild=false --config.electronDist=../electron-dist
+```
 
-GPL-3.0-or-later - See [LICENSE](LICENSE) file for details
+### iPhone app
+
+Requirements: a Mac with Xcode 16 or later and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+(`brew install xcodegen`). The Xcode project is generated from `ios-native/project.yml`.
+
+```bash
+cd ios-native
+# Discord Social SDK in Vendor/ (see above), then:
+xcodegen generate
+open Tsumi.xcodeproj    # run it with your own signing team
+```
+
+An unsigned `.ipa` is built like [`ios-native.yml`](workflows/ios-native.yml) does: `xcodebuild archive` with
+`CODE_SIGNING_ALLOWED=NO`, then the `.app` zipped in a `Payload/` folder.
+
+## Releases
+
+Bump the version in `electron/package.json` and `ios-native/project.yml`, push, then push a tag with the same version
+(`git tag v1.2.3 && git push origin v1.2.3`). [`release.yml`](workflows/release.yml) builds both apps, publishes the
+GitHub release (installer, `latest.yml` and `.blockmap` for the Windows updater, `Tsumi.ipa`) and adds the version to
+the Feather source (`docs/source.json`). The download page and the source are served by GitHub Pages from `docs/`.
 
 ## Credits
 
-- **Original Project:** [Hayase](https://hayase.watch/) by ThaUnknown
-- **This Fork:** Modified to use Sora extensions and community improvements
+- [Tsumi](https://github.com/50n50) by 50n50: the original Tsumi, with Sora extensions
+- [Shiru](https://github.com/RockinChaos/Shiru) by RockinChaos, which Tsumi is built on
+- [Miru / Hayase](https://hayase.watch/) by ThaUnknown, the project at the origin of Shiru
+- [TheUnknownEngima/Tsumi](https://github.com/TheUnknownEngima/Tsumi), the fork this repository comes from
 
-## Disclaimer
+## License
 
-The developer(s) of this application does not have any affiliation with the content providers available, and this application hosts zero content.
+[GPL-3.0-or-later](../LICENSE).
 
-## Support
-
-- **Issues:** [GitHub Issues](https://github.com/50n50/Tsumi/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/50n50/Tsumi/discussions)
-- **Discord:** Join our community (link in repo)
-
-
+Tsumi does not host any content and is not affiliated with the providers of the streams that extensions find.
