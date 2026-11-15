@@ -56,8 +56,12 @@ struct PlayerView: View {
     .focusable()
     .focusEffectDisabled()
     .focused($keyboardFocused)
-    .onKeyPress(phases: [.down, .repeat]) { press in
+    .onKeyPress(phases: [.down, .repeat, .up]) { press in
       handleKey(press)
+    }
+    .onChange(of: keyboardFocused) { _, focused in
+      // Space's release goes elsewhere now: end a Space hold (PlayerHoldSpeed.swift).
+      if !focused { controller.cancelHoldSpeedKey() }
     }
     .onAppear {
       PlayerOrientation.lockLandscape()
@@ -130,6 +134,11 @@ struct PlayerView: View {
     if let feedback = seekFeedback {
       PlayerSeekFeedbackView(feedback: feedback)
         .allowsHitTesting(false)
+    }
+
+    // Hold to speed up: "2× ▶▶" while the video is held.
+    if let rate = controller.holdSpeedRate {
+      PlayerHoldSpeedIndicator(rate: rate)
     }
 
     if showSpinner {
@@ -243,7 +252,8 @@ struct PlayerView: View {
   // MARK: - Gestures
 
   /// Single tap toggles the controls (toggleImmerse on touch screens); double tap on the left/right half
-  /// seeks back/forward by `playerSeek`; pinch toggles the video cover.
+  /// seeks back/forward by `playerSeek`; pinch toggles the video cover; a long press plays faster while held
+  /// (PlayerHoldSpeedGesture).
   private var gestureLayer: some View {
     HStack(spacing: 0) {
       tapZone(forward: false)
@@ -259,6 +269,7 @@ struct PlayerView: View {
           }
         }
     )
+    .modifier(PlayerHoldSpeedGesture(controller: controller))
   }
 
   private func tapZone(forward: Bool) -> some View {
@@ -318,6 +329,8 @@ struct PlayerView: View {
   // MARK: - Controls visibility (immerse)
 
   private func toggleControls() {
+    // The finger lifting at the end of a hold is not a tap.
+    if controller.isHoldingOrJustHeld { return }
     // A tap on the video closes the Watch Together panel first.
     if showWatchTogether {
       showWatchTogether = false
@@ -360,6 +373,10 @@ struct PlayerView: View {
   }
 
   private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+    // Key up: only Space's, when its press is pending or held (hold to speed up, PlayerHoldSpeed.swift).
+    if press.phase == .up {
+      return press.key == .space && controller.releaseHoldSpeedKey() ? .handled : .ignored
+    }
     // The Watch Together panel has a text field: its keys are not player shortcuts.
     if showWatchTogether {
       if press.key == .escape {
@@ -385,7 +402,8 @@ struct PlayerView: View {
     }
     revealControls()
     if press.key == .space {
-      controller.togglePlayPause()
+      // Plays / pauses now, or on release when holding it can speed up.
+      if !controller.pressHoldSpeedKey() { controller.togglePlayPause() }
       return .handled
     }
     if press.key == .leftArrow {

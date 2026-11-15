@@ -70,6 +70,7 @@ struct ShellPlaybackSettingsSection: View {
 
   var body: some View {
     let autocomplete = AppSettings.shared.values.playerAutocomplete
+    let holdSpeedUp = AppSettings.shared.values.playerHoldSpeedUp
     return Section {
       ShellSettingToggle(
         title: "Autoplay Next Episode",
@@ -111,12 +112,33 @@ struct ShellPlaybackSettingsSection: View {
         description: "Attempt to automatically skip intro and outro. This WILL sometimes skip incorrect chapters, as some of the chapter data is community sourced.",
         isOn: ShellBind.value(\.playerSkip)
       )
+      ShellSettingToggle(
+        title: "Hold to Speed Up",
+        description: "Press and hold the video (or hold Space on a keyboard) to play faster until you let go. A short tap still works as before. Not available while you watch in sync with a Watch Together lobby.",
+        isOn: ShellBind.value(\.playerHoldSpeedUp)
+      )
+      if holdSpeedUp {
+        ShellSettingPicker(
+          title: "Hold Speed",
+          description: "The playback speed while the video is held.",
+          options: PlayerHoldSpeed.speeds.map { ShellOption(String($0), PlayerHoldSpeed.label($0)) },
+          selection: holdSpeedBinding
+        )
+      }
     } header: {
       Text("Playback Settings")
     }
     .onChange(of: chapterSource) { _, value in
       PlayerPreferences.chapterSource = PlayerChapterSource(rawValue: value) ?? .embedded
     }
+  }
+
+  /// playerHoldSpeed (a number) as the picker's string value.
+  private var holdSpeedBinding: Binding<String> {
+    Binding(
+      get: { String(PlayerHoldSpeed.speed(AppSettings.shared.values.playerHoldSpeed)) },
+      set: { AppSettings.shared.values.playerHoldSpeed = PlayerHoldSpeed.speed(Double($0) ?? PlayerHoldSpeed.defaultSpeed) }
+    )
   }
 
   private var thresholdBinding: Binding<Double> {

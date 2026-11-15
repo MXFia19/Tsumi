@@ -108,6 +108,9 @@ final class PlayerController {
   /// Episode being loaded through `loadEpisode`.
   private(set) var loadingEpisode: EpisodeRef?
   private(set) var stats: [PlayerStatLine]?
+  /// Hold to speed up (PlayerHoldSpeed.swift): the rate playing while the video or Space is held, nil otherwise.
+  var holdSpeedRate: Float?
+  @ObservationIgnored var holdSpeedState = PlayerHoldSpeedState()
 
   // MARK: - AVFoundation and internals
 
@@ -434,6 +437,7 @@ final class PlayerController {
   }
 
   private func tearDown() {
+    cancelHoldSpeed()
     player.pause()
     if let timeObserver {
       player.removeTimeObserver(timeObserver)
@@ -897,6 +901,8 @@ final class PlayerController {
   private func handleTimeControlStatus(_ status: AVPlayer.TimeControlStatus) {
     guard !isClosed else { return }
     let playing = status != .paused
+    // Paused or ended while held: back to the normal rate (the release then does nothing more).
+    if !playing { stopHoldSpeed(pause: false) }
     if playing != isPlaying {
       isPlaying = playing
       if playing {
@@ -965,7 +971,9 @@ final class PlayerController {
   // MARK: - App state
 
   private func handleWillResignActive() {
-    playingBeforeResign = isPlaying
+    // A hold started on a paused video pauses it again: it was not playing for the background rules.
+    let pausedByHold = cancelHoldSpeed()
+    playingBeforeResign = isPlaying && !pausedByHold
     // Picks up a change of the "Auto Picture in Picture" setting made while this player was open.
     pip.attach(to: layerView.playerLayer, autoStart: PlayerPreferences.autoPictureInPicture)
   }

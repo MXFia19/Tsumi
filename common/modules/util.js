@@ -612,6 +612,9 @@ export const defaults = {
   playerSeek: 2,
   playerSkip: false,
   playerChapterSkip: 'embedded',
+  // Hold to speed up (modules/holdspeed.js): holding Play/Pause or the video plays at playerHoldSpeed (1.5 | 2 | 3).
+  playerHoldSpeedUp: true,
+  playerHoldSpeed: 2,
   // Watch Together: follow the host when drifting more than 2 s, and the name of an anonymous user.
   w2gAutoSync: true,
   w2gDisplayName: '',

@@ -9,6 +9,7 @@
   import { IPC } from '@/modules/bridge.js'
   import { Trash2, Eraser } from 'lucide-svelte'
   import { keyLabel } from '@/routes/w2g/components/voice.js'
+  import { HOLD_SPEEDS, holdSpeedLabel } from '@/modules/holdspeed.js'
   export let settings
 
   // Watch Together push-to-talk key: the next key pressed while the field has the focus.
@@ -174,6 +175,21 @@
     <label for='player-skip'>{settings.playerSkip ? 'On' : 'Off'}</label>
   </div>
 </SettingCard>
+<SettingCard title='Hold to Speed Up' description='Hold the Play/Pause key (Space) or the left mouse button on the video to play faster until you let go. A short press still plays / pauses. Not available while you watch in sync with a Watch Together lobby.'>
+  <div class='custom-switch'>
+    <input type='checkbox' id='player-hold-speed' bind:checked={settings.playerHoldSpeedUp} />
+    <label for='player-hold-speed'>{settings.playerHoldSpeedUp ? 'On' : 'Off'}</label>
+  </div>
+</SettingCard>
+{#if settings.playerHoldSpeedUp}
+  <SettingCard title='Hold Speed' description='The playback speed while the video is held.'>
+    <select class='form-control bg-dark mw-150 w-150 text-truncate' bind:value={settings.playerHoldSpeed}>
+      {#each HOLD_SPEEDS as speed (speed)}
+        <option value={speed}>{holdSpeedLabel(speed)}</option>
+      {/each}
+    </select>
+  </SettingCard>
+{/if}
 
 <h4 class='mb-10 font-weight-bold'>Watch Together Settings</h4>
 <SettingCard title='Auto-Sync' description='In a Watch Together lobby, jumps to the host’s position when your video drifts more than 2 seconds away while you both play the same episode. At most once every 10 seconds, and nobody else is told.'>

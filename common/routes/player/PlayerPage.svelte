@@ -11,7 +11,7 @@
   import AnimeResolver from '@/modules/anime/animeresolver.js'
   import { durationMap, getMediaMaxEp } from '@/modules/anime/anime.js'
   import { writable } from 'simple-store-svelte'
-  import { createEventDispatcher } from 'svelte'
+  import { createEventDispatcher, onDestroy } from 'svelte'
   import Subtitles from '@/modules/subtitles.js'
   import { toTS, matchPhrase, videoRx, isValidNumber } from '@/modules/util.js'
   import { toast } from 'svelte-sonner'
@@ -22,6 +22,7 @@
   import VideoDeband from 'video-deband'
   import { playbackSync } from '@/modules/sync/session.js'
   import { downloadsSupported, downloadFromPlayer, updateEntryOrQueue } from '@/modules/downloads/downloads.js'
+  import { HoldSpeed, holdSpeedOf, holdSpeedLabel } from '@/modules/holdspeed.js'
   import { ArrowDownToLine } from 'lucide-svelte'
 
   import { w2gEmitter, state } from '@/routes/w2g/WatchTogetherPage.svelte'
@@ -462,6 +463,7 @@
 
   let externalReadyListener
   async function handleCurrent (file) {
+    holdSpeed.cancel()
     paused = true
     canPlay = false
     video?.pause?.()
@@ -855,6 +857,7 @@
       hidden = !visible
       if (!video?.ended) {
         if (hidden) {
+          holdSpeed.cancel()
           visibilityPaused = paused
           paused = true
         } else if (!visibilityPaused) paused = false
@@ -1068,6 +1071,62 @@
       }
     }
   }
+  // ---- Hold to speed up (modules/holdspeed.js): hold the Play/Pause key or the mouse button on the video.
+  /** speed shown by the indicator while held, null otherwise */
+  let holdSpeedShown = null
+  /** the click that ends a mouse hold is not a play / pause */
+  let holdClickIgnoredUntil = 0
+  const holdSpeed = new HoldSpeed({
+    canHold: () => !!($settings.playerHoldSpeedUp && video && src && !externalPlayback && !hidden && !$castState.active),
+    // A temporary rate would drift from the lobby: off while following it (watching on our own nothing is synced).
+    blocked: () => !!state.value?.isFollowing,
+    speed: () => holdSpeedOf($settings.playerHoldSpeed),
+    getRate: () => video?.playbackRate || 1,
+    setRate: (rate) => { if (video) video.playbackRate = rate },
+    isPaused: () => !video || video.paused,
+    setPaused: (value) => {
+      if (!video) return
+      if (value) video.pause()
+      else video.play()?.catch?.(() => {})
+    },
+    onChange: (speed) => { holdSpeedShown = speed },
+    onBlocked: () => toast('Watch Together', { description: 'Hold to speed up is off while you watch in sync with the lobby.', duration: 2500 })
+  })
+
+  /** Play/Pause key: a tap plays / pauses when released, holding it plays faster. */
+  function playPauseKey (event) {
+    if (event instanceof KeyboardEvent && $settings.playerHoldSpeedUp) {
+      if (event.repeat || holdSpeed.press(`key:${event.code}`)) return
+    }
+    playPause()
+  }
+
+  function holdKeyUp (event) {
+    const result = holdSpeed.release(`key:${event.code}`)
+    if (!result) return
+    event.preventDefault()
+    if (result === 'tap') playPause()
+  }
+
+  function holdPointerDown (event) {
+    if (event.button !== 0 || event.pointerType === 'touch' || miniplayer || $page !== page.PLAYER || modal.length !== 0) return
+    if (holdSpeed.press('pointer')) event.currentTarget.setPointerCapture?.(event.pointerId)
+  }
+
+  // pointerup, pointercancel and lostpointercapture: the first one ends the press.
+  function holdPointerUp () {
+    if (holdSpeed.release('pointer') === 'hold') holdClickIgnoredUntil = Date.now() + 400
+  }
+
+  const cancelHold = () => holdSpeed.cancel()
+  window.addEventListener('keyup', holdKeyUp, true)
+  window.addEventListener('blur', cancelHold)
+  onDestroy(() => {
+    window.removeEventListener('keyup', holdKeyUp, true)
+    window.removeEventListener('blur', cancelHold)
+    holdSpeed.cancel()
+  })
+
   let fitWidth = false
   let showKeybinds = false
   loadWithDefaults({
@@ -1114,11 +1173,11 @@
       desc: 'Toggle Keybinds'
     },
     Space: {
-      fn: () => !viewAnime && playPause(),
+      fn: (e) => !viewAnime && playPauseKey(e),
       id: 'play_arrow',
-      play: Play,
+      icon: Play,
       type: 'icon',
-      desc: 'Play/Pause'
+      desc: 'Play/Pause (Hold to Speed Up)'
     },
     KeyN: {
       fn: () => !viewAnime && playNext(),
@@ -2172,6 +2231,7 @@
       on:error={checkError}
       on:error={() => finishW2GLoading()}
       on:pause={() => w2gMediaEvent('pause')}
+      on:pause={() => holdSpeed.interrupt()}
       on:play={() => w2gMediaEvent('play')}
       on:seeking={() => w2gMediaEvent('seeking')}
       on:seeked={() => w2gMediaEvent('seeked')}
@@ -2337,7 +2397,12 @@
         aria-hidden='true'
         class='w-full h-full position-absolute toggle-fullscreen'
         on:dblclick={toggleFullscreen}
+        on:pointerdown={holdPointerDown}
+        on:pointerup={holdPointerUp}
+        on:pointercancel={holdPointerUp}
+        on:lostpointercapture={holdPointerUp}
         on:click|self={() => {
+          if (Date.now() < holdClickIgnoredUntil) return
           if ($page === page.PLAYER && modal.length === 0) {
             playPause()
           } else {
@@ -2428,6 +2493,11 @@
         class='position-absolute bufferingDisplay'
         class:bufferingPos={SUPPORTS.isAndroid && !miniplayer}
       ></div>
+      {#if holdSpeedShown && !miniplayer}
+        <div class='hold-speed position-absolute d-flex align-items-center font-weight-bold font-scale-20 text-white'>
+          {holdSpeedLabel(holdSpeedShown)}<FastForward size='1.6rem' fill='currentColor' class='ml-5' />
+        </div>
+      {/if}
       {#if currentSkippable}
         <button
           class='skip btn text-dark position-absolute bottom-0 right-0 mr-20 mb-5 font-weight-bold z-30 d-flex align-items-center justify-content-center'
@@ -3446,5 +3516,18 @@
     .toggle-fullscreen {
       display: none !important;
     }
+  }
+
+  /* "2× ▶▶" while the video is held (hold to speed up) */
+  .hold-speed {
+    top: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 30;
+    padding: 0.4rem 1.2rem;
+    border-radius: 2rem;
+    background: hsla(var(--black-color-hsl), 0.6);
+    pointer-events: none;
+    white-space: nowrap;
   }
 </style>
