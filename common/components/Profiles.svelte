@@ -8,6 +8,7 @@
   import { toast } from 'svelte-sonner'
   import SoftModal from '@/components/modals/SoftModal.svelte'
   import SmartImage from '@/components/visual/SmartImage.svelte'
+  import YearReviewProfileButton from '@/routes/yearreview/YearReviewProfileButton.svelte'
   import { ClockAlert, LogOut, Plus, X } from 'lucide-svelte'
   import { modal } from '@/modules/navigation.js'
   import { IPC } from '@/modules/bridge.js'
@@ -80,6 +81,9 @@
       <p class='font-size-18 font-weight-bold'>{$currentProfile.viewer.data.Viewer.name}</p>
     {/if}
   </div>
+  {#if $currentProfile}
+    <YearReviewProfileButton />
+  {/if}
   {#if $profiles.length > 0}
     <div class='info box border-0 rounded-top-30 pt-10 pb-10 d-flex align-items-center justify-content-center text-center font-weight-bold'>
       Other Profiles
