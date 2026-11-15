@@ -15,6 +15,8 @@ export const LINE_PREFIX = '[Tsumi]'
 
 /** Minimum change of position (seconds) worth a new write of the same episode. */
 export const MIN_POSITION_CHANGE = 5
+/** Positions before this (seconds) are not written: opening an episode must not erase the position of another device. */
+export const MIN_WRITE_TIME = 30
 /** A remote position must differ by more than this (seconds) from the local one to be offered. */
 export const OFFER_MIN_DIFFERENCE = 15
 /** ... and be newer than the local one by more than this (ms), clocks of two devices are never exact. */

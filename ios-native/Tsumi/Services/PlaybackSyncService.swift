@@ -548,7 +548,7 @@ final class PlaybackSyncSession {
 
   private func writeNote(_ item: Item) async {
     item.pauseTask?.cancel()
-    guard !item.finished, item.time > 0, service.noteService(item.media) != nil else { return }
+    guard !item.finished, item.time >= PlaybackPositionNote.minWriteTime, service.noteService(item.media) != nil else { return }
     let position = NotePosition(episode: item.episode.number, time: item.time, duration: item.duration > 0 ? item.duration : nil, device: PlaybackSyncService.deviceName, at: Date())
     guard PlaybackPositionNote.needsWrite(last: item.written, next: position) else { return }
     item.written = position

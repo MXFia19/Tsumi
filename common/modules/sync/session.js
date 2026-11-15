@@ -3,7 +3,7 @@ import { settings } from '@/modules/settings.js'
 import { IPC } from '@/modules/bridge.js'
 import { isValidNumber } from '@/modules/util.js'
 import { getAnimeProgress } from '@/modules/anime/animeprogress.js'
-import { formatClock, shouldOffer, needsWrite, PERIODIC_WRITE_MS, PAUSE_WRITE_DELAY_MS } from '@/modules/sync/position.js'
+import { formatClock, shouldOffer, needsWrite, MIN_WRITE_TIME, PERIODIC_WRITE_MS, PAUSE_WRITE_DELAY_MS } from '@/modules/sync/position.js'
 import { DEVICE_NAME, noteService, fetchNotePosition, saveNotePosition } from '@/modules/sync/remote.js'
 import { traktConnected, traktTarget, getTraktPlayback, matchesTarget, scrobble } from '@/modules/sync/trakt.js'
 import Debug from 'debug'
@@ -250,7 +250,7 @@ class PlaybackSync {
    */
   writeNote (item) {
     clearTimeout(item.pauseTimer)
-    if (item.finished || !(item.time > 0) || !noteService(item.media)) return Promise.resolve()
+    if (item.finished || !(item.time >= MIN_WRITE_TIME) || !noteService(item.media)) return Promise.resolve()
     const position = { episode: item.episode, time: item.time, duration: item.duration || undefined, device: DEVICE_NAME, at: Date.now() }
     if (!needsWrite(item.written, position)) return Promise.resolve()
     item.written = position
