@@ -457,8 +457,10 @@ struct BrowseFullCard: View {
   private var description: some View {
     let text = BrowseText.plain(media.description)
     if !text.isEmpty {
-      Text(text)
+      let hidden = SpoilerProtection.hidesMedia(.synopsis, entry: BrowseMediaInfo.entry(media))
+      Text(hidden ? SpoilerProtection.hiddenText : text)
         .font(.caption2)
+        .italic(hidden)
         .foregroundStyle(BrowsePalette.muted)
         .lineLimit(4)
         .multilineTextAlignment(.leading)
@@ -487,9 +489,13 @@ struct BrowseMediaChips: View {
 
   var body: some View {
     let entry = media.listEntry
+    // Spoiler protection (Core/SpoilerProtection.swift): length, rating and review count.
+    let spoilerEntry = BrowseMediaInfo.entry(media)
+    let hideRating = SpoilerProtection.hidesMedia(.rating, entry: spoilerEntry)
+    let hideReviews = SpoilerProtection.hidesMedia(.reviews, entry: spoilerEntry)
     BrowseFlowLayout(spacing: 4, lineSpacing: 4) {
       BrowseChip(text: BrowseMediaInfo.formatText(media), font: font)
-      if let episodes = BrowseMediaInfo.episodesText(media, entry: entry) {
+      if let episodes = BrowseMediaInfo.episodesText(media, entry: entry, showDuration: !SpoilerProtection.hidesMedia(.duration, entry: spoilerEntry)) {
         BrowseChip(text: episodes, font: font)
       }
       if media.isAdult {
@@ -501,9 +507,9 @@ struct BrowseMediaChips: View {
       if media.status == .notYetReleased && media.season == nil && media.seasonYear == nil {
         BrowseChip(text: "Not Released", font: font)
       }
-      if let score = media.averageScore {
+      if let score = media.averageScore, !hideRating {
         BrowseChip(text: "\(score)% Rating", font: font)
-        if showReviews {
+        if showReviews && !hideReviews {
           let reviews = Services.shared.details.reviews(media)
           if reviews != "?" {
             BrowseChip(text: "\(reviews) Reviews", font: font)
@@ -539,8 +545,10 @@ struct BrowsePreviewCard: View {
           BrowseChip(text: BrowseText.capitalizedWords(typeLabel))
         }
         BrowseMediaChips(media: media, showReviews: typeLabel == nil, font: .caption.weight(.semibold))
-        Text(BrowseText.plain(media.description))
+        let hideSynopsis = SpoilerProtection.hidesMedia(.synopsis, entry: BrowseMediaInfo.entry(media))
+        Text(SpoilerProtection.text(BrowseText.plain(media.description), hidden: hideSynopsis) ?? "")
           .font(.footnote)
+          .italic(hideSynopsis)
           .foregroundStyle(BrowsePalette.muted)
           .lineLimit(6)
       }

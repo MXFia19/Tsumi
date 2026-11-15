@@ -7,6 +7,8 @@
   import { anilistClient, seasons } from '@/modules/anilist.js'
   import { mediaCache } from '@/modules/cache.js'
   import { modal } from '@/modules/navigation.js'
+  import { settings } from '@/modules/settings.js'
+  import { hidesMedia, SPOILER_TEXT } from '@/modules/spoilers.js'
 
   /** @type {import('@/modules/al.d.ts').Media} */
   export let data
@@ -17,6 +19,11 @@
   $: if (data && !media) media = mediaCache.value[data?.id]
   mediaCache.subscribe((value) => { if (value && (JSON.stringify(value[media?.id]) !== JSON.stringify(media))) media = value[media?.id] })
   $: maxEp = getMediaMaxEp(media)
+  // Spoiler protection (modules/spoilers.js).
+  $: hideDuration = hidesMedia('duration', media, $settings)
+  $: hideRating = hidesMedia('rating', media, $settings)
+  $: hideReviews = hidesMedia('reviews', media, $settings)
+  $: hideSynopsis = hidesMedia('synopsis', media, $settings)
 
   function viewMedia () {
     if (_variables?.fileEdit) _variables.fileEdit(media)
@@ -61,7 +68,7 @@
               <span class='badge pl-5 pr-5'>
                 {['CURRENT', 'REPEATING', 'PAUSED', 'DROPPED'].includes(media.mediaListEntry?.status) && media.mediaListEntry?.progress ? media.mediaListEntry.progress + ' / ' : ''}{maxEp && maxEp !== 0 && !(media.mediaListEntry?.progress > maxEp) ? maxEp : '?'} Episodes
               </span>
-            {:else if media.duration}
+            {:else if media.duration && !hideDuration}
               <span class='badge pl-5 pr-5'>
                 {media.duration + ' Minutes'}
               </span>
@@ -86,9 +93,9 @@
                 </span>
               {/if}
             {/await}
-            {#if media.averageScore}
+            {#if media.averageScore && !hideRating}
               <span class='badge pl-5 pr-5'>{media.averageScore + '%'} Rating</span>
-              {#if media.stats?.scoreDistribution}
+              {#if media.stats?.scoreDistribution && !hideReviews}
                 <span class='badge pl-5 pr-5'>{anilistClient.reviews(media)} Reviews</span>
               {/if}
             {/if}
@@ -103,8 +110,8 @@
           {/if}
         </div>
         {#if media.description}
-          <div class='overflow-y-auto ml-15 pr-15 pb-5 bg-very-dark card-desc pre-wrap'>
-            {media.description.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()}
+          <div class='overflow-y-auto ml-15 pr-15 pb-5 bg-very-dark card-desc pre-wrap' class:text-spoiler={hideSynopsis}>
+            {hideSynopsis ? SPOILER_TEXT : media.description.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()}
           </div>
         {/if}
         {#if media.genres.length}

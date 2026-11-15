@@ -83,8 +83,9 @@ enum BrowseMediaInfo {
     return nil
   }
 
-  /// FullCard / PreviewCard episode badge ("3 / 12 Episodes", "12 Episodes", "24 Minutes").
-  static func episodesText(_ media: Media, entry: ListEntry?) -> String? {
+  /// FullCard / PreviewCard episode badge ("3 / 12 Episodes", "12 Episodes", "24 Minutes"; no length when `showDuration`
+  /// is false: Hermit spoiler protection).
+  static func episodesText(_ media: Media, entry: ListEntry?, showDuration: Bool = true) -> String? {
     let maxEpisode = AnimeHelpers.maxEpisode(media)
     let progress = entry?.progress ?? 0
     let inProgress = entry.map { watchingStatuses.contains($0.status) } == true && progress > 0
@@ -93,19 +94,19 @@ enum BrowseMediaInfo {
       let total = (maxEpisode != 0 && !(progress > maxEpisode)) ? String(maxEpisode) : "?"
       return "\(prefix)\(total) Episodes"
     }
-    if let duration = media.duration { return "\(duration) Minutes" }
+    if showDuration, let duration = media.duration { return "\(duration) Minutes" }
     return nil
   }
 
   /// FullBanner episode label ("3 / 12 Episodes" while watching).
-  static func bannerEpisodesText(_ media: Media, entry: ListEntry?) -> String? {
+  static func bannerEpisodesText(_ media: Media, entry: ListEntry?, showDuration: Bool = true) -> String? {
     if let episodes = media.episodes, episodes != 1 {
       if let entry, entry.status == .current, entry.progress > 0 {
         return "\(entry.progress) / \(episodes) Episodes"
       }
       return "\(episodes) Episodes"
     }
-    if let duration = media.duration { return "\(duration) Minutes" }
+    if showDuration, let duration = media.duration { return "\(duration) Minutes" }
     return nil
   }
 

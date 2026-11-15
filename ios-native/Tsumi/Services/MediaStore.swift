@@ -87,6 +87,10 @@ struct MediaExtras: Codable, Hashable {
   var source: String?
   var trailerSite: String?
   var tagRanks: [String: Int] = [:]
+  /// AniList tags marked as spoilers (isGeneralSpoiler / isMediaSpoiler), for spoiler protection. Optional so the
+  /// stored extras of older versions still decode.
+  var generalSpoilerTags: [String]? = nil
+  var mediaSpoilerTags: [String]? = nil
   // TMDB only
   var originalLanguage: String?
   var originCountries: [String] = []

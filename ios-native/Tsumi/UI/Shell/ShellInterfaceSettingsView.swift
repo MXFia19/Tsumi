@@ -11,6 +11,7 @@ struct ShellInterfaceSettingsView: View {
   var body: some View {
     Form {
       ShellInterfaceOptionsSection()
+      ShellSpoilerSettingsSection()
       ShellNotificationSettingsSection()
       ShellHomeScreenSettingsSection()
     }

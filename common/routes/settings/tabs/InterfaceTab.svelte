@@ -2,6 +2,7 @@
   import { variables, setScale } from '@/modules/themes.js'
   import { click } from '@/modules/click.js'
   import HomeSections from '@/routes/settings/components/HomeSections.svelte'
+  import SpoilerSettings from '@/routes/settings/components/SpoilerSettings.svelte'
   import { IPC } from '@/modules/bridge.js'
   import SettingCard from '@/routes/settings/components/SettingCard.svelte'
   import { SUPPORTS } from '@/modules/support.js'
@@ -154,6 +155,7 @@
     </div>
   </SettingCard>
 {/if}
+<SpoilerSettings bind:settings />
 {#if SUPPORTS.angle}
   <h4 class='mb-10 font-weight-bold'>Rendering Settings</h4>
   <SettingCard title='ANGLE Backend' description="What ANGLE backend to use for rendering. DON'T CHANGE WITHOUT REASON! On some Windows machines D3D9 might help with flicker. Changing this setting to something your device doesn't support might prevent Tsumi from opening which will require a full reinstall. While Vulkan is an available option it might not be fully supported on Linux.">

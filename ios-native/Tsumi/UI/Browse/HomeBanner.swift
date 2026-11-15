@@ -209,14 +209,17 @@ struct BrowseBannerInfo: View {
   let media: Media
 
   var body: some View {
+    // Spoiler protection (Core/SpoilerProtection.swift): synopsis.
+    let hideSynopsis = SpoilerProtection.hidesMedia(.synopsis, entry: BrowseMediaInfo.entry(media))
     VStack(alignment: .leading, spacing: 10) {
       titleView
       Text(detailsLine)
         .font(.subheadline.weight(.medium))
         .foregroundStyle(.white)
         .lineLimit(1)
-      Text(BrowseText.plain(media.description))
+      Text(SpoilerProtection.text(BrowseText.plain(media.description), hidden: hideSynopsis) ?? "")
         .font(.subheadline)
+        .italic(hideSynopsis)
         .foregroundStyle(BrowsePalette.muted)
         .lineLimit(3)
       if !media.genres.isEmpty {
@@ -251,7 +254,8 @@ struct BrowseBannerInfo: View {
   private var detailsLine: String {
     var parts: [String] = []
     if media.format != .unknown { parts.append(BrowseMediaInfo.formatText(media)) }
-    if let episodes = BrowseMediaInfo.bannerEpisodesText(media, entry: media.listEntry) { parts.append(episodes) }
+    let showDuration = !SpoilerProtection.hidesMedia(.duration, entry: BrowseMediaInfo.entry(media))
+    if let episodes = BrowseMediaInfo.bannerEpisodesText(media, entry: media.listEntry, showDuration: showDuration) { parts.append(episodes) }
     if ServiceSettingsExtras.cardAudio && media.source == .anilist {
       if Services.shared.dubs.isFullyDubbed(malId: media.malId) {
         parts.append("Dub | Sub")

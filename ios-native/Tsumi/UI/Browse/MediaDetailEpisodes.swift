@@ -20,6 +20,7 @@ struct BrowseDetailEpisodes: View {
     let zeroOffset = model.hasZeroEpisode ? 1 : 0
     let showDub = ServiceSettingsExtras.cardAudio
     let now = Date()
+    let spoilerValues = AppSettings.shared.values
     VStack(alignment: .leading, spacing: 18) {
       if !model.episodesLoaded {
         header(count: nil)
@@ -36,15 +37,18 @@ struct BrowseDetailEpisodes: View {
         // Only the rows are lazy (long series), the rest of the details is a plain stack.
         LazyVStack(alignment: .leading, spacing: 18) {
           ForEach(model.displayedEpisodes(now: now)) { episode in
+            // Spoiler protection (Core/SpoilerProtection.swift), counted like the list progress.
+            let spoilers = EpisodeSpoilers(entry: entry, episode: episode.number + zeroOffset, values: spoilerValues)
             BrowseEpisodeRow(
               media: media,
               episode: episode,
-              title: displayTitle(episode, media: media),
+              title: spoilers.title ? "Episode \(episode.number)" : displayTitle(episode, media: media),
               completed: !watched && userProgress >= episode.number + zeroOffset,
               target: userProgress + 1 == episode.number + zeroOffset,
               percent: watched ? 0 : (percents[episode.number] ?? 0),
               now: now,
-              dub: showDub ? model.dubAirings[episode.number] : nil
+              dub: showDub ? model.dubAirings[episode.number] : nil,
+              spoilers: spoilers
             )
             .padding(.horizontal, 16)
           }
@@ -129,6 +133,8 @@ struct BrowseEpisodeRow: View {
   let now: Date
   /// Dub airing of the episode (dubbedEpisode, Card Audio setting): "Dub: ..." and "Sub: ..." labels.
   var dub: DubEpisodeAiring? = nil
+  /// Spoiler protection: blurred thumbnail, no duration, description placeholder (the title is replaced by the list).
+  var spoilers: EpisodeSpoilers = .none
 
   private var unreleased: Bool {
     guard media.status != .finished else { return false }
@@ -212,6 +218,10 @@ struct BrowseEpisodeRow: View {
     if let image = episode.thumbnail {
       BrowseImage([image], placeholder: BrowsePalette.skeleton)
         .frame(width: 150, height: 84)
+        // .img-spoiler: blur(1rem) brightness(.65) saturate(.4).
+        .blur(radius: spoilers.image ? 12 : 0, opaque: true)
+        .brightness(spoilers.image ? -0.2 : 0)
+        .saturation(spoilers.image ? 0.4 : 1)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .overlay(alignment: .bottomTrailing) {
           if let markText {
@@ -234,7 +244,7 @@ struct BrowseEpisodeRow: View {
         .foregroundStyle(.white)
         .lineLimit(2)
       Spacer(minLength: 0)
-      if let length = episode.durationMinutes {
+      if let length = episode.durationMinutes, !spoilers.duration {
         Text("\(length)m")
           .font(.caption)
           .foregroundStyle(BrowsePalette.muted)
@@ -261,7 +271,13 @@ struct BrowseEpisodeRow: View {
   @ViewBuilder
   private var summaryView: some View {
     let summary = BrowseText.episodeSummary(episode.summary)
-    if !summary.isEmpty {
+    if !summary.isEmpty && spoilers.description && !unreleased {
+      Text(SpoilerProtection.hiddenText)
+        .font(.caption)
+        .italic()
+        .foregroundStyle(BrowsePalette.muted)
+        .lineLimit(1)
+    } else if !summary.isEmpty {
       Text(summary)
         .font(.caption)
         .fontWeight(unreleased ? .bold : .regular)

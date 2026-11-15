@@ -29,6 +29,7 @@
   import { Clapperboard, Users, Heart, Play, Timer, TrendingUp, Tv, Hash, ArrowDown01, ArrowUp10, ListPlus } from 'lucide-svelte'
   import { toast } from 'svelte-sonner'
   import { state as w2gState, queueEpisode, queueResultText } from '@/routes/w2g/components/session.js'
+  import { hidesMedia, hidesTag, SPOILER_TEXT } from '@/modules/spoilers.js'
   $: view = $modal[modal.ANIME_DETAILS]?.data
 
   /** Watch Together "Add to Watch Together queue": the episode "Watch Now" would play. */
@@ -57,6 +58,12 @@
     if (value && JSON.stringify(value[media?.id]) !== JSON.stringify(media)) { media = value[media?.id] }
   })
   $: episodeOrder = !!staticMedia
+  // Spoiler protection (modules/spoilers.js), from the live list entry.
+  $: hideDuration = hidesMedia('duration', media, $settings)
+  $: hideRating = hidesMedia('rating', media, $settings)
+  $: hideReviews = hidesMedia('reviews', media, $settings)
+  $: hideSynopsis = hidesMedia('synopsis', media, $settings)
+  $: shownTags = (staticMedia?.tags || []).filter(tag => !hidesTag(tag, media, $settings))
   $: watched = media?.mediaListEntry?.status === 'COMPLETED'
   $: userProgress =
     ['CURRENT', 'REPEATING', 'PAUSED', 'DROPPED'].includes(
@@ -433,11 +440,10 @@
                   {anilistClient.title(staticMedia)}
                 </h1>
                 <div class='d-flex flex-row font-size-18 flex-wrap mt-5'>
-                  {#if staticMedia.averageScore}
+                  {#if staticMedia.averageScore && !hideRating}
                     <div
                       class='d-flex flex-row mt-10'
-                      title='{staticMedia.averageScore /
-                        10} by {anilistClient.reviews(staticMedia)} reviews'
+                      title={hideReviews ? undefined : `${staticMedia.averageScore / 10} by ${anilistClient.reviews(staticMedia)} reviews`}
                     >
                       <TrendingUp class='mx-10' size='2.2rem' />
                       <span class='mr-20'>
@@ -461,7 +467,7 @@
                         Episodes: {maxEp && maxEp !== 0 ? maxEp : '?'}
                       </span>
                     </div>
-                  {:else if staticMedia.duration}
+                  {:else if staticMedia.duration && !hideDuration}
                     <div class='d-flex flex-row mt-10'>
                       <Timer class='mx-10' size='2.2rem' />
                       <span class='mr-20'>
@@ -469,13 +475,12 @@
                       </span>
                     </div>
                   {/if}
-                  {#if staticMedia.averageScore && staticMedia.stats?.scoreDistribution}
+                  {#if staticMedia.averageScore && staticMedia.stats?.scoreDistribution && !hideReviews}
                     <div class='d-flex flex-row mt-10'>
                       <Users class='mx-10' size='2.2rem' />
                       <span
                         class='mr-20'
-                        title='{staticMedia.averageScore /
-                          10} by {anilistClient.reviews(staticMedia)} reviews'
+                        title={hideRating ? undefined : `${staticMedia.averageScore / 10} by ${anilistClient.reviews(staticMedia)} reviews`}
                       >
                         Reviews: {anilistClient.reviews(staticMedia)}
                       </span>
@@ -624,7 +629,7 @@
               bind:this={scrollTags}
               class='m-0 px-sm-30 px-md-80 pb-0 pt-10 d-flex flex-row text-nowrap overflow-x-scroll text-capitalize align-items-start'
             >
-              {#each staticMedia.tags as tag}
+              {#each shownTags as tag}
                 <div
                   class='bg-dark-light px-20 py-10 mr-10 rounded text-nowrap d-flex align-items-center'
                 >
@@ -666,7 +671,11 @@
                 <hr class='w-full' />
               </div>
               <div class='font-size-16 pt-20 select-all'>
-                {@html sanitize(staticMedia.description)}
+                {#if hideSynopsis}
+                  <span class='text-spoiler'>{SPOILER_TEXT}</span>
+                {:else}
+                  {@html sanitize(staticMedia.description)}
+                {/if}
               </div>
             {/if}
             {#if episodeList?.length}

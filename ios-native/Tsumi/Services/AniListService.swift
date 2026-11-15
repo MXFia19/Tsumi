@@ -159,7 +159,7 @@ final class AniListService: @unchecked Sendable {
   static let baseMediaFields = """
   id, idMal, title { romaji, english, native, userPreferred }, description(asHtml: false), \
   endDate { year, month, day }, startDate { year, month, day }, season, seasonYear, format, status, episodes, \
-  duration, averageScore, genres, tags { name, rank }, isFavourite, coverImage { extraLarge, medium, color }, \
+  duration, averageScore, genres, tags { name, rank, isGeneralSpoiler, isMediaSpoiler }, isFavourite, coverImage { extraLarge, medium, color }, \
   source, countryOfOrigin, isAdult, bannerImage, synonyms, popularity, stats { scoreDistribution { score, amount } }, \
   nextAiringEpisode { timeUntilAiring, episode }, trailer { id, site }, streamingEpisodes { title, thumbnail }, \
   mediaListEntry { id, progress, repeat, status, notes, customLists(asArray: true), score(format: POINT_10), updatedAt, \
@@ -1061,6 +1061,9 @@ enum AniListParser {
     for tag in tags {
       if let name = tag.string("name"), let rank = tag.int("rank") { extras.tagRanks[name] = rank }
     }
+    // Spoiler protection (Core/SpoilerProtection.swift).
+    extras.generalSpoilerTags = tags.filter { $0.bool("isGeneralSpoiler") == true }.compactMap { $0.string("name") }
+    extras.mediaSpoilerTags = tags.filter { $0.bool("isMediaSpoiler") == true }.compactMap { $0.string("name") }
     let distribution = dict.dict("stats")?.array("scoreDistribution") ?? []
     if !distribution.isEmpty {
       extras.reviewCount = distribution.reduce(0) { $0 + ($1.int("amount") ?? 0) }

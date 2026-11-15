@@ -186,6 +186,7 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | 7.10 | Prefer Dubs (long description) | IT 91-96 | toggle → `preferDubs` | done |
 | 7.11 | Adult Content (None / Adult / Hentai) | IT 97-103 | picker → `adult` | done |
 | 7.12 | Hentai Banner (only with Hentai) | IT 104-111 | toggle → `hentaiBanner` | done |
+| 7.12a | Spoiler Protection (Off / Minimal / Moderate / Strict / Hermit) and its list statuses (shown when not Off) | `routes/settings/components/SpoilerSettings.svelte` (in IT after Hentai Banner) | `ShellSpoilerSettingsSection` + `ShellSpoilerStatusEditor` → `spoilers`, `spoilerStatus` (rules in `PARITY/spoilers.md`) | done |
 | 7.13 | ANGLE Backend | IT 112-128 | — | n.a. (desktop rendering) |
 | 7.14 | System Notifications | IT 130-135 | toggle → `systemNotify`; turning it on asks the iOS permission (`requestAuthorization`) | done |
 | 7.15 | AniList Notifications (All / Limited / None, AniList only) | IT 136-144 | picker → `aniNotify`, shown when `ProfilesService.isAniList` | done |

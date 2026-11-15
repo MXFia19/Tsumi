@@ -23,6 +23,7 @@
   import { mediaCache } from '@/modules/cache.js'
   import { checkForZero } from '@/components/MediaHandler.svelte'
   import { modal } from '@/modules/navigation.js'
+  import { hidesEpisode, hidesEpisodeThumbnail, SPOILER_TEXT } from '@/modules/spoilers.js'
   export let data
   export let section = false
 
@@ -41,7 +42,10 @@
   $: checkForZero(media).then(_zeroEpisode => zeroEpisode = _zeroEpisode)
   $: episodeRange = episodesList.handleArray(data?.episode, data?.parseObject?.file_name)
   $: lastEpisode = (data?.episodeRange || data?.parseObject?.episodeRange)?.last || episodeRange?.last || (isValidNumber(data?.episode) && (data?.episode + (zeroEpisode ? 1 : 0))) || (media?.episodes === 1 && media?.episodes)
-  $: episodeThumbnail = ((data.similarity || (!media?.mediaListEntry?.status || !(['CURRENT', 'REPEATING', 'PAUSED', 'PLANNING'].includes(media.mediaListEntry.status) && media.mediaListEntry.progress < lastEpisode))) && data.episodeData?.image) || media?.bannerImage || media?.coverImage.extraLarge || ' '
+  $: episodeThumbnail = ((data.similarity || !hidesEpisodeThumbnail(media, lastEpisode, $settings)) && data.episodeData?.image) || media?.bannerImage || media?.coverImage.extraLarge || ' '
+  // Spoiler protection (modules/spoilers.js): episode title and duration after the list progress.
+  $: hideTitle = !data.similarity && hidesEpisode('episodeTitle', media, lastEpisode, $settings)
+  $: hideDuration = !data.similarity && hidesEpisode('duration', media, lastEpisode, $settings)
   $: watched = media?.mediaListEntry?.status === 'COMPLETED'
   $: completed = !watched && media?.mediaListEntry?.progress >= lastEpisode
   $: progress = liveAnimeEpisodeProgress(media?.id, data?.episode, completed)
@@ -147,7 +151,7 @@
       {/if}
       <Play class='mb-5 ml-5 pl-10 pb-10 z-10' fill='currentColor' size='3rem' />
       <div class='pr-15 pb-10 font-size-16 font-weight-medium z-10'>
-        {#if media?.duration}
+        {#if media?.duration && !hideDuration}
           {#if (data.episodeRange || data.parseObject?.episodeRange)}
             {media.duration * (((data.episodeRange || data.parseObject?.episodeRange).last - (data.episodeRange || data.parseObject?.episodeRange).first) + 1)}m
           {:else if episodeRange && isValidNumber(episodeRange.first) && isValidNumber(episodeRange.last)}
@@ -175,8 +179,10 @@
           {/if}
           {anilistClient.title(media) || data.parseObject?.anime_title}
         </div>
-        <div class='text-muted font-size-12 title overflow-hidden'>
-          {#if data.episodeData?.title?.en || data.episodeData?.title?.['x-jat'] || data.episodeData?.title?.ja || data.episodeData?.title?.jp}
+        <div class='text-muted font-size-12 title overflow-hidden' class:text-spoiler={hideTitle}>
+          {#if hideTitle}
+            {SPOILER_TEXT}
+          {:else if data.episodeData?.title?.en || data.episodeData?.title?.['x-jat'] || data.episodeData?.title?.ja || data.episodeData?.title?.jp}
             {data.episodeData?.title?.en || data.episodeData?.title?.['x-jat'] || data.episodeData?.title?.ja || data.episodeData?.title?.jp}
           {:else if data.episode}
             {@const episode = (data.episodeRange || data.parseObject?.episodeRange)?.first || episodeRange?.first || data.episode}

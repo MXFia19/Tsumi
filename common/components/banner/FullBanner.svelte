@@ -13,6 +13,7 @@
   import Helper from '@/modules/helper.js'
   import { Play, Heart } from 'lucide-svelte'
   import { modal } from '@/modules/navigation.js'
+  import { hidesMedia, SPOILER_TEXT } from '@/modules/spoilers.js'
   export let mediaList
 
   let currentStatic = mediaList[0]
@@ -50,6 +51,10 @@
       currentStatic = current
     }
   })
+
+  // Spoiler protection (modules/spoilers.js).
+  $: hideDuration = hidesMedia('duration', currentStatic, $settings)
+  $: hideSynopsis = hidesMedia('synopsis', currentStatic, $settings)
 
   function toggleFavourite () {
     current.isFavourite = anilistClient.favourite({ id: current.id })
@@ -132,7 +137,7 @@
             {currentStatic.episodes} Episodes
           {/if}
         </span>
-      {:else if currentStatic.duration}
+      {:else if currentStatic.duration && !hideDuration}
         <span class='text-nowrap d-flex align-items-center'>
           {currentStatic.duration + ' Minutes'}
         </span>
@@ -156,11 +161,16 @@
     <div class='h-100'>
       <div
         class='text-muted line-4 overflow-hidden w-600 mw-full default-cursor'
+        class:text-spoiler={hideSynopsis && currentStatic.description}
       >
-        {currentStatic.description
-          ?.replace(/<[^>]*>/g, '')
-          .replace(/\s+/g, ' ')
-          .trim() || ''}
+        {#if hideSynopsis && currentStatic.description}
+          {SPOILER_TEXT}
+        {:else}
+          {currentStatic.description
+            ?.replace(/<[^>]*>/g, '')
+            .replace(/\s+/g, ' ')
+            .trim() || ''}
+        {/if}
       </div>
     </div>
     <div

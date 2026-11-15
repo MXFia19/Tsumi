@@ -62,7 +62,9 @@ averageScore,
 genres,
 tags {
   name,
-  rank
+  rank,
+  isGeneralSpoiler,
+  isMediaSpoiler
 },
 isFavourite,
 coverImage {
