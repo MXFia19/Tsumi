@@ -61,8 +61,10 @@ from an encrypted release asset. Without it:
   [Discord Developer Portal](https://discord.com/developers/) and copy `discord_partner_sdk.xcframework` to
   `ios-native/Vendor/` and `cdiscord.h` to `ios-native/Vendor/CDiscord/`.
 
-Trakt sync needs your own Trakt API application: set `TRAKT_CLIENT_ID` and `TRAKT_CLIENT_SECRET` in the environment of
-the build (optional, Trakt is unavailable without them).
+Trakt sync needs your own Trakt API application: set its Client ID as `TRAKT_CLIENT_ID` in the environment of the
+build (optional, Trakt is unavailable without it). No client secret is used: both apps sign in with PKCE. Register
+`https://mxfia19.github.io/Tsumi/trakt/` as the redirect URI of the Trakt app: this page (`docs/trakt/`) hands the
+sign-in back to the app through `tsumi://trakt/callback`.
 
 ### Windows app
 
@@ -116,6 +118,11 @@ the Feather source (`docs/source.json`). The download page and the source are se
 - [Shiru](https://github.com/RockinChaos/Shiru) by RockinChaos, which Tsumi is built on
 - [Miru / Hayase](https://hayase.watch/) by ThaUnknown, the project at the origin of Shiru
 - [TheUnknownEngima/Tsumi](https://github.com/TheUnknownEngima/Tsumi), the fork this repository comes from
+
+## Trakt
+
+Trakt sync (scrobbling and resuming across devices) uses the [Trakt API](https://trakt.tv).
+Tsumi uses Trakt but is not endorsed or certified by Trakt.
 
 ## License
 
