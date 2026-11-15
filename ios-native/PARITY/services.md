@@ -89,7 +89,8 @@ settings, migrated once from the old UserDefaults keys) and `ServiceSettingsExtr
 | 1.30 | `title` (userPreferred when logged into AniList, else titleLang) | AL 853-859 | `AniListService.title(_:)` | done |
 | 1.31 | `reviews` (score distribution total or "?") | AL 862-865 | `AniListService.reviews(_:)` | done |
 | 1.32 | `requestMediaID` / `processQueuedMediaIDs` (1.5 s debounced batch, dedup promises) | AL 868-918 | `AniListService.requestMedia(id:)` + `AniListMediaBatcher` | done |
-| 1.33 | `fallbackSearch` (offline filtering / sorting / paging of mediaCache) | AL 926-1017 | `AniListService.fallbackSearch` + `AniListParser.fallbackOrder` | done |
+| 1.33 | `fallbackSearch` (offline filtering / sorting / paging of mediaCache; text queries matched by the relevance scorer, SEARCH_MATCH sorted by it) | AL 926-1017 | `AniListService.fallbackSearch` + `AniListParser.fallbackOrder` + `SearchRelevance.scoreMedia` | done |
+| 1.35 | Session expiry: AniList 401 / "Invalid token" or a passed JWT `exp` marks the profile `reauth`; the dead token is no longer sent (queries retried / sent without it, mutations answer "session expired"), its errors are not toasted; one persistent prompt per session ("Your AniList session has expired": Log in again / Log out), "expires soon" warning 7 days before a known `exp`; startup check of the current profile and synced profiles; notifications skipped while expired | `auth/token.js`, `auth/expiry.js`, AL `alRequest` / `handleRequest` | `SessionToken` / `SessionExpiryCenter` (Services/SessionExpiry.swift), `AniListService.request`, `ShellSessionExpiryPrompts` (UI/Shell/ShellSessionExpiry.swift) | done (prompt: toast with action + cancel on PC, card above the toasts on iOS) |
 | 1.34 | Graveyard methods (searchName, alSearch, searchAiringSchedule, customList, searchIDStatus) | AL 1019-1106 | — | n.a. (dead code in the Svelte app) |
 
 ## 2. MyAnimeList client (MAL, SET)
@@ -109,7 +110,7 @@ settings, migrated once from the old UserDefaults keys) and `ServiceSettingsExtr
 | 2.11 | `entry` (PUT my_list_status, date swap when start > finish, is_rewatching, refetch lists) | MAL 264-308 | `MyAnimeListService.saveEntry` + `MediaListService.scheduleMALRefresh` | done |
 | 2.12 | `delete` (DELETE my_list_status, refetch lists) | MAL 310-322 | `MyAnimeListService.deleteEntry` | done (an empty 200 body now counts as success; the Svelte app treated it as a failure and kept the cached entry) |
 | 2.13 | `handleMalToken`: PKCE code exchange (plain challenge) + viewer + 14 day refresh_in | SET 137-169 | `MyAnimeListService.exchangeCode` + `ProfilesService.handleMALCode` | done |
-| 2.14 | `refreshMalToken` (refresh_token grant, reauth flag, toast for the current profile, updates current or other profile) | SET 171-222 | `MyAnimeListService.performRefresh` + `AccountStore.replaceProfile / markReauth` | done |
+| 2.14 | `refreshMalToken` (refresh_token grant, reauth flag, session expired prompt (Log in again / Log out) for the current or another profile once per session, updates current or other profile) | SET 171-222 | `MyAnimeListService.performRefresh` + `AccountStore.replaceProfile / markReauth` + `SessionExpiryCenter.prompt` | done |
 
 ## 3. Accounts, login and profiles (SET, PRO, PROT)
 
@@ -131,7 +132,7 @@ settings, migrated once from the old UserDefaults keys) and `ServiceSettingsExtr
 | 3.14 | Current profile, other profiles, AniList / MAL badge | PRO 87-104 | `ProfilesService.current / others`, `AccountProfile.isAniList` | done (UI by the screens step) |
 | 3.15 | Switch / drop (logout) another profile | PRO 31-39 | `ProfilesService.switchTo`, `drop` | done |
 | 3.16 | Sync list entries switch | PRO 41-45 | `ProfilesService.toggleSync`, `isSynced` | done |
-| 3.17 | "Authenticate" for profiles needing reauth | PRO 99-103, 133-139 | `AccountProfile.reauth`, `ProfilesService.reauthenticate()` | done |
+| 3.17 | "Log In Again" for profiles needing reauth (AniList or MyAnimeList login of that profile; the new token replaces the profile's), AniList `expires_in` saved at login | PRO 99-103, 133-139, SET handleToken | `AccountProfile.reauth / expiresAt`, `ProfilesService.reauthenticate(_:)` | done |
 | 3.18 | At most 5 other profiles ("Add Profile") | PRO 106 | `ProfilesService.canAddProfile`, `maxOtherProfiles` | done |
 | 3.19 | Sign Out | PRO 140-146 | `ProfilesService.logout()` | done |
 | 3.20 | `IPC 'open' / 'open-auth'` auth windows | PRO 48, 56 | WKWebView sheet (UI/Shell/ProfilesView.swift `ShellWebLoginSheet`) with the default persistent `WKWebsiteDataStore`, so the next login is remembered (the Electron window used a cleared partition, the Android build the system browser) | done |
@@ -252,6 +253,7 @@ settings, migrated once from the old UserDefaults keys) and `ServiceSettingsExtr
 | 8.2 | `hasNextPage` store | SEC 13 | `MediaPage.hasNextPage`, `HomeSectionPage.hasNextPage` | done |
 | 8.3 | `SectionsManager` (add / clear / sections) | SEC 29-48 | `HomeSectionsService.sections`, `HomeSection` | done |
 | 8.4 | `createFallbackLoad`: dubs only (idMal of dubbed), hide / show my anime (AniList ids or idMal, MAL idMal_not), anime only, western only (TMDB text or discover without anime), both (AniList 20 + TMDB interleaved, relevance / sort / weighted popularity), TMDB images | SEC 50-151 | `HomeSectionsService.searchMedia(_:page:perPage:)` (+ `search(_ request:)` for the Search page) | done (MAL "show my anime" uses idMal; the Svelte code put MAL ids in `id`) |
+| 8.4b | Relevance search (Search page text query, no explicit sort): sources fetched with AniList SEARCH_MATCH (+ TMDB text search), first pages merged with up to 20 local fuzzy matches (media cache / store filtered like the AniList query, cached TMDB media) and ranked by title relevance then popularity, later pages ranked and appended without duplicates; same scorer rules (`search/relevance.js`, node tests) | `search/relevance.js`, `search/relevancesearch.js`, SEC `createFallbackLoad` | `SearchRelevance` / `SearchRelevancePager` (Services/SearchRelevance.swift), `HomeSectionsService.searchMedia` | done |
 | 8.5 | `wrapResponse` / `fromPending` | SEC 153-166 | — | n.a. (async pages) |
 | 8.6 | Sections rebuilt (3 s debounce) when homeSections / customSections / westernSections change | SEC 172-191 | `HomeSectionsService.observeSettings` (withObservationTracking, 1 s debounce) | done |
 | 8.7 | `createSection` (sort from settings unless static, formats from settings) | SEC 194-195 | `HomeSectionsService.baseQuery` | done ("N/A" sorts fall back to the section default) |

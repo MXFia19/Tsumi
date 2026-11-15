@@ -192,7 +192,7 @@ Settings that Core `SettingsValues` does not model: `cards` (small / full) is st
 | 6.15 | Season select + year dropdown (next year → 1940) | SB 208-227 | `BrowseFilterSheet.seasonSection` | done |
 | 6.16 | Format include / exclude | SB 228-236 | `formatSection` | done |
 | 6.17 | Status include / exclude | SB 237-245 | `statusSection` | done |
-| 6.18 | Sort (Trending, Popularity, Title, Score, Release Date + user sorts of list sections) | SB 246-276 | `BrowseFilterContext.sortOptions` | done |
+| 6.18 | Sort (Trending, Popularity, Title, Score, Release Date + user sorts of list sections); with a text query on the Search page the default is Relevance and Trending stays selectable | SB 246-276 | `BrowseFilterContext.sortOptions(hasQuery:)` | done |
 | 6.19 | clearTags: user sort without AniList clears and locks genres / tags ("Cannot use with sort") | SB 132-142, 203 | `BrowseFilterSheet.tagsLocked` | done |
 | 6.20 | Advanced search toggle (small screens) | SB 277-287 | filter sheet (`slider.horizontal.3` button with a count badge) | done |
 | 6.21 | Hide My Anime (click) / Show My Anime (right click), 5 statuses, disabled when logged out or for list sections | SB 113-128, 289-298 | icon button + context menu, toggles in the sheet | done |

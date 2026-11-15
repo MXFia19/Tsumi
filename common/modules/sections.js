@@ -8,6 +8,8 @@ import { settings } from '@/modules/settings.js'
 import { debounce } from '@/modules/util.js'
 import Helper from '@/modules/helper.js'
 import WPC from '@/modules/wpc.js'
+import { isRelevanceSort } from '@/modules/search/relevance.js'
+import { relevancePage, relevanceKey } from '@/modules/search/relevancesearch.js'
 
 const lastSearched = cache.getEntry(caches.HISTORY, 'lastSearched')
 export const hasNextPage = writable(true)
@@ -48,7 +50,20 @@ export default class SectionsManager {
   }
 
   static createFallbackLoad (variables, type) {
-    return (page = 1, perPage = 50, search = variables) => {
+    // `recorded` (relevance search): returns the raw page and records the AniList variables / TMDB use.
+    const load = (page = 1, perPage = 50, search = variables, recorded = null) => {
+      if (!recorded && !variables && search?.isSearch && isRelevanceSort(search)) { // Search page (no section) text query, no explicit sort: ranked by relevance.
+        const res = relevancePage({ key: relevanceKey(search, perPage, Helper.getUser()?.id), page, perPage, query: search.search, fetchPage: (sourcePage, sourceRecorded) => load(sourcePage, perPage, { ...search, sort: 'SEARCH_MATCH' }, sourceRecorded) })
+        return SectionsManager.wrapResponse(res.then(data => tmdbClient.injectTmdbImages(data)), perPage, type)
+      }
+      const searchAnime = (anilistVariables) => {
+        if (recorded) recorded.anime = anilistVariables
+        return anilistClient.search(anilistVariables)
+      }
+      const searchWestern = (promise) => {
+        if (recorded) recorded.western = true
+        return promise
+      }
       const res = (search.hideSubs ? malDubs.dubLists.value : Promise.resolve()).then(dubLists => {
         const hideSubs = search.hideSubs ? { idMal: dubLists?.dubbed } : {}
 
@@ -62,17 +77,17 @@ export default class SectionsManager {
             const userAnimeIds = Array.from(new Set(Helper.isAniAuth() ? targetLists.filter(({ status }) => statusFilter.includes(status)).flatMap(list => list.entries.map(({ media }) => hasHideSubs ? media.idMal : media.id)) : targetLists.filter(({ node }) => statusFilter.includes(Helper.statusMap(node.my_list_status.status))).map(({ node }) => node.id))).filter(Boolean)
             if (search.hideMyAnime) animeFilter = userAnimeIds?.length ? (Helper.isAniAuth() ? { [hasHideSubs ? 'idMal_not' : 'id_not']: userAnimeIds.filter(Boolean) } : { idMal_not: userAnimeIds }) : {}
             else if (search.showMyAnime) animeFilter = userAnimeIds?.length ? { id: userAnimeIds.filter(Boolean) } : {}
-            return anilistClient.search({ page, perPage, ...hideSubs, ...animeFilter, ...SectionsManager.sanitiseObject(search) })
+            return searchAnime({ page, perPage, ...hideSubs, ...animeFilter, ...SectionsManager.sanitiseObject(search) })
           })
         }
 
         if (search.western === false) {
-          return anilistClient.search({ page, perPage, ...hideSubs, ...SectionsManager.sanitiseObject(search) })
+          return searchAnime({ page, perPage, ...hideSubs, ...SectionsManager.sanitiseObject(search) })
         }
 
         if (search.western === true) {
           const queryParams = SectionsManager.sanitiseObject(search)
-          const tmdbPromise = search.search ? tmdbClient.textSearch(search.search, page) : tmdbClient.search({ page, perPage, ...queryParams, excludeAnime: true })
+          const tmdbPromise = searchWestern(search.search ? tmdbClient.textSearch(search.search, page) : tmdbClient.search({ page, perPage, ...queryParams, excludeAnime: true }))
 
           return tmdbPromise.then(tmdbRes => {
             const tmdbMedia = tmdbRes?.data?.Page?.media || []
@@ -90,11 +105,11 @@ export default class SectionsManager {
         const isBoth = search.western === null || search.western === undefined
         if (isBoth && search.isSearch) {
           const queryParams = SectionsManager.sanitiseObject(search)
-          if (queryParams.sort) delete queryParams.sort
+          if (queryParams.sort && queryParams.sort !== 'SEARCH_MATCH') delete queryParams.sort
 
           return Promise.all([
-            anilistClient.search({ page, perPage: 20, ...hideSubs, ...queryParams }),
-            search.search ? tmdbClient.textSearch(search.search, page) : tmdbClient.search({ page, perPage: 20, ...queryParams, excludeAnime: true })
+            searchAnime({ page, perPage: 20, ...hideSubs, ...queryParams }),
+            searchWestern(search.search ? tmdbClient.textSearch(search.search, page) : tmdbClient.search({ page, perPage: 20, ...queryParams, excludeAnime: true }))
           ]).then(([anilistRes, tmdbRes]) => {
             const anilistMedia = anilistRes?.data?.Page?.media || []
             const tmdbMedia = tmdbRes?.data?.Page?.media || []
@@ -142,12 +157,13 @@ export default class SectionsManager {
           })
         }
 
-        return anilistClient.search({ page, perPage, ...hideSubs, ...SectionsManager.sanitiseObject(search) })
+        return searchAnime({ page, perPage, ...hideSubs, ...SectionsManager.sanitiseObject(search) })
       }).then(data => {
         return tmdbClient.injectTmdbImages(data)
       })
-      return SectionsManager.wrapResponse(res, perPage, type)
+      return recorded ? res : SectionsManager.wrapResponse(res, perPage, type)
     }
+    return load
   }
 
   static wrapResponse (res, length, type) {

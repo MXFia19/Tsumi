@@ -203,6 +203,8 @@ enum ShellLaunch {
     start()
     // Foreground launches only (not background refresh): reconnects a linked Discord account.
     DiscordPresence.shared.start()
+    // Expired / expiring AniList and MyAnimeList sessions (Services/SessionExpiry.swift).
+    SessionExpiryCenter.shared.scheduleStartupCheck()
   }
 }
 

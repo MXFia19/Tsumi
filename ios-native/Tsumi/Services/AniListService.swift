@@ -339,8 +339,17 @@ final class AniListService: @unchecked Sendable {
     guard ServiceNetworkMonitor.shared.isOnline else { throw ServiceError.offline }
     let body = try JSONSerialization.data(withJSONObject: ["query": query, "variables": variables])
     var headers = ["Content-Type": "application/json", "Accept": "application/json"]
-    if let auth = token ?? AccountStore.shared.anilistToken {
-      headers["Authorization"] = "Bearer " + auth
+    let isMutation = SessionToken.isMutation(query)
+    // An expired session (SessionExpiry.swift) is not sent: public queries work without it, mutations cannot.
+    var sessionExpired = false
+    let auth = token ?? AccountStore.shared.anilistToken
+    if let auth {
+      if SessionToken.isAniListTokenUsable(auth) {
+        headers["Authorization"] = "Bearer " + auth
+      } else {
+        if isMutation { throw ServiceError.api(SessionToken.expiredMessage) }
+        sessionExpired = true
+      }
     }
     var attempt = 0
     while true {
@@ -361,6 +370,14 @@ final class AniListService: @unchecked Sendable {
         continue
       }
       let json = ServiceJSON.object(data)
+      if let auth, headers["Authorization"] != nil, SessionToken.isAniListAuthError(status: response.statusCode, json: json) {
+        // Expired or revoked token: prompt once, stop sending it and answer queries without it (public data).
+        SessionToken.markExpired(token: auth)
+        if isMutation { throw ServiceError.api(SessionToken.expiredMessage) }
+        headers.removeValue(forKey: "Authorization")
+        sessionExpired = true
+        continue
+      }
       if let message = Self.outageMessage(status: response.statusCode, data: data, json: json) {
         // "temporarily disabled": one "AniList Outage" toast + status bar, later errors stay silent.
         outage.report(message, status: response.statusCode)
@@ -376,7 +393,8 @@ final class AniListService: @unchecked Sendable {
         }
         throw HTTPError.status(response.statusCode, Self.endpoint)
       }
-      if !(200..<300).contains(response.statusCode) && response.statusCode != 404 && !outage.isDown {
+      // Errors of a dead session are covered by its prompt.
+      if !(200..<300).contains(response.statusCode) && response.statusCode != 404 && !outage.isDown && !sessionExpired {
         let message = ServiceJSON.errorMessage(json) ?? "HTTP \(response.statusCode)"
         ServiceMessages.send(.error, "Search Failed", "Failed making request to Anilist!\nTry again in a minute.\n" + message)
       }
@@ -829,6 +847,9 @@ final class AniListService: @unchecked Sendable {
   func fallbackSearch(_ variables: AniListVariables) -> MediaPage {
     let store = MediaStore.shared
     var media = store.allMedia().filter { $0.source == .anilist }
+    // Text queries match titles with the relevance scorer (typos, accents, word order), SEARCH_MATCH sorts by it.
+    let searchQuery = (variables.search ?? "").isEmpty ? nil : RelevanceText(variables.search ?? "")
+    var relevance: [String: Int] = [:]
     media = media.filter { item in
       if let ids = variables.id, let id = item.anilistId, !ids.contains(id) { return false }
       if let ids = variables.idMal, !ids.contains(item.malId ?? -1) { return false }
@@ -848,13 +869,21 @@ final class AniListService: @unchecked Sendable {
       if let genreNot = variables.genreNot, genreNot.contains(where: { item.genres.contains($0) }) { return false }
       if let tag = variables.tag, !tag.isEmpty, !tag.contains(where: { item.tags.contains($0) }) { return false }
       if let tagNot = variables.tagNot, tagNot.contains(where: { item.tags.contains($0) }) { return false }
-      if let search = variables.search?.lowercased(), !search.isEmpty {
-        let titles = (item.title.all + item.synonyms).map { $0.lowercased() }
-        if !titles.contains(where: { $0.contains(search) }) { return false }
+      if let searchQuery {
+        let score = SearchRelevance.scoreMedia(searchQuery, item)
+        if score == 0 { return false }
+        relevance[item.id] = score
       }
       return true
     }
-    if let sort = variables.sort {
+    if variables.sort == "SEARCH_MATCH" {
+      media.sort { lhs, rhs in
+        let left = relevance[lhs.id] ?? 0
+        let right = relevance[rhs.id] ?? 0
+        if left != right { return left > right }
+        return SearchRelevance.popularity(lhs) > SearchRelevance.popularity(rhs)
+      }
+    } else if let sort = variables.sort {
       media.sort { lhs, rhs in AniListParser.fallbackOrder(lhs, rhs, sort: sort, store: store) }
     }
     let start = max(0, (variables.page - 1) * variables.perPage)

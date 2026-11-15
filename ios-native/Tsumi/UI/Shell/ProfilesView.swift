@@ -4,7 +4,7 @@ import WebKit
 
 // Profiles modal (common/components/Profiles.svelte): current profile, other profiles (switch, sync list
 // entries, authenticate, logout), AniList / MyAnimeList login, "Add Profile" (at most 5 other profiles),
-// "Authenticate" for an expired MyAnimeList session and "Sign Out".
+// "Log In Again" for an expired AniList / MyAnimeList session and "Sign Out".
 // Logins open in a web view sheet (Electron 'open-auth' window) that catches the token / code in the URLs it
 // loads; a "Paste token" field (settings.js paste handler) is the fallback and also routes pasted links.
 
@@ -278,14 +278,14 @@ struct ShellOtherProfileRow: View {
       .accessibilityLabel("Switch to Profile: \(profile.viewer.name)")
       if profile.reauth {
         Button {
-          Task { @MainActor in _ = await service.reauthenticate() }
+          Task { @MainActor in _ = await service.reauthenticate(profile) }
         } label: {
           Image(systemName: "clock.badge.exclamationmark")
             .font(.title3)
         }
         .buttonStyle(.plain)
         .foregroundStyle(Color.white)
-        .accessibilityLabel("Authenticate")
+        .accessibilityLabel("Log In Again")
       } else {
         Toggle(
           "Sync List Entries",
@@ -335,8 +335,8 @@ struct ShellProfileActions: View {
       }
       if let current {
         if current.reauth {
-          ShellProfileBoxButton(title: "Authenticate", icon: "clock.badge.exclamationmark", tint: ShellPalette.error) {
-            Task { @MainActor in _ = await service.reauthenticate() }
+          ShellProfileBoxButton(title: "Session Expired: Log In Again", icon: "clock.badge.exclamationmark", tint: ShellPalette.error) {
+            Task { @MainActor in _ = await service.reauthenticate(current) }
           }
         }
         ShellProfileBoxButton(title: "Sign Out", icon: "rectangle.portrait.and.arrow.right", tint: ShellPalette.card) {

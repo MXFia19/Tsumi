@@ -221,7 +221,7 @@ export default class Helper {
 
         if (sync.value.length > 0) { // handle profile entry syncing
           for (const profile of profiles.value) {
-            if (sync.value.includes(profile?.viewer?.data?.Viewer?.id)) {
+            if (sync.value.includes(profile?.viewer?.data?.Viewer?.id) && !profile.reauth) { // expired sessions are skipped until logged in again
               let res
               if (profile.viewer?.data?.Viewer?.avatar) {
                 variables.score = (cachedMedia.mediaListEntry?.score ? (cachedMedia.mediaListEntry?.score * 10) : 0)

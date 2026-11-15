@@ -140,10 +140,13 @@ final class ProfilesService {
     return await runLogin(url, title: "MyAnimeList", malState: state)
   }
 
-  /// "Authenticate" button of a MyAnimeList profile whose refresh failed.
+  /// "Log In Again" of a profile whose session expired: the login of its service (the new token replaces
+  /// the profile's, swapProfiles keeps the profile).
   @discardableResult
-  func reauthenticate() async -> Bool {
-    await loginMAL()
+  func reauthenticate(_ profile: AccountProfile? = nil) async -> Bool {
+    let target = profile ?? current
+    if target?.viewer.service == .anilist { return await loginAniList() }
+    return await loginMAL()
   }
 
   private func runLogin(_ url: URL, title: String, malState: String?) async -> Bool {
@@ -284,7 +287,7 @@ final class ProfilesService {
   private func handleAniListToken(_ token: String) async -> Bool {
     do {
       let result = try await AniListService.shared.viewer(token: token)
-      let profile = AccountProfile(viewer: result.viewer, token: token, customLists: result.customLists)
+      let profile = AccountProfile(viewer: result.viewer, token: token, customLists: result.customLists, expiresAt: SessionToken.expiry(of: token))
       swapProfiles(profile, newProfile: true)
       return true
     } catch {

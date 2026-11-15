@@ -23,6 +23,8 @@ struct ShellToastHost: ViewModifier {
     return content.overlay(alignment: .top) {
       if layer != .player && ShellLayers.top == layer {
         VStack(spacing: 8) {
+          // Expired AniList / MyAnimeList sessions: Log in again / Log out (ShellSessionExpiry.swift).
+          ShellSessionExpiryPrompts()
           ShellToastStack()
           // Watch Together invites outside the full screen player (the player shows its own).
           ShellWatchTogetherInvites()

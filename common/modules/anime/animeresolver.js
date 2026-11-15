@@ -1,5 +1,7 @@
 import { anilistClient } from '@/modules/anilist.js'
-import { cache } from '@/modules/cache.js'
+import { cache, mediaCache } from '@/modules/cache.js'
+import { settings } from '@/modules/settings.js'
+import { prepare, isExactTitleMatch } from '@/modules/search/relevance.js'
 import { anitomyscript, hasZeroEpisode } from '@/modules/anime/anime.js'
 import { chunks, matchKeys, isValidNumber } from '@/modules/util.js'
 // import levenshtein from 'js-levenshtein'
@@ -179,7 +181,7 @@ export default new class AnimeResolver {
     for (const chunk of chunks(missingTitles, 55)) {
       // single title has a complexity of 8.1, al limits complexity to 500, so this can be at most 62, undercut it to ~~60~~ 55, al pagination is 50, but at most we'll do 30 titles since isAdult duplicates each title
       const search = await anilistClient.alSearchCompound(chunk)
-      if (!search || search?.errors) return
+      if (!search || search?.errors) break
       for (const [key, media] of search) {
         if (!this.animeNameCache[key]) {
           debug(`Found ${key} as ${media?.id}: ${media?.title?.userPreferred}`)
@@ -188,6 +190,30 @@ export default new class AnimeResolver {
           debug(`Duplicate key found ${key} as ${this.animeNameCache[key]?.id}: ${this.animeNameCache[key]?.title?.userPreferred}, skipping new value [${media?.id}: ${media?.title?.userPreferred}]`)
         }
       }
+    }
+    this.resolveFromMediaCache(titleObjects)
+  }
+
+  /**
+   * Titles the AniList search left unresolved (no result, or the request failed): an exact title or synonym
+   * match in the local media cache (normalised like the search relevance), used only when it is the only
+   * one, or the only one of the release year. Never replaces an AniList result.
+   * @param {{key: string, title: string, year?: string, isAdult: boolean}[]} titleObjects
+   */
+  resolveFromMediaCache (titleObjects) {
+    const missing = titleObjects.filter(titleObj => !titleObj.isAdult && !this.animeNameCache[titleObj.key])
+    if (!missing.length) return
+    const allowAdult = settings.value.adult !== 'none'
+    const pool = Object.values(mediaCache?.value || {}).filter(media => media && typeof media.id === 'number' && (allowAdult || !media.isAdult))
+    for (const titleObj of missing) {
+      if (this.animeNameCache[titleObj.key]) continue
+      const query = prepare(titleObj.title)
+      if (query.chars.length < 3) continue
+      let matches = pool.filter(media => isExactTitleMatch(query, media))
+      if (matches.length > 1 && titleObj.year) matches = matches.filter(media => String(media.seasonYear) === String(titleObj.year))
+      if (matches.length !== 1) continue
+      this.animeNameCache[titleObj.key] = matches[0]
+      debug(`Resolved ${titleObj.key} from the media cache as ${matches[0].id}: ${matches[0].title?.userPreferred}`)
     }
   }
 

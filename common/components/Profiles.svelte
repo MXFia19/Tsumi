@@ -1,9 +1,8 @@
 <script context='module'>
-  import { createListener, generateRandomString } from '@/modules/util.js'
+  import { createListener } from '@/modules/util.js'
   import { writable } from 'simple-store-svelte'
   import { swapProfiles, alToken, malToken, profiles, sync } from '@/modules/settings.js'
-  import { clientID } from '@/modules/myanimelist.js'
-  import { SUPPORTS } from '@/modules/support.js'
+  import { loginAniList, loginMAL, reauthenticate } from '@/modules/auth/expiry.js'
   import { click } from '@/modules/click.js'
   import { toast } from 'svelte-sonner'
   import SoftModal from '@/components/modals/SoftModal.svelte'
@@ -46,16 +45,8 @@
     else sync.value = sync.value.concat(profileID)
   }
 
-  function confirmAnilist () {
-    IPC.emit(SUPPORTS.isAndroid ? 'open' : 'open-auth', `https://anilist.co/api/v2/oauth/authorize?client_id=${atob('MzU5NzE=')}&response_type=token`) // Change redirect_url to tsumi://alauth
-  }
-
-  function confirmMAL () {
-    const state = generateRandomString(10)
-    const challenge = generateRandomString(50)
-    sessionStorage.setItem(state, challenge)
-    IPC.emit(SUPPORTS.isAndroid ? 'open' : 'open-auth', `https://myanimelist.net/v1/oauth2/authorize?response_type=code&client_id=${clientID}&state=${state}&code_challenge=${challenge}&code_challenge_method=plain`) // Change redirect_url to tsumi://malauth
-  }
+  const confirmAnilist = loginAniList
+  const confirmMAL = loginMAL
 
   IPC.on('auth-canceled', () => {
     toast.error('Login Canceled', {
@@ -105,7 +96,7 @@
               <label for='sync-{profile.viewer.data.Viewer.id}'><br /></label>
             </button>
           {:else}
-            <button type='button' class='button {profile.reauth ? 'pa-button' : 'p-button'} pt-5 pb-5 pl-5 pr-5 mr-15 bg-transparent border-0 d-flex align-items-center justify-content-center z-1' data-toggle='tooltip' data-placement='left' data-title='Authenticate' use:click|stopPropagation={confirmMAL}>
+            <button type='button' class='button {profile.reauth ? 'pa-button' : 'p-button'} pt-5 pb-5 pl-5 pr-5 mr-15 bg-transparent border-0 d-flex align-items-center justify-content-center z-1' data-toggle='tooltip' data-placement='left' data-title='Log In Again' use:click|stopPropagation={() => reauthenticate(profile)}>
               <ClockAlert size='2.2rem' />
             </button>
           {/if}
@@ -141,10 +132,10 @@
     {/if}
     {#if $currentProfile}
       {#if $currentProfile.reauth}
-        <button type='button' class='box authenticate pointer border-0 pt-10 pb-10 d-flex align-items-center justify-content-center text-center' use:click={confirmMAL}>
+        <button type='button' class='box authenticate pointer border-0 pt-10 pb-10 d-flex align-items-center justify-content-center text-center' use:click={() => reauthenticate($currentProfile)}>
           <ClockAlert class='mr-10' size='2.2rem' />
           <div class='mt-4'>
-            Authenticate
+            Session Expired: Log In Again
           </div>
         </button>
       {/if}

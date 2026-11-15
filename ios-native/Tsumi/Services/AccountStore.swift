@@ -13,20 +13,24 @@ struct AccountProfile: Codable, Hashable, Identifiable {
   var refreshToken: String?
   /// MyAnimeList: when the token must be refreshed (refresh_in).
   var refreshAt: Date?
-  /// MyAnimeList: the refresh failed, the user must log in again.
+  /// The session expired (AniList token refused or past its expiry, MyAnimeList refresh failed):
+  /// the user must log in again (Services/SessionExpiry.swift).
   var reauth: Bool
   /// AniList custom anime lists (Viewer.mediaListOptions).
   var customLists: [String]
+  /// AniList: expiry of the token (its JWT `exp`, settings.js expires_in). Missing in older stored profiles.
+  var expiresAt: Date?
 
   var isAniList: Bool { viewer.service == .anilist }
 
-  init(viewer: Viewer, token: String, refreshToken: String? = nil, refreshAt: Date? = nil, reauth: Bool = false, customLists: [String] = []) {
+  init(viewer: Viewer, token: String, refreshToken: String? = nil, refreshAt: Date? = nil, reauth: Bool = false, customLists: [String] = [], expiresAt: Date? = nil) {
     self.viewer = viewer
     self.token = token
     self.refreshToken = refreshToken
     self.refreshAt = refreshAt
     self.reauth = reauth
     self.customLists = customLists
+    self.expiresAt = expiresAt
   }
 }
 
@@ -136,7 +140,7 @@ final class AccountStore: @unchecked Sendable {
     }
   }
 
-  /// Marks a MyAnimeList profile as needing a new login.
+  /// Marks a profile (AniList or MyAnimeList) as needing a new login.
   func markReauth(token: String) {
     mutate { value in
       if value.current?.token == token {

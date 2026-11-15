@@ -1,7 +1,7 @@
 <script context='module'>
   const badgeKeys = ['title', 'search', 'genre', 'genre_not', 'tag', 'tag_not', 'season', 'year', 'format', 'format_not', 'status', 'status_not', 'sort', 'hideSubs', 'hideMyAnime', 'hideStatus', 'showMyAnime', 'showStatus']
   const badgeDisplayNames = { title: BookUser, search: Type, genre: Hash, genre_not: Hash, tag: Hash, tag_not: Hash, season: CalendarRange, year: Leaf, format: Tv, format_not: MonitorUp, status: MonitorPlay, status_not: MonitorX, sort: ArrowDownWideNarrow, hideMyAnime: EyeOff, showMyAnime: Hourglass, hideSubs: Mic }
-  const sortOptions = { TITLE_ROMAJI: 'Title', START_DATE_DESC: 'Release Date', SCORE_DESC: 'Score', POPULARITY_DESC: 'Popularity', UPDATED_AT_DESC: 'Date Updated', UPDATED_TIME_DESC: 'Last Updated', STARTED_ON_DESC: 'Start Date', FINISHED_ON_DESC: 'Completed Date', PROGRESS_DESC: 'Your Progress', USER_SCORE_DESC: 'Your Score' }
+  const sortOptions = { TITLE_ROMAJI: 'Title', SEARCH_MATCH: 'Relevance', START_DATE_DESC: 'Release Date', SCORE_DESC: 'Score', POPULARITY_DESC: 'Popularity', UPDATED_AT_DESC: 'Date Updated', UPDATED_TIME_DESC: 'Last Updated', STARTED_ON_DESC: 'Start Date', FINISHED_ON_DESC: 'Completed Date', PROGRESS_DESC: 'Your Progress', USER_SCORE_DESC: 'Your Score' }
   const formatOptions = { TV: 'TV Show', MOVIE: 'Movie', TV_SHORT: 'TV Short', SPECIAL: 'Special', OVA: 'OVA', ONA: 'ONA' }
 
   export function searchCleanup (search, badge) {
@@ -265,7 +265,11 @@
       </div>
       <div class='input-group'>
         <select class='form-control bg-dark-light' required bind:value={search.sort} on:change={clearTags} disabled={search.disableSearch}>
-          {#if search.sort !== 'TRENDING_DESC'}
+          {#if search.search?.trim() && !search.load && !search.scheduleList}
+            <!-- A text query sorts by relevance by default (search/relevance.js), Trending stays available. -->
+            <option value selected={!search.sort || search.sort === 'SEARCH_MATCH'}>Relevance</option>
+            <option value='TRENDING_DESC'>Trending</option>
+          {:else if search.sort !== 'TRENDING_DESC'}
             <option value selected>Trending</option>
           {:else}
             <option value='TRENDING_DESC' selected>Trending</option>

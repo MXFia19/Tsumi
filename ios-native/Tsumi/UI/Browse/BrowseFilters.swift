@@ -191,7 +191,7 @@ enum BrowseFilterOptions {
     "TITLE_ROMAJI": "Title", "START_DATE_DESC": "Release Date", "SCORE_DESC": "Score", "POPULARITY_DESC": "Popularity",
     "UPDATED_AT_DESC": "Date Updated", "UPDATED_TIME_DESC": "Last Updated", "STARTED_ON_DESC": "Start Date",
     "FINISHED_ON_DESC": "Completed Date", "PROGRESS_DESC": "Your Progress", "USER_SCORE_DESC": "Your Score",
-    "TRENDING_DESC": "Trending"
+    "TRENDING_DESC": "Trending", "SEARCH_MATCH": "Relevance"
   ]
 
   static func formatName(_ value: String) -> String {
@@ -226,10 +226,16 @@ struct BrowseFilterContext: Equatable {
   var planningList = false
   var droppedList = false
 
-  /// Sort options (user sorts only for user list sections).
-  var sortOptions: [BrowseOption] {
-    var options: [BrowseOption] = [
-      BrowseOption("", "Trending"), BrowseOption("POPULARITY_DESC", "Popularity"), BrowseOption("TITLE_ROMAJI", "Title"),
+  /// Sort options (user sorts only for user list sections). With a text query on the plain Search page, the
+  /// default ("") is Relevance (SearchRelevance.swift) and Trending stays available (SearchBar.svelte).
+  /// `current`: the selected sort (an explicit TRENDING_DESC keeps its own Trending entry).
+  func sortOptions(hasQuery: Bool, current: String = "") -> [BrowseOption] {
+    let relevance = hasQuery && !lockSource && !isSchedule
+    var options: [BrowseOption] = relevance
+      ? [BrowseOption("", "Relevance"), BrowseOption("TRENDING_DESC", "Trending")]
+      : [BrowseOption(current == "TRENDING_DESC" ? "TRENDING_DESC" : "", "Trending")]
+    options += [
+      BrowseOption("POPULARITY_DESC", "Popularity"), BrowseOption("TITLE_ROMAJI", "Title"),
       BrowseOption("SCORE_DESC", "Score"), BrowseOption("START_DATE_DESC", "Release Date")
     ]
     if userList && !missedList {
@@ -636,7 +642,7 @@ struct BrowseFilterSheet: View {
   private var sortSection: some View {
     Section("Sort") {
       Picker("Sort", selection: $filters.sort) {
-        ForEach(context.sortOptions) { option in
+        ForEach(context.sortOptions(hasQuery: !filters.trimmedText.isEmpty, current: filters.sort)) { option in
           Text(option.label).tag(option.value)
         }
       }
