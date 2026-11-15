@@ -5,6 +5,8 @@
   import Helper from '@/modules/helper.js'
   import User from '@/routes/w2g/components/User.svelte'
   import Message from '@/routes/w2g/components/Message.svelte'
+  import VoiceControls from '@/routes/w2g/components/VoiceControls.svelte'
+  import Queue from '@/routes/w2g/components/Queue.svelte'
   import { anilistClient } from '@/modules/anilist.js'
   import { SendHorizontal, DoorOpen, UserPlus, Crown, Users, RefreshCw, MonitorPlay } from 'lucide-svelte'
   export let invite
@@ -34,6 +36,9 @@
   $: localStatus = client?.localStatus
   $: following = client?.following
   $: rejoinOffer = client?.rejoinOffer
+  $: voice = client?.voice
+  $: voiceStates = client?.voiceStates
+  $: voiceLinks = client?.voiceLinks
 
   // The stores are passed so the list is rebuilt whenever one of them changes.
   function listMembers (client, now, ..._stores) {
@@ -42,7 +47,7 @@
   function readJoinOffer (client, ..._stores) {
     return client?.joinOffer() ?? null
   }
-  $: members = listMembers(client, $clock, $peers, $lobby, $signals, $localStatus)
+  $: members = listMembers(client, $clock, $peers, $lobby, $signals, $localStatus, $voice, $voiceStates, $voiceLinks)
   $: isHost = !!client && $lobby?.hostId != null && String($lobby.hostId) === client.selfId
   $: hostMode = $lobby?.hostId != null && $lobby?.mode === 'host'
   $: watching = !!$localStatus && $localStatus.state !== 'idle'
@@ -136,8 +141,11 @@
         </button>
       </div>
     </div>
-    <div class='d-flex flex-column w-350 mw-full px-20 flex-shrink-0'>
+    <div class='d-flex flex-column w-350 mw-full px-20 flex-shrink-0 side-column'>
       {#if client}
+        <div class='pb-10'>
+          <VoiceControls {client} />
+        </div>
         <div class='d-flex align-items-center flex-wrap pb-10'>
           <span class='mode-chip d-flex align-items-center font-size-14 mr-10 mb-5' class:host={hostMode} title={hostMode ? 'Only the host can play, pause and seek' : 'Anyone can play, pause and seek'}>
             {#if hostMode}<Crown size='1.4rem' class='mr-5' />{:else}<Users size='1.4rem' class='mr-5' />{/if}
@@ -189,8 +197,12 @@
           {members.length} Member(s)
         </div>
         {#each members as member (member.userId)}
-          <User {member} canManage={isHost} onKick={(id) => client.kick(id)} onTransfer={(id) => client.transferHost(id)} onInvite={(id) => client.invite(id)} />
+          <User {member} canManage={isHost} onKick={(id) => client.kick(id)} onTransfer={(id) => client.transferHost(id)} onInvite={(id) => client.invite(id)}
+            voiceJoined={$voice?.joined} onVoiceMix={(id, mix) => client.setMemberVoice(id, mix)} />
         {/each}
+        <div class='pt-10 pb-20'>
+          <Queue {client} />
+        </div>
       {/if}
     </div>
   </div>
@@ -212,6 +224,10 @@
   }
   .join-card {
     flex-shrink: 0;
+  }
+  .side-column {
+    min-height: 0;
+    overflow-y: auto;
   }
   .system-line {
     font-style: italic;

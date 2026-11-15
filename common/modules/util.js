@@ -608,6 +608,10 @@ export const defaults = {
   w2gDisplayName: '',
   // "Watch on my own": last choice, reused for the next lobby.
   w2gWatchOnMyOwn: false,
+  // Watch Together voice: lower the video while someone speaks, push-to-talk and its key (event.code).
+  w2gVoiceDucking: true,
+  w2gPushToTalk: false,
+  w2gPushToTalkKey: 'KeyT',
   extensions: {},
   defaultExtension: null,
   starredExtension: null

@@ -24,8 +24,20 @@
   import { modal } from '@/modules/navigation.js'
   import DOMPurify from 'dompurify'
   import { marked } from 'marked'
-  import { Clapperboard, Users, Heart, Play, Timer, TrendingUp, Tv, Hash, ArrowDown01, ArrowUp10 } from 'lucide-svelte'
+  import { Clapperboard, Users, Heart, Play, Timer, TrendingUp, Tv, Hash, ArrowDown01, ArrowUp10, ListPlus } from 'lucide-svelte'
+  import { toast } from 'svelte-sonner'
+  import { state as w2gState, queueEpisode, queueResultText } from '@/routes/w2g/components/session.js'
   $: view = $modal[modal.ANIME_DETAILS]?.data
+
+  /** Watch Together "Add to Watch Together queue": the episode "Watch Now" would play. */
+  function addToW2GQueue (media) {
+    if (!media) return
+    const { status, progress } = media.mediaListEntry || {}
+    const next = typeof media.id !== 'string' && progress && status !== 'COMPLETED' ? progress + 1 : 1
+    const max = getMediaMaxEp(media, true)
+    const result = queueEpisode(media, { number: max ? Math.min(max, next) : next }, anilistClient.title(media))
+    toast('Watch Together', { description: queueResultText(result) })
+  }
   function close () {
     modal.close(modal.ANIME_DETAILS)
   }
@@ -478,6 +490,16 @@
                     {playButtonText}
                   </button>
                   <div class='mt-20 d-flex'>
+                    {#if $w2gState && staticMedia.status !== 'NOT_YET_RELEASED'}
+                      <button
+                        class='btn bg-dark-light btn-lg btn-square d-flex align-items-center justify-content-center shadow-none border-0 mr-10'
+                        title='Add to Watch Together queue'
+                        aria-label='Add to Watch Together queue'
+                        use:click={() => addToW2GQueue(media)}
+                      >
+                        <ListPlus size='1.7rem' />
+                      </button>
+                    {/if}
                     {#if Helper.isAuthorized() && typeof staticMedia.id !== 'string'}
                       <Scoring class='mr-10 ' {media} viewAnime={true} />
                     {/if}

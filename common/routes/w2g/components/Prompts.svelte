@@ -2,8 +2,8 @@
   import { fly } from 'svelte/transition'
   import { click } from '@/modules/click.js'
   import { anilistClient } from '@/modules/anilist.js'
-  import { formatClock } from '@/routes/w2g/components/sync.js'
-  import { Check, MonitorPlay, X } from 'lucide-svelte'
+  import { formatClock, queueItemLabel } from '@/routes/w2g/components/sync.js'
+  import { Check, MonitorPlay, X, Play } from 'lucide-svelte'
 
   /**
    * Watch Together prompts that need an answer: host requests (Accept / Decline, 15 s), invites
@@ -27,6 +27,8 @@
   export let join = null
   /** @type {(() => void) | null} set to make the Join card dismissible */
   export let dismissJoin = null
+  /** @type {{ item: import('./sync.js').QueueItem, endsAt: number } | null} v2.4 host: "Up next" auto-advance */
+  export let advance = null
 
   function requestText ({ name, kind, time }) {
     if (kind === 'pause') return `${name} wants to pause`
@@ -55,6 +57,21 @@
     {/if}
   </div>
 {/each}
+
+{#if advance}
+  <div class='prompt bg-dark rounded p-10 mb-10 position-relative overflow-hidden' transition:fly={{ x: 30, duration: 150 }}>
+    <div class='font-size-14 pb-5 text-break-word'>Up next: {queueItemLabel(advance.item)}</div>
+    <div class='d-flex'>
+      <button type='button' class='btn btn-sm btn-primary d-flex align-items-center' use:click={() => client.advanceNow()}>
+        <Play size='1.4rem' class='mr-5' /> Play now
+      </button>
+      <button type='button' class='btn btn-sm ml-10' use:click={() => client.cancelAdvance()}>Cancel</button>
+    </div>
+    {#key advance.endsAt}
+      <div class='timer-bar' use:timerBar={advance.endsAt}></div>
+    {/key}
+  </div>
+{/if}
 
 {#if join}
   <div class='prompt bg-dark rounded p-10 mb-10' transition:fly={{ x: 30, duration: 150 }}>

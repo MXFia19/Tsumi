@@ -29,3 +29,24 @@ export function shareNowPlaying (media, episode) {
   if (!media?.id || !state.value) return
   state.value.shareMedia({ media: pickMedia(media), episode })
 }
+
+/**
+ * v2.4 "Add to Watch Together queue" (episode list, details page).
+ * @param {object} media Tsumi media object
+ * @param {number | { number: number, season?: number, localEpisode?: number }} episode
+ * @param {string} [title] display title in the user's language
+ * @returns {'added' | 'suggested' | 'duplicate' | null} null when not in a lobby with a queue
+ */
+export function queueEpisode (media, episode, title) {
+  if (!media?.id || !state.value) return null
+  const cover = media.coverImage?.medium || media.coverImage?.extraLarge || media.coverImage?.large || ''
+  return state.value.addToQueue({ media: pickMedia(media), episode, title, cover })
+}
+
+/** Toast text for the result of queueEpisode / addNextEpisode. */
+export function queueResultText (result) {
+  if (result === 'added') return 'Added to Up next'
+  if (result === 'suggested') return 'Suggested to the host'
+  if (result === 'duplicate') return 'Already in Up next'
+  return 'The lobby has no queue'
+}

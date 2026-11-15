@@ -79,6 +79,9 @@
       "hardenedRuntime": true,
       "notarize": false,
       "entitlements": "buildResources/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Watch Together voice chat uses the microphone while you are in voice."
+      },
       "target": [
         {
           "arch": "universal",

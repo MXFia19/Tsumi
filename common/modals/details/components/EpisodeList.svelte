@@ -50,6 +50,15 @@
   import AudioLabel from '@/components/AudioLabel.svelte'
   import SmartImage from '@/components/visual/SmartImage.svelte'
   import { tmdbClient } from '@/modules/tmdb.js'
+  import { anilistClient } from '@/modules/anilist.js'
+  import { toast } from 'svelte-sonner'
+  import { ListPlus } from 'lucide-svelte'
+  import { state as w2gState, queueEpisode, queueResultText } from '@/routes/w2g/components/session.js'
+
+  /** Watch Together "Add to Watch Together queue" on an episode card. */
+  function addToW2GQueue (episode) {
+    toast('Watch Together', { description: queueResultText(queueEpisode(media, episode, anilistClient.title(media))) })
+  }
 
   export let media
 
@@ -362,6 +371,13 @@
                       <div class='ml-auto pl-5'>
                         {length}m
                       </div>
+                    {/if}
+                    {#if $w2gState && !unreleased}
+                      <button type='button' class='btn btn-sm btn-square d-flex align-items-center justify-content-center flex-shrink-0 ml-5 w2g-queue-add' class:ml-auto={!length}
+                        title='Add to Watch Together queue' aria-label='Add episode {episode} to Watch Together queue'
+                        use:click={() => addToW2GQueue({ number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode })}>
+                        <ListPlus size='1.5rem' />
+                      </button>
                     {/if}
                   </div>
                   {#if completed}

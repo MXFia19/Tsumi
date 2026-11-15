@@ -7,7 +7,19 @@
   import { click } from '@/modules/click.js'
   import { IPC } from '@/modules/bridge.js'
   import { Trash2, Eraser } from 'lucide-svelte'
+  import { keyLabel } from '@/routes/w2g/components/voice.js'
   export let settings
+
+  // Watch Together push-to-talk key: the next key pressed while the field has the focus.
+  let capturingKey = false
+  function captureKey (event) {
+    if (!capturingKey || event.key === 'Tab') return
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.key !== 'Escape') settings.w2gPushToTalkKey = event.code
+    capturingKey = false
+    event.currentTarget.blur()
+  }
 
   async function changeFont ({ detail }) {
     try {
@@ -163,6 +175,31 @@
     <label for='player-w2g-autosync'>{settings.w2gAutoSync ? 'On' : 'Off'}</label>
   </div>
 </SettingCard>
+<SettingCard title='Lower the Video While Someone Speaks' description='In Watch Together voice chat, plays the video at 30% of its volume while another member is talking.'>
+  <div class='custom-switch'>
+    <input type='checkbox' id='player-w2g-ducking' bind:checked={settings.w2gVoiceDucking} />
+    <label for='player-w2g-ducking'>{settings.w2gVoiceDucking ? 'On' : 'Off'}</label>
+  </div>
+</SettingCard>
+<SettingCard title='Push-to-Talk' description='In Watch Together voice chat, your microphone only sends sound while you hold the push-to-talk key.'>
+  <div class='custom-switch'>
+    <input type='checkbox' id='player-w2g-ptt' bind:checked={settings.w2gPushToTalk} />
+    <label for='player-w2g-ptt'>{settings.w2gPushToTalk ? 'On' : 'Off'}</label>
+  </div>
+</SettingCard>
+{#if settings.w2gPushToTalk}
+  <SettingCard title='Push-to-Talk Key' description='Click the field, then press the key to hold while talking. Escape cancels.'>
+    <input
+      type='text'
+      readonly
+      class='form-control text-center w-150 pointer'
+      aria-label='Push-to-talk key'
+      value={capturingKey ? 'Press a key…' : keyLabel(settings.w2gPushToTalkKey)}
+      on:focus={() => { capturingKey = true }}
+      on:blur={() => { capturingKey = false }}
+      on:keydown={captureKey} />
+  </SettingCard>
+{/if}
 
 <h4 class='mb-10 font-weight-bold'>External Player Settings</h4>
 <SettingCard title='Enable External Player' description='Tells Tsumi to open a custom user-picked external video player to play video, instead of using the built-in one.'>

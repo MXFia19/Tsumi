@@ -6,8 +6,12 @@
   import { state } from '@/routes/w2g/components/session.js'
   import User from '@/routes/w2g/components/User.svelte'
   import Prompts from '@/routes/w2g/components/Prompts.svelte'
+  import VoiceControls from '@/routes/w2g/components/VoiceControls.svelte'
+  import Queue from '@/routes/w2g/components/Queue.svelte'
+  import { settings } from '@/modules/settings.js'
+  import { keyLabel } from '@/routes/w2g/components/voice.js'
   import { REACTIONS, BUBBLE_MS, NOTICE_MS, memberName, formatClock } from '@/routes/w2g/components/sync.js'
-  import { Users, X, SendHorizontal, Crown, RefreshCw, Timer, Hand, DoorOpen, MonitorPlay } from 'lucide-svelte'
+  import { Users, X, SendHorizontal, Crown, RefreshCw, Timer, Hand, DoorOpen, MonitorPlay, Mic, MicOff, AudioLines } from 'lucide-svelte'
 
   /** @type {import('./w2g.js').W2GClient} */
   export let client
@@ -54,6 +58,15 @@
   $: following = client.following
   $: rejoinOffer = client.rejoinOffer
   $: countdown = client.countdown
+  $: voice = client.voice
+  $: voiceStates = client.voiceStates
+  $: voiceLinks = client.voiceLinks
+  $: advance = client.advance
+  // v2.4: names of the members speaking, over the video while the panel is closed and we are in voice.
+  $: speakers = !open && $voice.joined
+    ? Object.entries($voiceStates).filter(([, state]) => state.joined && state.speaking).map(([userId]) => ({ userId, name: client.nameOf(userId) }))
+    : []
+  $: pushToTalk = $settings.w2gPushToTalk === true
 
   // The stores are passed so the values are recomputed whenever one of them changes.
   function listMembers (client, now, ..._stores) {
@@ -65,7 +78,7 @@
   function readHostPaused (client, ..._stores) {
     return client.hostPaused()
   }
-  $: members = open ? listMembers(client, $clock, $peers, $lobby, $signals, $localStatus) : []
+  $: members = open ? listMembers(client, $clock, $peers, $lobby, $signals, $localStatus, $voice, $voiceStates, $voiceLinks) : []
   $: isHost = $lobby.hostId != null && String($lobby.hostId) === client.selfId
   $: hostMode = $lobby.hostId != null && $lobby.mode === 'host'
   $: locked = hostMode && !isHost && $following
@@ -220,10 +233,36 @@
   {/if}
 </button>
 
-<!-- Prompts (host requests, invites, rejoin): above everything while the panel is closed, at its top while open -->
-{#if !open && ($requests.length || $invites.length || $rejoinOffer || floatingJoin)}
+<!-- v2.4 microphone button, next to the Watch Together button while in voice -->
+{#if $voice.joined && $voice.hasMic}
+  <button
+    type='button'
+    class='w2g-mic btn btn-square d-flex align-items-center justify-content-center'
+    class:hidden={immersed && !open && !$voice.transmitting}
+    class:muted={$voice.muted}
+    class:live={$voice.speaking}
+    title={$voice.muted ? 'Unmute your microphone' : pushToTalk ? `Hold ${keyLabel($settings.w2gPushToTalkKey)} to talk, click to mute` : 'Mute your microphone'}
+    aria-label={$voice.muted ? 'Unmute your microphone' : 'Mute your microphone'}
+    use:click={() => client.setVoiceMuted(!$voice.muted)}>
+    {#if $voice.muted}<MicOff size='2rem' strokeWidth={2.5} />{:else}<Mic size='2rem' strokeWidth={2.5} />{/if}
+  </button>
+{/if}
+
+<!-- v2.4 who is speaking, while the panel is closed -->
+{#if speakers.length}
+  <div class='w2g-speakers d-flex flex-column align-items-start'>
+    {#each speakers as speaker (speaker.userId)}
+      <div class='speaker d-flex align-items-center rounded font-size-14 mb-5' transition:fade={{ duration: 100 }}>
+        <AudioLines size='1.4rem' class='mr-5' /> {speaker.name}
+      </div>
+    {/each}
+  </div>
+{/if}
+
+<!-- Prompts (host requests, invites, rejoin, Up next): above everything while the panel is closed, at its top while open -->
+{#if !open && ($requests.length || $invites.length || $rejoinOffer || floatingJoin || $advance)}
   <div class='w2g-prompts d-flex flex-column align-items-end'>
-    <Prompts {client} requests={$requests} invites={$invites} rejoin={$rejoinOffer} join={floatingJoin} dismissJoin={() => { joinDismissedKey = joinOffer?.key }} />
+    <Prompts {client} requests={$requests} invites={$invites} rejoin={$rejoinOffer} join={floatingJoin} dismissJoin={() => { joinDismissedKey = joinOffer?.key }} advance={$advance} />
   </div>
 {/if}
 
@@ -278,17 +317,24 @@
       </button>
     </div>
 
-    {#if $requests.length || $invites.length || $rejoinOffer || notices.length || joinOffer}
+    {#if $requests.length || $invites.length || $rejoinOffer || notices.length || joinOffer || $advance}
       <div class='panel-prompts px-15 pt-5 flex-shrink-0'>
-        <Prompts {client} requests={$requests} invites={$invites} rejoin={$rejoinOffer} {notices} dismissNotice={dismiss} join={joinOffer} />
+        <Prompts {client} requests={$requests} invites={$invites} rejoin={$rejoinOffer} {notices} dismissNotice={dismiss} join={joinOffer} advance={$advance} />
       </div>
     {/if}
 
     <div class='panel-scroll d-flex flex-column flex-grow-1'>
+      <div class='px-15 pt-5'>
+        <VoiceControls {client} compact />
+      </div>
       <div class='members px-15'>
         {#each members as member (member.userId)}
-          <User compact {member} canManage={isHost} onKick={(id) => client.kick(id)} onTransfer={(id) => client.transferHost(id)} onInvite={(id) => client.invite(id)} />
+          <User compact {member} canManage={isHost} onKick={(id) => client.kick(id)} onTransfer={(id) => client.transferHost(id)} onInvite={(id) => client.invite(id)}
+            voiceJoined={$voice.joined} onVoiceMix={(id, mix) => client.setMemberVoice(id, mix)} />
         {/each}
+      </div>
+      <div class='px-15 py-5 queue'>
+        <Queue {client} compact />
       </div>
 
       <div class='d-flex flex-wrap align-items-center px-15 py-5 tools'>
@@ -395,6 +441,49 @@
   .w2g-toggle.hidden {
     opacity: 0;
     pointer-events: none;
+  }
+  .w2g-mic {
+    position: absolute;
+    top: max(1.5rem, var(--safe-area-top, 0px), env(safe-area-inset-top, 0px));
+    right: calc(max(2rem, var(--safe-area-right, 0px), env(safe-area-inset-right, 0px)) + 5.2rem);
+    z-index: 45;
+    width: 4.4rem;
+    height: 4.4rem;
+    border-radius: 50%;
+    border: 0;
+    color: hsl(var(--white-color-hsl));
+    background: hsla(var(--black-color-hsl), 0.45);
+    backdrop-filter: blur(6px);
+    transition: opacity 0.2s ease;
+    pointer-events: all;
+  }
+  .w2g-mic.muted {
+    background: var(--error-color-light);
+  }
+  .w2g-mic.live {
+    box-shadow: 0 0 0 0.3rem var(--completed-color);
+  }
+  .w2g-mic.hidden {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .w2g-speakers {
+    position: absolute;
+    top: calc(max(1.5rem, var(--safe-area-top, 0px), env(safe-area-inset-top, 0px)) + 1rem);
+    left: max(2rem, var(--safe-area-left, 0px), env(safe-area-inset-left, 0px));
+    z-index: 44;
+    pointer-events: none;
+  }
+  .speaker {
+    padding: 0.4rem 1rem;
+    color: #fff;
+    background: hsla(var(--black-color-hsl), 0.6);
+    backdrop-filter: blur(6px);
+    box-shadow: inset 0 0 0 0.15rem var(--completed-color);
+  }
+  .queue {
+    flex-shrink: 0;
+    border-top: 1px solid hsla(var(--white-color-hsl), 0.08);
   }
   .unread {
     position: absolute;
@@ -581,9 +670,13 @@
     }
   }
   @media (pointer: coarse) {
-    .w2g-toggle {
+    .w2g-toggle,
+    .w2g-mic {
       width: 5rem;
       height: 5rem;
+    }
+    .w2g-mic {
+      right: calc(max(2rem, var(--safe-area-right, 0px), env(safe-area-inset-right, 0px)) + 5.8rem);
     }
     .reaction {
       min-width: 4.8rem;
