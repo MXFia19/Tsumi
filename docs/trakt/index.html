@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>Trakt sign-in · Tsumi</title>
+  <meta name="description" content="Returns you to Tsumi after signing in to Trakt.">
+  <link rel="icon" href="../icon.png">
+  <style>
+    :root { color-scheme: dark; --bg: #0f1013; --card: #1c1d21; --text: #f2f2f3; --muted: #9a9ba3; --accent: #3db4f2; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { width: 100%; max-width: 420px; background: var(--card); border-radius: 16px; padding: 28px 24px; text-align: center; }
+    img { width: 72px; height: 72px; border-radius: 16px; }
+    h1 { font-size: 1.35rem; margin: 14px 0 6px; }
+    p { color: var(--muted); margin: 0 0 18px; }
+    .btn { display: block; width: 100%; padding: 13px 16px; border-radius: 10px; border: 0; font: inherit; font-weight: 600; text-decoration: none; cursor: pointer; margin-top: 10px; }
+    .primary { background: var(--accent); color: #06121a; }
+    .small { font-size: .85rem; margin-top: 16px; margin-bottom: 0; }
+    .error { color: #ff8a8a; }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="../icon.png" alt="Tsumi">
+    <h1 id="title">Trakt sign-in</h1>
+    <p id="text">Opening Tsumi…</p>
+    <a id="open" class="btn primary" href="#">Open in Tsumi</a>
+    <p class="small">Tsumi uses Trakt but is not endorsed or certified by Trakt.</p>
+  </main>
+  <script>
+    // Redirect URI of the Trakt app (sign-in with PKCE). Trakt sends the browser here with ?code=...&state=... (or
+    // ?error=...&state=...); this page hands them to the app through tsumi://trakt/callback. The code is useless
+    // without the code_verifier kept by the app, and it is never shown, logged or sent anywhere else.
+    (function () {
+      var params = new URLSearchParams(location.search)
+      var pick = function (key, pattern) {
+        var value = (params.get(key) || '').trim()
+        return pattern.test(value) ? value : ''
+      }
+      var code = pick('code', /^[A-Za-z0-9._~+/=-]{1,1024}$/)
+      var state = pick('state', /^[A-Za-z0-9._~-]{8,256}$/)
+      var error = pick('error', /^[A-Za-z0-9._-]{1,64}$/)
+      // Keep the code out of the history of the browser.
+      try { history.replaceState(null, '', location.pathname) } catch (e) {}
+      var title = document.getElementById('title')
+      var text = document.getElementById('text')
+      var open = document.getElementById('open')
+      if (!state && error) {
+        title.textContent = error === 'access_denied' ? 'Trakt access denied' : 'Trakt sign-in failed'
+        text.textContent = 'Go back to Tsumi to try again.'
+        open.style.display = 'none'
+        return
+      }
+      if (!state || (!code && !error)) {
+        title.textContent = 'Invalid link'
+        text.textContent = 'This page only works when Trakt sends you back to it after you start signing in from Tsumi.'
+        text.className = 'error'
+        open.style.display = 'none'
+        return
+      }
+      var query = code
+        ? 'code=' + encodeURIComponent(code) + '&state=' + encodeURIComponent(state)
+        : 'error=' + encodeURIComponent(error) + '&state=' + encodeURIComponent(state)
+      var link = 'tsumi://trakt/callback?' + query
+      if (!code) {
+        title.textContent = error === 'access_denied' ? 'Trakt access denied' : 'Trakt sign-in failed'
+        text.textContent = 'Opening Tsumi to let it know…'
+      }
+      open.href = link
+      // Open the app right away; if nothing happens, the button stays available.
+      setTimeout(function () { location.href = link }, 150)
+      setTimeout(function () {
+        text.textContent = 'If Tsumi didn\'t open, use the button below. You can close this page once Tsumi is open.'
+      }, 1500)
+    })()
+  </script>
+</body>
+</html>
