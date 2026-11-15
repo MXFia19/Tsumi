@@ -226,6 +226,10 @@ enum ShellPlayback {
       let serverTitle = controller?.session.currentServer?.title
       let list = controller?.episodeList ?? []
       let current = MediaStore.shared.media(media.id) ?? media
+      // Downloaded episode: from disk, like playAnime (offline downloads).
+      if let local = await DownloadCenter.shared.localPlayback(media: current, episode: ref) {
+        return ShellPlayback.session(media: current, episode: local.episode, servers: local.servers, selectedServer: 0, subtitleURL: local.subtitleURL, episodes: list)
+      }
       do {
         let resolved = try await ShellEpisodeResolver.resolve(
           media: current,
@@ -262,7 +266,8 @@ enum ShellPlayback {
     // checkCompletion → Helper.updateEntry.
     controller.onAutocomplete = { media, episode in
       Task { @MainActor in
-        await MediaListService.shared.updateAfterWatching(media, episode: episode.number)
+        // Queued while offline (downloaded episodes), sent when the connection is back.
+        await DownloadProgressQueue.shared.updateOrQueue(media, episode: episode.number)
       }
     }
     // shareNowPlaying (launchPlayer) for every started episode, except the ones a peer asked for.
@@ -281,6 +286,11 @@ enum ShellPlayback {
     // Now Playing details (KeyO): details sheet over the player, which keeps playing (Svelte parity).
     controller.onOpenDetails = { media in
       ShellNavigation.openDetails(MediaStore.shared.media(media.id) ?? media)
+    }
+    // "Download Episode": a fresh link from the same search result when the download starts.
+    controller.onDownloadEpisode = { [weak controller] in
+      guard let controller else { return }
+      DownloadCenter.shared.downloadFromPlayer(session: controller.session, source: memory.source, extensionKey: memory.extensionKey)
     }
     // Watch Together (w2gEmitter 'player' / 'index', no autoplay during a session). v2: the action, its seek
     // distance and rate go with it (PROTOCOL.md `player.by/action/rate`); the lobby snaps a non-host back in

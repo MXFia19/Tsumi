@@ -239,6 +239,9 @@ struct BrowseEpisodeRow: View {
           .font(.caption)
           .foregroundStyle(BrowsePalette.muted)
       }
+      if !unreleased {
+        DownloadEpisodeButton(media: media, episode: episode.ref, title: episode.title)
+      }
     }
   }
 

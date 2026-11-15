@@ -40,6 +40,12 @@ enum HTTP {
     timeout: TimeInterval = 30,
     allowErrorStatus: Bool = false
   ) async throws -> (Data, HTTPURLResponse) {
+    // Downloaded files (offline subtitles of the downloads): read from disk.
+    if url.isFileURL {
+      let data = try Data(contentsOf: url)
+      guard let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil) else { throw HTTPError.invalidResponse }
+      return (data, response)
+    }
     var request = URLRequest(url: url, timeoutInterval: timeout)
     request.httpMethod = method
     for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }

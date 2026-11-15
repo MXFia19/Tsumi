@@ -322,6 +322,14 @@ struct PlayerControlsOverlay: View {
           Label("Now Playing", systemImage: "eye")
         }
       }
+      if let download = controller.onDownloadEpisode {
+        Button {
+          onInteraction()
+          download()
+        } label: {
+          Label("Download Episode", systemImage: "arrow.down.to.line")
+        }
+      }
       Button {
         onShowKeybinds()
       } label: {

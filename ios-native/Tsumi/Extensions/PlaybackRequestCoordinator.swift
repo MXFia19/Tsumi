@@ -192,6 +192,8 @@ final class PlaybackRequestCoordinator {
 
   /// playAnime(media, episode, force): `force` skips the default extension and shows every result.
   func play(media: Media, episode: EpisodeRef, force: Bool = false) {
+    // A downloaded episode plays from disk (also offline); force (long press) still opens the extensions.
+    if !force && DownloadCenter.shared.playIfDownloaded(media: media, episode: episode) { return }
     cancelRunningWork()
     if AppSettings.shared.values.defaultExtension != nil && !force {
       let model = DefaultLoadingModel(media: media, episode: episode)

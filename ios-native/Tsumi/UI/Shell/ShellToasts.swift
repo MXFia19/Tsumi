@@ -265,7 +265,14 @@ struct ShellConnectionBanner: View {
     let aniListDown = ServiceNetworkMonitor.shared.isAniListDown
     return Group {
       if monitor.isOffline {
-        bar(text: "Offline", icon: "wifi.slash", background: ShellPalette.color(0x101114))
+        // Tap: the downloads, which play without network.
+        Button {
+          DownloadNavigation.open()
+        } label: {
+          bar(text: "Offline · Downloads", icon: "wifi.slash", background: ShellPalette.color(0x101114))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens your downloads")
       } else if aniListDown {
         bar(text: "AniList Outage", icon: "exclamationmark.icloud", background: ShellPalette.color(0x101114))
       } else if monitor.showRestored {
