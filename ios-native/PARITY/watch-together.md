@@ -12,6 +12,9 @@ Swift files (all in `ios-native/Tsumi/WatchTogether/`):
 | `W2GSwarm.swift` | P2PT equivalent: info hash, peer id, links per peer, message framing/chunking, `block(_:)` (kick) |
 | `W2GModels.swift` | `W2GUser`, `W2GMember`, `W2GChatMessage`, `W2GMessageGroup`, `W2GPlayerState`, `W2GSharedMedia`, `W2GNotice`, `W2GMediaPayload` (media/episode/key mapping), v2 view/value types (`W2GMemberView`, `W2GHostRequest`, `W2GCountdown`, overlay items, `W2GPlayerCommand`, `W2GLocalPlayback`) |
 | `W2GSync.swift` | v2 pure logic, port of `sync.js`: constants, normalization, host election, expected time / drift, badges, auto-sync step, host reference, notice and request texts (no UI) |
+| `W2GSyncV24.swift` | v2.4 pure logic, port of the v2.4 part of `sync.js` (features, voice rules, queue model / reducer / lines, next episode) and its value types |
+| `W2GVoice.swift` | v2.4 voice chat, port of `voice.js`: audio session (`W2GVoiceAudio`), one audio `RTCPeerConnection` per member (`W2GVoiceLink`), microphone / mix / speaking (`W2GVoiceEngine`) |
+| `W2GVoiceQueueViews.swift` | v2.4 views: voice controls, hold-to-talk, mic button, speakers, member voice mark / mix sheet, queue list / rows / sheet, "Up next" prompt, "Add to queue" button |
 | `WatchTogetherClient.swift` | `@MainActor @Observable` lobby client (W2GClient + session.js + page module logic), `shared` singleton, deep links, v2 protocol |
 | `WatchTogetherView.swift` | SwiftUI screen (page, lobby, messages with system lines, members with crown / badge / host actions, mode, display name) |
 | `W2GPlayerOverlay.swift` | v2 player UI (PlayerW2G.svelte): button + unread badge, side panel, bubbles, notices, reactions, countdown, host request prompts |
@@ -177,3 +180,28 @@ Pure rules in `W2GSync.swift`, aligned with `sync.js` v2.3 (`lobbyReference`, `c
 | v2.3.5 | Nothing starts on its own: the lobby state sent to newcomers (5 s after the sender's `init`) and any `media` while not in the player are only remembered | `isSessionState(from:)`, `receivedMedia` / `index` / `player` gates | Done (the initial `player` / `index` are not applied either) |
 | v2.3.6 | `canInvite` from anywhere: offered media = ours, else the lobby media while watching; eligible = idle / other key / independent / No signal (incl. 10 s after `init`); payload time = ours, else the reference's | `offeredKey()`, `W2GSync.canInvite`, `invite(_:)` | Done |
 | v2.3.7 | Host tool "Invite everyone not watching" (200 ms apart) in the player panel and the lobby page | `canInviteEveryone`, `inviteEveryoneNotWatching()` | Done |
+
+## v2.4 (voice chat, shared queue "Up next"), 2026-11-15
+
+Pure rules in `W2GSyncV24.swift`, aligned with the v2.4 part of `sync.js` (same thresholds, same texts): `normalizeFeatures`, `normalizeVoice`, `voiceOffers`, `voiceLinkAction`, `acceptsVoiceOffer`, `voiceRetryDelay`, `voiceTransmitting`, `speakingStep`, `duckLevel`, `normalizeQueue` / `W2GQueueItem(json:)`, `sameQueueEntry`, `queueReduce`, `queueChanges`, `describeQueueChange`, `nextEpisode` / `nextEpisodeTarget`, `acceptsQueue`, `appliesCountdown`. Svelte side: `components/{voice.js, VoiceControls.svelte, Queue.svelte}`, `User.svelte`, `PlayerW2G.svelte`, `Prompts.svelte`, `Lobby.svelte`.
+
+| # | PROTOCOL section | Swift | Status |
+|---|---|---|---|
+| v2.4.1 | `init.features: ["voice", "queue"]`; queue UI only when the host has `"queue"` | `initPayload`, `receivedInit` → `W2GMember.features`, `queueAvailable` | Done |
+| v2.4.2 | `voice { joined, muted, speaking }` on change and to each new peer; "joined / left voice" lines | `voiceEngineChanged`, `peerConnected`, `receivedVoice` | Done |
+| v2.4.3 | One audio `RTCPeerConnection` per pair in voice, `voiceSignal { id, sdp }` point to point, smaller userId offers, no trickle (3 s / 8 s), retry 3 s × 5, offers replace the link | `W2GVoiceLink`, `W2GVoiceEngine.connect` / `signal`, `syncVoiceLinks`, `receivedVoiceSignal` | Done (not tested on two devices) |
+| v2.4.4 | Microphone opt-in ("Join voice"), listen-only without permission, mute = track disabled, push-to-talk (hold button on iOS) | `joinVoice()` (`AVAudioApplication.requestRecordPermission`), `setVoiceMuted`, `W2GHoldToTalkButton`, setting `w2gPushToTalk` | Done |
+| v2.4.5 | Speaking: peak level ≥ 0.05 while transmitting, 600 ms hold | `media-source` `audioLevel` of the stats every 100 ms, `W2GSync.speakingStep` | Partial: no level (so no own speaking ring) while no link is connected; PC reads the mic itself |
+| v2.4.6 | Per-member mute / volume (local only) | `setMemberVoice` → remote track `isEnabled` / `source.volume`, `W2GVoiceMixSheet` | Done |
+| v2.4.7 | Ducking 30 % while a heard member speaks (setting, default on) | `updateDuck` → `onDuck` → `PlayerController.setDuck` (user volume unchanged); setting `w2gVoiceDucking` | Done |
+| v2.4.8 | Audio session: playAndRecord while in voice (video keeps playing), restored on leave | `W2GVoiceAudio` (WebRTC manual audio, `videoChat`, `defaultToSpeaker` / Bluetooth); `PlayerAudioSession` leaves it alone while active | Done (`mixWithOthers` left out so the lock screen controls keep working; unverified on a device) |
+| v2.4.9 | Member rows: in-voice / muted marks, speaking ring, mix button; voice controls in lobby and panel; mic button and speaker chips over the video | `W2GMemberVoiceMark`, `W2GAvatarView(speaking:)`, `W2GMemberVoiceButton`, `W2GVoiceControls`, `W2GPlayerMicButton`, `W2GSpeakersOverlay` | Done |
+| v2.4.10 | `queue` from the host (late joiners, every change), `queueAdd` / `queueVote` / `queueRemove` to the host, limits 50 / 20, duplicates by key or media id + episode | `receivedQueue`, `hostQueueChange`, `addToQueue`, `voteQueueItem`, `removeQueueItem` | Done |
+| v2.4.11 | Host tools: reorder, remove, accept / decline, "Members need approval", Play now (`media` with the item's key, then a 5 s `countdown` once loaded) | `moveQueueItem`, `answerSuggestion`, `setQueuePolicy`, `playQueueItem`, `playerReady` | Done |
+| v2.4.12 | Auto-advance: "Up next" 5 s with Play now / Cancel at the end of the host's episode; empty queue = as before | `PlayerController.onPlaybackEnded` → `playbackEnded()`, `W2GAdvancePrompt` | Done |
+| v2.4.13 | New host keeps and broadcasts its copy of the queue | `setLobby` | Done |
+| v2.4.14 | Queue lines (added / suggested / declined), host notice for suggestions | `applyQueue`, `W2GSync.queueChanges` | Done |
+| v2.4.15 | Queue UI in the lobby (sheet) and the player panel ("Up next" tab); "Add to Watch Together queue" on episode rows and the details page; "Add next episode" | `W2GQueueList`, `W2GQueueSheet`, `W2GQueueAddButton` (`MediaDetailEpisodes`, `MediaDetailHeader`), `addNextEpisode` | Done |
+| v2.4.16 | `countdown` only applied on the lobby media | `receivedCountdown` + `W2GSync.appliesCountdown` | Done |
+
+Settings keys added: `w2gVoiceDucking` (default true), `w2gPushToTalk` (default false). `w2gPushToTalkKey` is desktop only. `Info.plist`: `NSMicrophoneUsageDescription`.

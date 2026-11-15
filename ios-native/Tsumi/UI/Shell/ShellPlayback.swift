@@ -311,6 +311,10 @@ enum ShellPlayback {
     controller.isWatchTogetherActive = {
       WatchTogetherClient.shared.isInLobby
     }
+    // Watch Together v2.4: at the end of an episode the host plays the next queued item ("Up next").
+    controller.onPlaybackEnded = { _, _ in
+      WatchTogetherClient.shared.playbackEnded()
+    }
   }
 
   /// Display name of an installed extension / addon (Watch Together `status.source`), the key when unknown.

@@ -299,6 +299,7 @@ struct W2GLobbyView: View {
 @MainActor
 struct W2GLobbyHeader: View {
   let client: WatchTogetherClient
+  @State private var showQueue = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -372,9 +373,27 @@ struct W2GLobbyHeader: View {
       if !client.isLoggedIn {
         W2GDisplayNameField(client: client)
       }
+      // v2.4 voice chat and "Up next".
+      HStack(alignment: .top, spacing: 10) {
+        W2GVoiceControls(client: client)
+        Spacer(minLength: 4)
+        if client.queueAvailable {
+          Button {
+            showQueue = true
+          } label: {
+            Label("Up next (\(client.queue.items.count))", systemImage: "list.bullet.rectangle")
+              .font(.subheadline.weight(.semibold))
+              .lineLimit(1)
+          }
+          .buttonStyle(.bordered)
+        }
+      }
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 10)
+    .sheet(isPresented: $showQueue) {
+      W2GQueueSheet(client: client)
+    }
   }
 
   private var modeBinding: Binding<Bool> {
@@ -439,7 +458,8 @@ struct W2GMemberStrip: View {
                 canManage: client.isHost,
                 onKick: { _ = client.kick(member.userId) },
                 onTransfer: { _ = client.transferHost(to: member.userId) },
-                onInvite: { _ = client.invite(member.userId) }
+                onInvite: { _ = client.invite(member.userId) },
+                client: client
               )
             }
           }
@@ -472,7 +492,8 @@ struct W2GMemberList: View {
                 canManage: client.isHost,
                 onKick: { _ = client.kick(member.userId) },
                 onTransfer: { _ = client.transferHost(to: member.userId) },
-                onInvite: { _ = client.invite(member.userId) }
+                onInvite: { _ = client.invite(member.userId) },
+                client: client
               )
             }
           }
@@ -493,10 +514,12 @@ struct W2GMemberRow: View {
   var onKick: () -> Void = {}
   var onTransfer: () -> Void = {}
   var onInvite: () -> Void = {}
+  /// v2.4: the voice button (mute / volume of a member in voice) needs the client.
+  var client: WatchTogetherClient? = nil
 
   var body: some View {
     HStack(spacing: 10) {
-      W2GAvatarView(user: member.user, size: compact ? 34 : 44)
+      W2GAvatarView(user: member.user, size: compact ? 34 : 44, speaking: member.voice.joined && member.voice.speaking)
       VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 5) {
           if member.isHost {
@@ -508,6 +531,7 @@ struct W2GMemberRow: View {
           Text(member.isSelf ? member.name + " (you)" : member.name)
             .font(compact ? .subheadline : .body)
             .lineLimit(1)
+          W2GMemberVoiceMark(voice: member.voice)
         }
         W2GBadgeChip(badge: member.badge, rtt: member.rtt)
         // v2.2: what the member watches, and where from (v2.1 source).
@@ -525,6 +549,9 @@ struct W2GMemberRow: View {
         }
       }
       Spacer(minLength: 4)
+      if let client {
+        W2GMemberVoiceButton(client: client, member: member)
+      }
       if member.canInvite {
         W2GInviteButton(name: member.name, action: onInvite)
       }
@@ -558,6 +585,8 @@ struct W2GMemberCard: View {
   var onKick: () -> Void = {}
   var onTransfer: () -> Void = {}
   var onInvite: () -> Void = {}
+  /// v2.4: the voice button (mute / volume of a member in voice) needs the client.
+  var client: WatchTogetherClient? = nil
 
   var body: some View {
     VStack(spacing: 4) {
@@ -574,12 +603,15 @@ struct W2GMemberCard: View {
       if member.canInvite {
         W2GInviteButton(name: member.name, action: onInvite)
       }
+      if let client {
+        W2GMemberVoiceButton(client: client, member: member)
+      }
     }
   }
 
   private var card: some View {
     VStack(spacing: 4) {
-      W2GAvatarView(user: member.user, size: 40)
+      W2GAvatarView(user: member.user, size: 40, speaking: member.voice.joined && member.voice.speaking)
         .overlay(alignment: .topTrailing) {
           if member.isHost {
             Image(systemName: "crown.fill")
@@ -590,10 +622,13 @@ struct W2GMemberCard: View {
               .offset(x: 4, y: -4)
           }
         }
-      Text(member.isSelf ? "You" : member.name)
-        .font(.caption)
-        .foregroundStyle(Color.primary)
-        .lineLimit(1)
+      HStack(spacing: 3) {
+        Text(member.isSelf ? "You" : member.name)
+          .font(.caption)
+          .foregroundStyle(Color.primary)
+          .lineLimit(1)
+        W2GMemberVoiceMark(voice: member.voice)
+      }
       W2GBadgeChip(badge: member.badge, rtt: member.rtt)
       if !member.watching.isEmpty {
         Text(member.watching)
@@ -736,6 +771,8 @@ struct W2GDisplayNameField: View {
 struct W2GAvatarView: View {
   let user: W2GUser
   var size: CGFloat = 40
+  /// v2.4: speaking ring.
+  var speaking = false
 
   var body: some View {
     AsyncImage(url: user.avatar ?? W2GUser.defaultAvatar) { phase in
@@ -752,6 +789,7 @@ struct W2GAvatarView: View {
     }
     .frame(width: size, height: size)
     .clipShape(Circle())
+    .overlay(Circle().stroke(Color.green, lineWidth: speaking ? 3 : 0))
   }
 }
 

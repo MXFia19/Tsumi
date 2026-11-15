@@ -94,6 +94,13 @@ enum AppWiring {
     client.onShowLobby = {
       ShellNavigation.showTab(.watchTogether)
     }
+    // v2.4 voice chat: video ducking while someone speaks, and where the audio session goes back after voice.
+    client.onDuck = { level in
+      PlayerPresentation.shared.controller?.setDuck(level)
+    }
+    client.isPlayerOpen = {
+      PlayerPresentation.shared.controller != nil
+    }
   }
 
   /// Discord rich presence (PlayerPage.svelte setDiscordRPC inputs): what the player is doing, sampled once a

@@ -355,6 +355,8 @@ enum PlayerOrientation {
 /// AVAudioSession `.playback`: sound with the silent switch on, background audio and Picture in Picture.
 enum PlayerAudioSession {
   static func activate() {
+    // Watch Together voice owns the session (playAndRecord) while active; it restores this one when leaving.
+    if W2GVoiceAudio.isActive { return }
     let session = AVAudioSession.sharedInstance()
     do {
       try session.setCategory(.playback, mode: .moviePlayback, options: [])
@@ -365,6 +367,7 @@ enum PlayerAudioSession {
   }
 
   static func deactivate() {
+    if W2GVoiceAudio.isActive { return }
     try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
   }
 }

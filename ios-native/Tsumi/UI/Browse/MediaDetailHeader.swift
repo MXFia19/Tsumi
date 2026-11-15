@@ -164,6 +164,15 @@ struct BrowseDetailActions: View {
         ForEach(BrowseMediaInfo.links(media)) { link in
           BrowseShareLinkButton(link: link)
         }
+        // Watch Together "Add to Watch Together queue": the episode "Watch Now" would play.
+        if media.status != .notYetReleased {
+          W2GQueueAddButton {
+            Task { @MainActor in
+              let episode = await MediaListService.shared.startEpisode(for: media)
+              WatchTogetherClient.shared.addToQueue(media: media, episode: EpisodeRef(number: max(episode, 0)))
+            }
+          }
+        }
         Spacer(minLength: 0)
       }
     }
