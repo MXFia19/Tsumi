@@ -1,11 +1,150 @@
+import AuthenticationServices
+import CryptoKit
 import Foundation
 import Observation
 import UIKit
 
-// Port of electron/src/main/trakt.js (account: device code flow, tokens, refresh, requests) and
-// common/modules/sync/trakt.js (scrobbling targets, /sync/playback). The tokens are kept in the Keychain.
-// The app credentials come from the build: Info.plist TraktClientID / TraktClientSecret = $(TRAKT_CLIENT_ID) /
-// $(TRAKT_CLIENT_SECRET), set by the CI from the repository secrets. Empty: "Trakt is not available in this build".
+// Port of electron/src/main/trakt.js (account: sign-in with the authorization code flow and PKCE, tokens, refresh,
+// requests) and common/modules/sync/trakt.js (scrobbling targets, /sync/playback). The tokens are kept in the Keychain.
+// The Client ID comes from the build: Info.plist TraktClientID = $(TRAKT_CLIENT_ID), set by the CI from the repository
+// secret. Empty: "Trakt is not available in this build". There is no client secret (https://developer.trakt.tv/docs/pkce).
+
+/// PKCE helpers of the Trakt sign-in (electron/src/main/traktAuth.js).
+enum TraktPKCE {
+  /// Every OAuth request (authorize, token, refresh, revoke) goes to this host, not to the API host.
+  static let authHost = "https://auth.trakt.tv"
+  /// Redirect URI registered in the Trakt app: a GitHub Pages page (docs/trakt/index.html) that opens
+  /// tsumi://trakt/callback. Identical in the authorize request, the token exchange and the refresh.
+  static let redirectURI = "https://mxfia19.github.io/Tsumi/trakt/"
+  static let callbackScheme = "tsumi"
+
+  static func base64url(_ data: Data) -> String {
+    data.base64EncodedString()
+      .replacingOccurrences(of: "+", with: "-")
+      .replacingOccurrences(of: "/", with: "_")
+      .replacingOccurrences(of: "=", with: "")
+  }
+
+  /// Random base64url text (SystemRandomNumberGenerator is cryptographically secure); 32 bytes give the 43 characters
+  /// of a code_verifier.
+  static func random(bytes: Int) -> String {
+    var generator = SystemRandomNumberGenerator()
+    return base64url(Data((0..<bytes).map { _ in UInt8.random(in: .min ... .max, using: &generator) }))
+  }
+
+  /// code_challenge of a code_verifier: base64url (no padding) of its SHA-256.
+  static func challenge(for verifier: String) -> String {
+    base64url(Data(SHA256.hash(data: Data(verifier.utf8))))
+  }
+
+  static func authorizeURL(clientId: String, state: String, challenge: String) -> URL? {
+    var components = URLComponents(string: authHost + "/oauth/authorize")
+    components?.queryItems = [
+      URLQueryItem(name: "response_type", value: "code"),
+      URLQueryItem(name: "client_id", value: clientId),
+      URLQueryItem(name: "redirect_uri", value: redirectURI),
+      URLQueryItem(name: "state", value: state),
+      URLQueryItem(name: "code_challenge", value: challenge),
+      URLQueryItem(name: "code_challenge_method", value: "S256")
+    ]
+    return components?.url
+  }
+
+  /// tsumi://trakt/... links.
+  static func isCallback(_ url: URL) -> Bool {
+    url.scheme?.lowercased() == callbackScheme && url.host?.lowercased() == "trakt"
+  }
+
+  /// code / state / error of tsumi://trakt/callback?code=...&state=...; nil without a code or an error.
+  static func callback(_ url: URL) -> (code: String, state: String, error: String)? {
+    guard isCallback(url), let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
+    func value(_ name: String) -> String {
+      var text = (items.first(where: { $0.name == name })?.value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      while text.hasSuffix("/") { text.removeLast() }
+      return text
+    }
+    let code = value("code")
+    let error = value("error")
+    guard !code.isEmpty || !error.isEmpty else { return nil }
+    return (code, value("state"), error)
+  }
+
+  /// OAuth error code reduced to a short word that is safe to show (never the description).
+  static func errorCode(_ error: String) -> String {
+    String(error.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "." || $0 == "-") }.prefix(40))
+  }
+
+  /// Message for an error=... of the authorize redirect.
+  static func errorMessage(_ error: String) -> String {
+    if error == "access_denied" { return "Access was denied on Trakt." }
+    let code = errorCode(error)
+    return "Trakt could not sign you in (\(code.isEmpty ? "unknown error" : code)), try again."
+  }
+}
+
+/// ASWebAuthenticationSession of the Trakt sign-in. The authorize page ends on the https redirect page, which navigates
+/// to tsumi://trakt/callback: the session catches that link (callbackURLScheme "tsumi") and closes. Can be cancelled
+/// (Cancel in Settings, task cancellation) or completed by a callback that reached the app through onOpenURL.
+@MainActor
+final class TraktWebAuthenticator: NSObject, ASWebAuthenticationPresentationContextProviding {
+  private var session: ASWebAuthenticationSession?
+  private var continuation: CheckedContinuation<URL, Error>?
+
+  func authenticate(url: URL) async throws -> URL {
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+        self.continuation = continuation
+        // The session is released by finish(), which breaks the reference cycle through this handler.
+        let session = ASWebAuthenticationSession(url: url, callbackURLScheme: TraktPKCE.callbackScheme) { callbackURL, error in
+          let result: Result<URL, Error> = callbackURL.map { .success($0) } ?? .failure(error ?? ServiceError.cancelled)
+          Task { @MainActor [weak self] in
+            self?.finish(result, closeSession: false)
+          }
+        }
+        session.presentationContextProvider = self
+        // Shares the Safari cookies, so a user already signed in to Trakt only has to allow the app.
+        session.prefersEphemeralWebBrowserSession = false
+        self.session = session
+        if !session.start() {
+          self.finish(.failure(ServiceError.api("Could not open the Trakt sign-in page.")), closeSession: false)
+        }
+      }
+    } onCancel: {
+      Task { @MainActor [weak self] in
+        self?.finish(.failure(CancellationError()), closeSession: true)
+      }
+    }
+  }
+
+  /// A tsumi://trakt/callback link that reached the app outside of the session (onOpenURL). Returns false when no
+  /// sign-in is waiting.
+  func deliver(_ url: URL) -> Bool {
+    guard continuation != nil else { return false }
+    finish(.success(url), closeSession: true)
+    return true
+  }
+
+  private func finish(_ result: Result<URL, Error>, closeSession: Bool) {
+    let session = self.session
+    self.session = nil
+    if closeSession { session?.cancel() }
+    guard let continuation else { return }
+    self.continuation = nil
+    continuation.resume(with: result)
+  }
+
+  func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+    let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+    for scene in scenes {
+      if let window = scene.windows.first(where: { $0.isKeyWindow }) { return window }
+    }
+    if let scene = scenes.first {
+      if let window = scene.windows.first { return window }
+      return UIWindow(windowScene: scene)
+    }
+    return ASPresentationAnchor()
+  }
+}
 
 /// What Trakt calls an episode or a movie: { movie: { ids } } or { show: { ids }, episode: { season, number } }.
 struct TraktTarget: Hashable {
@@ -62,7 +201,8 @@ final class TraktService {
   enum State: Equatable {
     case unavailable
     case disconnected
-    case linking(code: String, url: URL, expiresAt: Date)
+    /// Sign-in page open (ASWebAuthenticationSession), then token exchange.
+    case linking
     case connected
   }
 
@@ -78,26 +218,25 @@ final class TraktService {
   private(set) var lastError: String?
 
   private let clientId: String
-  private let clientSecret: String
   @ObservationIgnored private var token: Token?
   @ObservationIgnored private var linkTask: Task<Void, Never>?
+  @ObservationIgnored private var linkGeneration = 0
+  @ObservationIgnored private var authenticator: TraktWebAuthenticator?
   @ObservationIgnored private var refreshTask: Task<Bool, Never>?
   @ObservationIgnored private var lastWrite = Date.distantPast
   @ObservationIgnored private var playbackCache: (date: Date, items: [[String: Any]])?
 
   private static let api = "https://api.trakt.tv"
-  private static let redirectURI = "urn:ietf:wg:oauth:2.0:oob"
   private static let keychainAccount = "trakt.v1"
   /// Trakt allows one POST / PUT / DELETE per second per user.
   private static let writeSpacing: TimeInterval = 1.1
 
-  var isAvailable: Bool { !clientId.isEmpty && !clientSecret.isEmpty }
+  var isAvailable: Bool { !clientId.isEmpty }
   var isConnected: Bool { state == .connected }
 
   private init() {
     clientId = Self.credential("TraktClientID")
-    clientSecret = Self.credential("TraktClientSecret")
-    guard !clientId.isEmpty, !clientSecret.isEmpty else { return }
+    guard !clientId.isEmpty else { return }
     if let data = TsumiKeychain.data(for: Self.keychainAccount), let saved = try? JSONDecoder().decode(Token.self, from: data) {
       token = saved
       userName = saved.user
@@ -128,81 +267,84 @@ final class TraktService {
     return headers
   }
 
-  private func post(_ path: String, _ body: [String: Any], auth: Bool = false) async throws -> (Data, HTTPURLResponse) {
-    guard let url = URL(string: Self.api + path) else { throw ServiceError.invalidResponse }
+  /// OAuth request (token exchange, refresh, revoke): auth.trakt.tv, with the Client ID only.
+  private func postAuth(_ path: String, _ body: [String: Any]) async throws -> (Data, HTTPURLResponse) {
+    guard let url = URL(string: TraktPKCE.authHost + path) else { throw ServiceError.invalidResponse }
     let payload = try JSONSerialization.data(withJSONObject: body)
-    return try await HTTP.data(url, method: "POST", headers: headers(auth: auth), body: payload, timeout: 30, allowErrorStatus: true)
+    return try await HTTP.data(url, method: "POST", headers: headers(auth: false), body: payload, timeout: 30, allowErrorStatus: true)
   }
 
   // MARK: - Account
 
-  /// Device code flow: shows the code, opens trakt.tv/activate and polls until the user approved it.
+  /// Sign-in with the authorization code flow and PKCE: Trakt's authorize page in an ASWebAuthenticationSession,
+  /// then the code (from tsumi://trakt/callback) is exchanged with the code_verifier of this attempt.
   func link() {
     guard isAvailable, linkTask == nil else { return }
     lastError = nil
+    linkGeneration += 1
+    let generation = linkGeneration
     linkTask = Task { @MainActor [weak self] in
       await self?.runLink()
-      self?.linkTask = nil
+      if self?.linkGeneration == generation { self?.linkTask = nil }
     }
   }
 
   private func runLink() async {
+    let verifier = TraktPKCE.random(bytes: 32)
+    let expectedState = TraktPKCE.random(bytes: 24)
+    guard let url = TraktPKCE.authorizeURL(clientId: clientId, state: expectedState, challenge: TraktPKCE.challenge(for: verifier)) else { return }
+    state = .linking
+    let authenticator = TraktWebAuthenticator()
+    self.authenticator = authenticator
+    defer { if self.authenticator === authenticator { self.authenticator = nil } }
     do {
-      let (data, response) = try await post("/oauth/device/code", ["client_id": clientId])
-      guard (200..<300).contains(response.statusCode), let device = ServiceJSON.object(data),
-            let deviceCode = device.string("device_code"), let userCode = device.string("user_code"),
-            let url = URL(string: device.string("verification_url") ?? "https://trakt.tv/activate") else {
-        throw ServiceError.api("Trakt returned \(response.statusCode).")
-      }
+      let callbackURL = try await authenticator.authenticate(url: url)
       if Task.isCancelled { return }
-      let expiresAt = Date().addingTimeInterval(device.double("expires_in") ?? 600)
-      state = .linking(code: userCode, url: url, expiresAt: expiresAt)
-      Self.openInBrowser(url)
-      var interval = device.double("interval") ?? 5
-      while Date() < expiresAt {
-        try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-        if Task.isCancelled { return }
-        let polled = try? await post("/oauth/device/token", ["code": deviceCode, "client_id": clientId, "client_secret": clientSecret])
-        if Task.isCancelled { return }
-        guard let poll = polled else { continue }
-        let body = poll.0
-        let reply = poll.1
-        switch reply.statusCode {
-        case 200:
-          guard let json = ServiceJSON.object(body), saveToken(json, user: "") else {
-            throw ServiceError.api("Trakt sent an unreadable answer, try again.")
-          }
-          await loadUser()
-          state = .connected
-          return
-        case 400:
-          continue // not approved yet
-        case 429:
-          interval += 1
-          continue
-        case 404:
-          throw ServiceError.api("This code is not valid, try again.")
-        case 409:
-          throw ServiceError.api("This code was already used, try again.")
-        case 410:
-          throw ServiceError.api("The code expired, try again.")
-        case 418:
-          throw ServiceError.api("Access was denied on Trakt.")
-        default:
-          throw ServiceError.api("Trakt returned \(reply.statusCode), try again.")
-        }
+      // Only the answer to this attempt is accepted (an old or forged link carries another state).
+      guard let result = TraktPKCE.callback(callbackURL), result.state == expectedState else {
+        throw ServiceError.api("Trakt sent back an invalid answer, try again.")
       }
-      throw ServiceError.api("The code expired, try again.")
+      if !result.error.isEmpty || result.code.isEmpty { throw ServiceError.api(TraktPKCE.errorMessage(result.error)) }
+      let (data, response) = try await postAuth("/oauth/token", [
+        "code": result.code,
+        "client_id": clientId,
+        "redirect_uri": TraktPKCE.redirectURI,
+        "grant_type": "authorization_code",
+        "code_verifier": verifier
+      ])
+      if Task.isCancelled { return }
+      guard (200..<300).contains(response.statusCode) else {
+        let code = TraktPKCE.errorCode(ServiceJSON.object(data)?.string("error") ?? "")
+        throw ServiceError.api("Trakt refused the sign-in (\(code.isEmpty ? String(response.statusCode) : code)), try again.")
+      }
+      guard let json = ServiceJSON.object(data), saveToken(json, user: "") else {
+        throw ServiceError.api("Trakt sent an unreadable answer, try again.")
+      }
+      await loadUser()
+      if Task.isCancelled { return }
+      state = .connected
     } catch {
       if Task.isCancelled || error is CancellationError { return }
+      // Closing the sign-in sheet is not an error.
+      if let authError = error as? ASWebAuthenticationSessionError, authError.code == .canceledLogin {
+        state = token != nil ? .connected : .disconnected
+        return
+      }
       lastError = error.localizedDescription
       state = token != nil ? .connected : .disconnected
     }
   }
 
+  /// tsumi://trakt/... that reached the app through onOpenURL (the sign-in session normally catches it): completes
+  /// the running sign-in, which checks its state; ignored when none is running.
+  func handleCallback(_ url: URL) {
+    _ = authenticator?.deliver(url)
+  }
+
   func cancelLink() {
     linkTask?.cancel()
     linkTask = nil
+    linkGeneration += 1
     lastError = nil
     if case .linking = state { state = token != nil ? .connected : .disconnected }
   }
@@ -216,15 +358,8 @@ final class TraktService {
     TsumiKeychain.remove(Self.keychainAccount)
     if isAvailable { state = .disconnected }
     if let old {
-      let body: [String: Any] = ["token": old.access, "client_id": clientId, "client_secret": clientSecret]
-      Task { _ = try? await self.post("/oauth/revoke", body) }
-    }
-  }
-
-  /// Opens a page in the browser (outside of the async context, so the completion handler variant is used).
-  static func openInBrowser(_ url: URL) {
-    DispatchQueue.main.async {
-      UIApplication.shared.open(url, options: [:], completionHandler: nil)
+      let body: [String: Any] = ["token": old.access, "client_id": clientId]
+      Task { _ = try? await self.postAuth("/oauth/revoke", body) }
     }
   }
 
@@ -254,7 +389,8 @@ final class TraktService {
     TsumiKeychain.set(data, for: Self.keychainAccount)
   }
 
-  /// Refreshes the access token; a refused refresh token disconnects the account.
+  /// Refreshes the access token (refresh tokens are single-use: the answer replaces both); a refused refresh token
+  /// disconnects the account.
   private func refresh() async -> Bool {
     if let refreshTask { return await refreshTask.value }
     guard let current = token else { return false }
@@ -263,11 +399,10 @@ final class TraktService {
       let body: [String: Any] = [
         "refresh_token": current.refresh,
         "client_id": self.clientId,
-        "client_secret": self.clientSecret,
-        "redirect_uri": Self.redirectURI,
+        "redirect_uri": TraktPKCE.redirectURI,
         "grant_type": "refresh_token"
       ]
-      guard let result = try? await self.post("/oauth/token", body) else { return false }
+      guard let result = try? await self.postAuth("/oauth/token", body) else { return false }
       let status = result.1.statusCode
       if (200..<300).contains(status), let json = ServiceJSON.object(result.0) {
         return self.saveToken(json, user: current.user)

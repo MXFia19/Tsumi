@@ -92,7 +92,5 @@
 	<string>Dark</string>
 	<key>TraktClientID</key>
 	<string>$(TRAKT_CLIENT_ID)</string>
-	<key>TraktClientSecret</key>
-	<string>$(TRAKT_CLIENT_SECRET)</string>
 </dict>
 </plist>

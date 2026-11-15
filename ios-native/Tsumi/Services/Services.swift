@@ -95,6 +95,9 @@ final class Services {
       return .watchTogether(value)
     case "schedule":
       return .schedule
+    case "trakt":
+      // tsumi://trakt/callback (Trakt sign-in): handled by TraktService (ShellDeepLinks), never a navigation.
+      return nil
     default:
       return nil
     }

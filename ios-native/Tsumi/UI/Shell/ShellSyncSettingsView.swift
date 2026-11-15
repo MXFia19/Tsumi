@@ -21,7 +21,7 @@ struct ShellSyncSettingsSection: View {
   }
 }
 
-/// Trakt account (device code flow) and scrobbling switches.
+/// Trakt account (sign-in with PKCE in an ASWebAuthenticationSession) and scrobbling switches.
 @MainActor
 struct ShellTraktSettingsSection: View {
   var body: some View {
@@ -41,31 +41,6 @@ struct ShellTraktSettingsSection: View {
         controls(trakt)
       }
       .padding(.vertical, 2)
-      if case .linking(let code, let url, _) = trakt.state {
-        VStack(alignment: .leading, spacing: 8) {
-          Text("Enter this code at \(url.absoluteString):")
-            .font(.footnote)
-            .foregroundStyle(Color.secondary)
-          HStack(spacing: 12) {
-            Text(code)
-              .font(.system(size: 28, weight: .bold, design: .monospaced))
-              .textSelection(.enabled)
-            Button {
-              UIPasteboard.general.string = code
-              ServiceMessages.shared.post(.info, "Copied to clipboard", "Copied Trakt code to clipboard")
-            } label: {
-              Image(systemName: "doc.on.doc")
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Copy the code")
-          }
-          Button("Open Trakt") {
-            TraktService.openInBrowser(url)
-          }
-          .buttonStyle(.bordered)
-        }
-        .padding(.vertical, 4)
-      }
       if let error = trakt.lastError {
         Text(error)
           .font(.footnote)
@@ -88,7 +63,8 @@ struct ShellTraktSettingsSection: View {
     } header: {
       Text("Trakt")
     } footer: {
-      Text("Connect your Trakt account to scrobble the shows and movies you watch, and to resume them where you left off on another device.")
+      // The notice is required by the Trakt API Use Policy.
+      Text("Connect your Trakt account to scrobble the shows and movies you watch, and to resume them where you left off on another device.\nTsumi uses Trakt but is not endorsed or certified by Trakt.")
     }
   }
 
@@ -99,7 +75,7 @@ struct ShellTraktSettingsSection: View {
     case .disconnected:
       return "Not connected"
     case .linking:
-      return "Waiting for the code to be entered on Trakt…"
+      return "Waiting for Trakt…"
     case .connected:
       return trakt.userName.isEmpty ? "Connected" : "Connected as \(trakt.userName)"
     }

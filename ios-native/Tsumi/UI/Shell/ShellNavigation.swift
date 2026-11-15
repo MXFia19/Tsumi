@@ -208,6 +208,12 @@ enum ShellDeepLinks {
       // discord-<app id>:/authorize/callback: consumed by the Discord SDK (account linking).
       return
     }
+    if TraktPKCE.isCallback(url) {
+      // tsumi://trakt/callback: normally caught by the sign-in session itself; otherwise completes the running
+      // sign-in (TraktService checks its state), ignored when none is running.
+      TraktService.shared.handleCallback(url)
+      return
+    }
     if WatchTogetherClient.isLobbyLink(url) {
       // w2g: link → IPC 'w2glink' (joins and shows the lobby through onShowLobby).
       _ = WatchTogetherClient.shared.handle(url: url)

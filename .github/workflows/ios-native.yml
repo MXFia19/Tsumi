@@ -16,8 +16,6 @@ on:
         required: false
       TRAKT_CLIENT_ID:
         required: false
-      TRAKT_CLIENT_SECRET:
-        required: false
   push:
     branches:
       - 'main'
@@ -77,12 +75,11 @@ jobs:
           ls Vendor Vendor/CDiscord Vendor/discord_partner_sdk.xcframework
       - name: Generate Xcode project
         run: xcodegen generate
-      # TRAKT_*: build-time credentials of the Trakt integration (empty when the secrets don't exist).
+      # TRAKT_CLIENT_ID: build-time Client ID of the Trakt integration (empty when the secret doesn't exist).
       - name: Build archive (unsigned)
         env:
           RELEASE_VERSION: ${{ inputs.marketing-version }}
           TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
-          TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
         run: |
           set -o pipefail
           mkdir -p build
