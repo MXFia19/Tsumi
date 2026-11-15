@@ -126,20 +126,25 @@ jobs:
           installer=$(sed -n 's/^path: *//p' release/latest.yml)
           test -f "release/$installer"
           ls -l release
-      # Generated release notes, marked as the latest release (unless it's a draft). A draft for a tag that does not
-      # exist yet points at this commit: the tag is only created if the draft is published.
+      # Generated release notes since the previous app release (vX.Y.Z tags only: the build-dependency releases are
+      # left out), marked as the latest release unless it's a draft. A draft for a tag that does not exist yet points
+      # at this commit: the tag is only created if the draft is published.
       - name: Create the GitHub release
         run: |
           set -euo pipefail
           args=(--repo "$GITHUB_REPOSITORY")
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+          previous=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.draft | not) | .tag_name' | grep -E '^v[0-9]' | grep -vxF "$TAG" | head -n 1 || true)
+          notes=(--title "Tsumi $TAG" --generate-notes)
+          if [ -n "$previous" ]; then notes+=(--notes-start-tag "$previous"); fi
+          echo "Previous release: ${previous:-none}"
+          if gh release view "$TAG" "${args[@]}" > /dev/null 2>&1; then
             echo "Release $TAG already exists (re-run): uploading the files again"
             gh release upload "$TAG" release/* --clobber "${args[@]}"
             if [ "$DRAFT" != true ]; then gh release edit "$TAG" --draft=false --latest "${args[@]}"; fi
           elif [ "$DRAFT" = true ]; then
-            gh release create "$TAG" release/* "${args[@]}" --draft --target "$GITHUB_SHA" --title "Tsumi $TAG" --generate-notes
+            gh release create "$TAG" release/* "${args[@]}" "${notes[@]}" --draft --target "$GITHUB_SHA"
           else
-            gh release create "$TAG" release/* "${args[@]}" --latest --target "$GITHUB_SHA" --title "Tsumi $TAG" --generate-notes
+            gh release create "$TAG" release/* "${args[@]}" "${notes[@]}" --latest --target "$GITHUB_SHA"
           fi
           gh release view "$TAG" "${args[@]}" --json url,isDraft,assets --jq '"\(.url) draft=\(.isDraft)", (.assets[] | "  \(.name) \(.size)")'
 
@@ -154,20 +159,38 @@ jobs:
       TAG: ${{ needs.prepare.outputs.tag }}
       VERSION: ${{ needs.prepare.outputs.version }}
       DRAFT: ${{ needs.prepare.outputs.draft }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
+      # The script comes from the released commit; docs/source.json is updated on the default branch (GitHub Pages).
+      - name: Check out the released commit
+        uses: actions/checkout@v6
+        with:
+          path: released
+          sparse-checkout: |
+            .github/scripts
+            docs
       - name: Check out the default branch
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.repository.default_branch }}
+          path: pages
+          sparse-checkout: docs
       - name: Add the release to docs/source.json
         run: |
           set -euo pipefail
+          source=pages/docs/source.json
+          if [ ! -f "$source" ]; then
+            if [ "$DRAFT" != true ]; then echo "::error::docs/source.json is not on $DEFAULT_BRANCH"; exit 1; fi
+            echo "docs/source.json is not on $DEFAULT_BRANCH yet: dry run on the copy of the released commit"
+            source=released/docs/source.json
+          fi
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,publishedAt,body,assets > "$RUNNER_TEMP/release.json"
-          node .github/scripts/update-source.mjs docs/source.json "$RUNNER_TEMP/release.json" "$GITHUB_REPOSITORY" "$VERSION"
-          git diff --stat
+          node released/.github/scripts/update-source.mjs "$source" "$RUNNER_TEMP/release.json" "$GITHUB_REPOSITORY" "$VERSION"
+          git -C "${source%/docs/source.json}" diff -- docs/source.json
       # Commits made with the workflow token start no workflow (and docs/ is ignored by the build workflows anyway).
       - name: Commit docs/source.json
         if: needs.prepare.outputs.draft != 'true'
+        working-directory: pages
         run: |
           set -euo pipefail
           if git diff --quiet -- docs/source.json; then echo 'docs/source.json is up to date'; exit 0; fi
@@ -176,8 +199,8 @@ jobs:
           git add docs/source.json
           git commit -m "Update the iOS source to $TAG [skip ci]"
           for attempt in 1 2 3; do
-            if git push origin "HEAD:${{ github.event.repository.default_branch }}"; then exit 0; fi
-            git pull --rebase origin "${{ github.event.repository.default_branch }}"
+            if git push origin "HEAD:$DEFAULT_BRANCH"; then exit 0; fi
+            git pull --rebase origin "$DEFAULT_BRANCH"
           done
           echo "::error::Could not push docs/source.json"
           exit 1
