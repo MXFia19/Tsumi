@@ -289,6 +289,8 @@ final class AppNotificationsService {
   func checkAniList() async {
     let settings = AppSettings.shared.values
     guard settings.aniNotify != "none", AccountStore.shared.isAniList else { return }
+    // Notifications need a live session (SessionExpiry.swift).
+    guard let token = AccountStore.shared.anilistToken, SessionToken.isAniListTokenUsable(token) else { return }
     guard let notifications = try? await AniListService.shared.notifications() else { return }
     let lastNotified = ReleaseNotifyStore.shared.lastAni
     let fresh = lastNotified > 0 ? notifications.filter({ $0.createdAt.timeIntervalSince1970 > lastNotified }) : []

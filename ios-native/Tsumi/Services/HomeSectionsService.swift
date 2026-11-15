@@ -516,8 +516,11 @@ final class HomeSectionsService {
   static func searchMedia(_ query: SectionQuery, page: Int = 1, perPage: Int = 50) async throws -> MediaPage {
     if query.isSearch, let text = query.text, SearchRelevance.isRelevanceSort(text: text, sort: query.sort) {
       // Search page (no section) text query, no explicit sort: ranked by relevance with local fuzzy matches.
-      var relevanceQuery = query
-      relevanceQuery.sort = "SEARCH_MATCH"
+      let relevanceQuery: SectionQuery = {
+        var copy = query
+        copy.sort = "SEARCH_MATCH"
+        return copy
+      }()
       var hasher = Hasher()
       hasher.combine(query)
       hasher.combine(perPage)
