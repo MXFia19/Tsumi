@@ -1,4 +1,4 @@
-import { app, ipcMain, dialog, shell } from 'electron'
+import { app, ipcMain, dialog, shell, net } from 'electron'
 import { join, resolve, sep, dirname } from 'node:path'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
@@ -377,6 +377,17 @@ export default class DownloadManager {
 
   pump () {
     if (!this.ready) return
+    // Offline: the queue waits (a resolution would fail and use up the retries).
+    if (!net.isOnline()) {
+      if (!this.onlineTimer) {
+        this.onlineTimer = setTimeout(() => {
+          this.onlineTimer = null
+          this.pump()
+        }, 15_000)
+        this.onlineTimer.unref?.()
+      }
+      return
+    }
     let free = this.config.maxConcurrent - this.running.size
     if (free <= 0) return
     const queued = [...this.items.values()].filter(item => item.status === 'queued' && !this.running.has(item.id)).sort((a, b) => a.createdAt - b.createdAt)
@@ -471,7 +482,12 @@ export default class DownloadManager {
     } catch (error) {
       if (signal.aborted || !this.items.has(item.id)) return
       item.speed = 0
-      if (isRetryable(error) && (item.attempts || 0) < AUTO_RETRIES) {
+      if (!net.isOnline()) {
+        // Connection lost: continue (from where it stopped) once it is back.
+        item.status = 'queued'
+        item.error = null
+        this.changed(item, true)
+      } else if (isRetryable(error) && (item.attempts || 0) < AUTO_RETRIES) {
         // Retries with a fresh link (expired URLs are the usual cause).
         item.attempts = (item.attempts || 0) + 1
         item.status = 'queued'

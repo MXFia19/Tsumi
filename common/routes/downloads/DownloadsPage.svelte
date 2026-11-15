@@ -73,11 +73,22 @@
     return parts.join(' · ')
   }
 
-  function confirmDelete (item) {
+  // Deleting removes files: a second click confirms (like the confirmation dialogs of the iOS app).
+  let confirming = null
+  let confirmTimer = null
+  function askConfirm (key) {
+    confirming = key
+    clearTimeout(confirmTimer)
+    confirmTimer = setTimeout(() => { confirming = null }, 5_000)
+  }
+
+  function deleteItem (item) {
+    confirming = null
     downloadAction('delete', item.id)
   }
 
   function deleteGroup (group) {
+    confirming = null
     for (const item of group.items) downloadAction('delete', item.id)
   }
 
@@ -166,7 +177,12 @@
       <div class='d-flex align-items-center px-20 pt-20 pb-5'>
         <span class='font-size-18 font-weight-semi-bold text-truncate pointer' use:click={() => openDetails(group.media)}>{group.title}</span>
         <span class='text-muted ml-10 text-nowrap'>{group.items.length} {group.items.length === 1 ? 'episode' : 'episodes'} · {formatBytes(group.size)}</span>
-        <button type='button' class='btn btn-link text-muted ml-auto font-size-12 text-nowrap' title='Delete every downloaded episode of this title' use:click={() => deleteGroup(group)}>Delete All</button>
+        {#if confirming === `group:${group.key}`}
+          <button type='button' class='btn btn-danger btn-sm ml-auto text-nowrap' title='Delete every downloaded episode of this title' use:click={() => deleteGroup(group)}>Delete {group.items.length} {group.items.length === 1 ? 'episode' : 'episodes'}</button>
+          <button type='button' class='btn btn-sm bg-dark-light ml-5' use:click={() => { confirming = null }}>Cancel</button>
+        {:else}
+          <button type='button' class='btn btn-link text-muted ml-auto font-size-12 text-nowrap' title='Delete every downloaded episode of this title' use:click={() => askConfirm(`group:${group.key}`)}>Delete All</button>
+        {/if}
       </div>
       {#each group.items as item (item.id)}
         <div class='download-row d-flex align-items-center bg-dark-light rounded mx-20 my-5 p-10 pointer' role='button' tabindex='0' use:click={() => playDownload(item)}>
@@ -181,7 +197,11 @@
           <div class='d-flex flex-shrink-0'>
             <button type='button' class='btn btn-square bg-dark rounded-2 mr-5 d-flex align-items-center justify-content-center' title='Play offline' use:click={() => playDownload(item)}><Play size='1.8rem' fill='currentColor' /></button>
             <button type='button' class='btn btn-square bg-dark rounded-2 mr-5 d-flex align-items-center justify-content-center' title='Show in folder' use:click={() => openDownloadFolder(item.id)}><FolderOpen size='1.8rem' /></button>
-            <button type='button' class='btn btn-square bg-dark rounded-2 d-flex align-items-center justify-content-center' title='Delete' use:click={() => confirmDelete(item)}><Trash2 size='1.8rem' /></button>
+            {#if confirming === item.id}
+              <button type='button' class='btn btn-danger rounded-2 px-10 d-flex align-items-center justify-content-center' title='Delete the downloaded file' use:click={() => deleteItem(item)}><Trash2 size='1.6rem' class='mr-5' /> Delete</button>
+            {:else}
+              <button type='button' class='btn btn-square bg-dark rounded-2 d-flex align-items-center justify-content-center' title='Delete' use:click={() => askConfirm(item.id)}><Trash2 size='1.8rem' /></button>
+            {/if}
           </div>
         </div>
       {/each}

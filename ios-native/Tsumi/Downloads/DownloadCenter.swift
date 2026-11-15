@@ -71,6 +71,20 @@ final class DownloadCenter {
       Task { @MainActor in DownloadCenter.shared.reattach(assetTasks: found) }
     }
     DownloadProgressQueue.shared.start()
+    observeConnection()
+  }
+
+  /// Starts the queued downloads when the connection comes back.
+  private func observeConnection() {
+    withObservationTracking {
+      _ = ShellConnectionMonitor.shared.isOffline
+    } onChange: {
+      Task { @MainActor in
+        let center = DownloadCenter.shared
+        center.observeConnection()
+        center.pump()
+      }
+    }
   }
 
   private func reattach(fileTasks tasks: [URLSessionDownloadTask]) {
@@ -323,6 +337,8 @@ final class DownloadCenter {
 
   func pump() {
     guard started, reconnected >= 2 else { return }
+    // Offline: the queue waits (a resolution would fail and use up the retries); see observeConnection.
+    guard !ShellConnectionMonitor.shared.isOffline else { return }
     var free = maxConcurrent - items.filter { $0.status.isRunning }.count
     guard free > 0 else { return }
     for item in items where item.status == .queued {
@@ -370,6 +386,14 @@ final class DownloadCenter {
   /// Failure: retried with a fresh link (expired links are the usual cause) unless final.
   private func failed(_ id: String, _ error: Error) {
     guard let item = self.item(id), item.status != .paused else { return }
+    if ShellConnectionMonitor.shared.isOffline {
+      // Connection lost: continue once it is back (pump runs again then).
+      update(id) {
+        $0.status = .queued
+        $0.error = nil
+      }
+      return
+    }
     let final = (error as? DownloadFailure)?.final ?? false
     if !final && item.attempts < Self.autoRetries {
       update(id) {
