@@ -38,8 +38,16 @@ struct ShellToastHost: ViewModifier {
 struct ShellWatchTogetherInvites: View {
   var body: some View {
     let client = WatchTogetherClient.shared
+    // The lobby screen shows its own Join card.
+    let lobbyVisible = AppRouter.shared.selectedTab == .watchTogether && ShellLayers.top == .root
     return VStack(spacing: 8) {
       if client.isInLobby {
+        // v2.3: joined a lobby that is already watching: Join prompt once, wherever the user is.
+        if !lobbyVisible, let offer = client.appWideJoinOffer {
+          W2GJoinCard(offer: offer, client: client, dismissible: true)
+            .frame(maxWidth: 420)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
         ForEach(client.invites) { invite in
           W2GInvitePrompt(invite: invite, client: client)
             .transition(.move(edge: .top).combined(with: .opacity))
@@ -48,6 +56,7 @@ struct ShellWatchTogetherInvites: View {
     }
     .padding(.horizontal, 12)
     .animation(.easeInOut(duration: 0.2), value: client.invites)
+    .animation(.easeInOut(duration: 0.2), value: client.appWideJoinOffer)
   }
 }
 

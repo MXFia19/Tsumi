@@ -124,6 +124,8 @@ struct W2GMember: Identifiable, Hashable {
   var client: String? = nil
   /// The peer sent `init` (false for a connected peer listed after the introduction grace).
   var introduced: Bool = true
+  /// When its first `init` arrived (ms, local clock): v2.3 "No signal" 10 s later without `status`.
+  var introducedAt: Double? = nil
 
   /// PROTOCOL "Identity": the `init` id, else the transport id.
   var userId: String { user.id }
@@ -360,6 +362,19 @@ struct W2GInvite: Identifiable, Equatable {
   var prompt: String { "\(name) invites you to watch \(title) \u{00B7} \(episodeLabel)" }
 
   static func == (lhs: W2GInvite, rhs: W2GInvite) -> Bool { lhs.id == rhs.id }
+}
+
+/// v2.3 Join card: "{reference name} is watching {title · episode}" [Join].
+struct W2GJoinOffer: Equatable {
+  /// userId of the reference member.
+  var referenceId: String
+  var name: String
+  /// "Title · Episode 5" of the lobby media.
+  var label: String
+  /// The lobby media key.
+  var key: String
+
+  var text: String { "\(name) is watching \(label)" }
 }
 
 /// An accepted invite waiting for the file to load, then seeking to the inviter's (or host's) expected time.

@@ -217,9 +217,18 @@ enum W2GSync {
   /// - Parameters:
   ///   - protocolVersion: 1 when its `init` had no `protocol` (v1 client), nil before any `init`.
   ///   - lastSeen: when anything was last received from it (pings included).
-  static func syncBadge(signal: W2GSignal, protocolVersion: Int?, lastSeen: Double?, local: W2GLocalStatus?, now: Double) -> W2GBadge {
+  static func syncBadge(
+    signal: W2GSignal,
+    protocolVersion: Int?,
+    lastSeen: Double?,
+    local: W2GLocalStatus?,
+    now: Double,
+    introducedAt: Double? = nil
+  ) -> W2GBadge {
     guard let status = signal.status else {
       if protocolVersion == 1 { return W2GBadge(kind: .old, text: "Old version") }
+      // v2.3: a v2 member is "No signal" only once 10 s passed after its `init` without any status.
+      if let introducedAt, now - introducedAt < noSignalMs { return W2GBadge(kind: .connecting, text: "Connecting\u{2026}") }
       return W2GBadge(kind: .nosignal, text: "No signal")
     }
     let receivedAt = signal.receivedAt ?? 0
@@ -458,25 +467,80 @@ enum W2GSync {
     return W2GPresenceStep(memory: next, events: kept)
   }
 
-  /// "Invite to watch" on a member row (sync.js canInvite): we play a media; the member is a v2 client that is
-  /// idle, on another episode, watching on its own, or without signal for 10 s; in `host` mode only the host invites.
+  /// v2.3 "Invite to watch" on a member row: there is a media to offer (`offeredKey`: ours, else the lobby media
+  /// while the lobby is watching); the member is a v2 client that is idle, on another key, independent, or
+  /// "No signal" (including no `status` 10 s after its `init`); in `host` mode only the host invites.
   static func canInvite(
-    selfWatching: Bool,
-    hasMedia: Bool,
+    offeredKey: String?,
     mode: W2GMode,
     isHost: Bool,
     isSelf: Bool,
     protocolVersion: Int?,
     badge: W2GBadge.Kind,
     status: W2GStatus?,
-    receivedAt: Double?,
+    introducedAt: Double?,
     now: Double
   ) -> Bool {
-    guard selfWatching, hasMedia, !isSelf, (protocolVersion ?? 1) >= protocolVersion2 else { return false }
+    guard let offeredKey, !offeredKey.isEmpty, !isSelf, (protocolVersion ?? 1) >= protocolVersion2 else { return false }
     if mode == .host && !isHost { return false }
-    if status?.state == .idle || badge == .idle || badge == .other || badge == .independent { return true }
-    guard badge == .nosignal, status != nil, let receivedAt else { return false }
-    return now - receivedAt >= noSignalMs
+    guard let status else {
+      // No `status` yet: "No signal" once 10 s passed since its `init`.
+      guard let introducedAt else { return false }
+      return now - introducedAt >= noSignalMs
+    }
+    if badge == .nosignal { return true }
+    return status.state == .idle || !status.following || status.mediaKey != offeredKey
+  }
+
+  // MARK: - v2.3 lobby watching, join, invite from anywhere
+
+  /// A `media`, `index` or `player` received this soon after its sender's `init` is the lobby state sent to
+  /// newcomers (sync.js INITIAL_STATE_MS): remembered, never started (the user presses Join).
+  static let sessionStateWindowMs: Double = 5_000
+  /// The first-connection Join prompt is shown when the lobby is watching within this time after joining.
+  static let firstJoinWindowMs: Double = 20_000
+  /// "Invite everyone not watching": one invite every 200 ms.
+  static let inviteSpacingSeconds: Double = 0.2
+
+  /// `playing`, `paused`, `buffering` or `loading`: the member has a media open.
+  static func isWatchingState(_ state: W2GPlaybackState) -> Bool {
+    state == .playing || state == .paused || state == .buffering || state == .loading
+  }
+
+  /// The status follows the lobby and is on the lobby key in a watching state.
+  static func matchesLobby(_ status: W2GStatus?, lobbyKey: String) -> Bool {
+    guard let status, !lobbyKey.isEmpty else { return false }
+    return status.following && status.mediaKey == lobbyKey && isWatchingState(status.state)
+  }
+
+  /// The lobby's reference member: the host when it watches the lobby media, else the smallest following userId
+  /// that does; nil when the lobby is not watching.
+  static func lobbyReference(lobbyKey: String?, hostId: String?, candidates: [W2GReferenceCandidate]) -> String? {
+    guard let lobbyKey, !lobbyKey.isEmpty else { return nil }
+    if let hostId, let host = candidates.first(where: { $0.userId == hostId }) {
+      if matchesLobby(host.status, lobbyKey: lobbyKey) { return hostId }
+      // Only an idle or independent host (or one without status) hands the reference to another member.
+      let hostAway = host.status == nil || host.status?.state == .idle || host.status?.following == false
+      if !hostAway { return nil }
+    }
+    return electHost(candidates.filter { matchesLobby($0.status, lobbyKey: lobbyKey) }.map { $0.userId })
+  }
+
+  /// Where the reference is expected to be now, and its play / pause state.
+  static func referenceTarget(status: W2GStatus, receivedAt: Double, rttMs: Double?, now: Double) -> W2GHostTarget {
+    W2GHostTarget(
+      time: expectedTime(status, receivedAt: receivedAt, now: now, rttMs: rttMs),
+      paused: status.state == .paused,
+      mediaKey: status.mediaKey
+    )
+  }
+
+  /// The Join card is offered: the lobby is watching (a reference other than us) and we are not on the lobby
+  /// media (idle, another key, or independent).
+  static func offersJoin(referenceId: String?, selfId: String, localState: W2GPlaybackState, localKey: String, following: Bool, lobbyKey: String) -> Bool {
+    guard let referenceId, referenceId != selfId, !lobbyKey.isEmpty else { return false }
+    if !following { return true }
+    return localState == .idle || localKey != lobbyKey
   }
 
   private static let protocolVersion2 = 2
@@ -608,7 +672,7 @@ struct W2GSignal: Equatable {
 /// Sync badge of a member row.
 struct W2GBadge: Equatable {
   enum Kind: String {
-    case old, nosignal, idle, loading, buffering, other, sync, ahead, behind, playing, paused, independent
+    case old, nosignal, connecting, idle, loading, buffering, other, sync, ahead, behind, playing, paused, independent
   }
 
   var kind: Kind
@@ -700,4 +764,10 @@ struct W2GElectionCandidate: Equatable {
   var protocolVersion: Int?
   /// Its last `status` does not say `following: false`.
   var following: Bool
+}
+
+/// A member considered for the lobby's reference (v2.3).
+struct W2GReferenceCandidate: Equatable {
+  var userId: String
+  var status: W2GStatus?
 }

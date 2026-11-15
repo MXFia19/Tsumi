@@ -161,6 +161,12 @@ struct W2GLobbyView: View {
 
   var body: some View {
     VStack(spacing: 0) {
+      // v2.3: "{reference} is watching {title · episode}" [Join] at the top while we are not on it.
+      if let offer = client.joinOffer {
+        W2GJoinCard(offer: offer, client: client)
+          .padding(.horizontal, 16)
+          .padding(.top, 10)
+      }
       W2GLobbyHeader(client: client)
       Divider()
       if horizontalSizeClass == .regular {
@@ -343,6 +349,16 @@ struct W2GLobbyHeader: View {
       Toggle("Watch on my own", isOn: independentBinding)
         .toggleStyle(.switch)
         .font(.subheadline)
+      if client.canInviteEveryone {
+        Button {
+          client.inviteEveryoneNotWatching()
+        } label: {
+          Label("Invite everyone not watching", systemImage: "person.3.fill")
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+        }
+        .buttonStyle(.bordered)
+      }
       if let label = client.rejoinLabel {
         Button {
           client.rejoin()
@@ -671,7 +687,7 @@ struct W2GBadgeChip: View {
     case .other: return .purple
     case .independent: return .teal
     case .playing: return .blue
-    case .paused, .idle, .nosignal, .old: return .gray
+    case .paused, .idle, .nosignal, .old, .connecting: return .gray
     }
   }
 }

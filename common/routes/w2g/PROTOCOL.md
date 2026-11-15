@@ -225,3 +225,39 @@ Presence announcements, in addition to v2.1, with the same debounce:
 | `following` true → false | "Alice is watching on their own" |
 | `following` false → true | "Alice is back in sync" |
 | `mediaKey` changes while `following` is false | "Alice is watching {title · episode}" (replaces "switched to") |
+
+## v2.3 additions: joining the current playback and inviting from anywhere
+
+### Status from every member
+
+Every v2 client sends `status` every 3 s from the moment it is in a lobby, not only while in the player. Outside the player it sends `state: "idle"` and `nowPlaying: null`, so members who aren't watching are known at once. A v2 member that has sent no `status` 10 s after its `init` is "No signal".
+
+### Lobby media and "watching"
+
+The **lobby media** is the last `media` event sent or received: `{ media, episode, key }`. The host sends it to each newcomer right after `init` and `host`, as before.
+
+The lobby is **watching** when the host's last `status` has a `mediaKey` equal to the lobby key and a state of `playing`, `paused`, `buffering` or `loading`. If the host is idle or independent, it is watching when any following member's status matches the same way. That member (the host, or else the first such member by smallest `userId`) is the **reference** for the position.
+
+### Join the current playback (late joiners and anyone not watching)
+
+When the lobby is watching and the local client is not on the lobby media (local state `idle`, a different local `mediaKey`, or independent):
+- **Lobby page:** a card at the top, "{reference name} is watching {title · episode}", with a **Join** button.
+- **Player panel:** the same card while it's open. Outside the panel, show it as a dismissible prompt only when the client is following (not independent).
+- **First connection:** when the client joins a lobby that is already watching, show it once as an app-wide prompt (toast with a Join action), wherever the user is.
+
+**Join** works like a joined invite:
+1. It plays the lobby media through the same path as a received `media` event, even when the key is unchanged.
+2. Once loaded, it seeks to the reference's expected time and takes its play/pause state.
+3. It sets `following` to true if the client was independent.
+
+Nothing ever starts on its own: the user always presses Join.
+
+### Invites from anywhere
+
+`canInvite` no longer requires the inviter to be in the player:
+- **Offered media:** the inviter's own media if it is in the player with one, otherwise the lobby media while the lobby is watching. With no media to offer there is no button.
+- **Eligible members:** a member whose state is `idle`, whose `mediaKey` differs from the offered key, who is independent, or who is "No signal" (including a v2 member with no `status` 10 s after its `init`).
+- **`host` mode:** only the host can invite. In `everyone` mode anyone can.
+- **Payload time and paused state:** the inviter's own playback when it is playing the offered media, otherwise the reference's expected time and state.
+
+**Host tool "Invite everyone not watching":** sends one `invite` to each eligible member, 200 ms apart. It is shown in the player panel and on the lobby page while the host has a media to offer and at least one member is eligible.

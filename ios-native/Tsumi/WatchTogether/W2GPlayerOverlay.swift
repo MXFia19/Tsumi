@@ -100,7 +100,7 @@ struct W2GPlayerLayer: View {
             }
             // With the panel open they move to its top, so they are never under it.
             if !panelOpen {
-              W2GPromptStack(client: client)
+              W2GPromptStack(client: client, showsJoin: true)
             }
           }
         }
@@ -309,6 +309,12 @@ struct W2GPlayerPanel: View {
   var body: some View {
     VStack(spacing: 0) {
       header
+      if let offer = client.joinOffer {
+        // v2.3: "Alice is watching … [Join]" while the panel is open.
+        W2GJoinCard(offer: offer, client: client, dismissible: false)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 6)
+      }
       if !client.pendingRequests.isEmpty || !client.invites.isEmpty {
         // Host requests and invites stay visible and tappable while the panel is open.
         W2GPromptStack(client: client, alignment: .leading)
@@ -398,6 +404,11 @@ struct W2GPlayerPanel: View {
         if let label = client.rejoinLabel {
           actionButton("Rejoin \(label)", systemImage: "arrow.uturn.backward.circle.fill") {
             client.rejoin()
+          }
+        }
+        if client.canInviteEveryone {
+          actionButton("Invite everyone not watching", systemImage: "person.3.fill") {
+            client.inviteEveryoneNotWatching()
           }
         }
         if client.controlLocked {
@@ -671,9 +682,16 @@ enum W2GAccentStyle {
 struct W2GPromptStack: View {
   let client: WatchTogetherClient
   var alignment: HorizontalAlignment = .trailing
+  /// v2.3: also the dismissible Join prompt (over the video with the panel closed).
+  var showsJoin = false
 
   var body: some View {
     VStack(alignment: alignment, spacing: 8) {
+      if showsJoin, let offer = client.floatingJoinOffer {
+        W2GJoinCard(offer: offer, client: client, dismissible: true)
+          .frame(width: 280)
+          .transition(.move(edge: .trailing).combined(with: .opacity))
+      }
       ForEach(client.invites) { invite in
         W2GInvitePrompt(invite: invite, client: client)
           .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -725,6 +743,54 @@ struct W2GInvitePrompt: View {
     .foregroundStyle(.white)
     .padding(12)
     .frame(width: 280, alignment: .leading)
+    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(white: 0.1).opacity(0.95)))
+    .environment(\.colorScheme, .dark)
+  }
+}
+
+/// v2.3 "{reference} is watching {title · episode}" [Join] (lobby page, player panel, prompts).
+@MainActor
+struct W2GJoinCard: View {
+  let offer: W2GJoinOffer
+  let client: WatchTogetherClient
+  /// A prompt (over the video, app-wide) that can be dismissed; the lobby and panel cards cannot.
+  var dismissible = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label(offer.text, systemImage: "play.tv.fill")
+        .font(.subheadline.weight(.semibold))
+        .lineLimit(3)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        Button {
+          client.joinPlayback()
+        } label: {
+          Label("Join", systemImage: "play.fill")
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(W2GAccentStyle.text)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 36)
+            .background(Capsule().fill(W2GAccentStyle.fill))
+        }
+        .buttonStyle(.plain)
+        if dismissible {
+          Button {
+            client.dismissJoinOffer()
+          } label: {
+            Text("Dismiss")
+              .font(.subheadline.weight(.semibold))
+              .padding(.horizontal, 12)
+              .frame(minHeight: 36)
+              .background(Capsule().fill(Color.white.opacity(0.16)))
+          }
+          .buttonStyle(.plain)
+        }
+      }
+    }
+    .foregroundStyle(.white)
+    .padding(12)
+    .frame(maxWidth: .infinity, alignment: .leading)
     .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(white: 0.1).opacity(0.95)))
     .environment(\.colorScheme, .dark)
   }

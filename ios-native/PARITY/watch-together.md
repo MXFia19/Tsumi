@@ -163,3 +163,17 @@ Pure rules in `W2GSync.swift`, aligned with `sync.js` v2.1 (`formatSource`, `par
 UI fixes from the PC test: outgoing lobby bubbles and every accent-filled button (Request…, Accept, Join) use `W2GAccentStyle` (the accent colour, the default `AccentColor` asset being white, with black or white text by luminance); outgoing lines of the player panel are white on a light highlight. With the player panel open, host requests and invites are shown at the top of the panel (`W2GPromptStack`), so they are never under it.
 
 Settings key added: `w2gWatchOnMyOwn` (default false, same name as util.js).
+
+## v2.3 (joining the current playback, inviting from anywhere), 2026-11-15
+
+Pure rules in `W2GSync.swift`, aligned with `sync.js` v2.3 (`lobbyReference`, `canJoinPlayback` → `offersJoin`, `canInvite`, `offeredMedia` / `invitePosition`, `autoStartsMedia`, INITIAL_STATE_MS = 5 s, the "Connecting…" badge).
+
+| # | PROTOCOL section | Swift | Status |
+|---|---|---|---|
+| v2.3.1 | `status` every 3 s from every member, `idle` + `nowPlaying: null` outside the player; no `status` 10 s after `init` = "No signal" ("Connecting…" before) | heartbeat in every state; `W2GMember.introducedAt`; `syncBadge(…, introducedAt:)` | Done |
+| v2.3.2 | Lobby media = last `media` sent or received; "watching" + reference (host on the lobby key, else — host idle / independent / without status — the smallest following member on it) | `sharedMedia`, `lobbyReferenceId()`, `W2GSync.lobbyReference` | Done |
+| v2.3.3 | Join card "{reference} is watching {title · episode}": lobby page (top), player panel (open), dismissible prompt over the player while following, once app-wide on first connection | `joinOffer`, `floatingJoinOffer`, `appWideJoinOffer`, `W2GJoinCard`, `ShellWatchTogetherInvites` | Done |
+| v2.3.4 | Join: lobby media through the `media` path (same key too), then the reference's expected time and state, `following` back on | `joinPlayback()`, `applyPendingJoin` (from `playerReady`) | Done |
+| v2.3.5 | Nothing starts on its own: the lobby state sent to newcomers (5 s after the sender's `init`) and any `media` while not in the player are only remembered | `isSessionState(from:)`, `receivedMedia` / `index` / `player` gates | Done (the initial `player` / `index` are not applied either) |
+| v2.3.6 | `canInvite` from anywhere: offered media = ours, else the lobby media while watching; eligible = idle / other key / independent / No signal (incl. 10 s after `init`); payload time = ours, else the reference's | `offeredKey()`, `W2GSync.canInvite`, `invite(_:)` | Done |
+| v2.3.7 | Host tool "Invite everyone not watching" (200 ms apart) in the player panel and the lobby page | `canInviteEveryone`, `inviteEveryoneNotWatching()` | Done |
