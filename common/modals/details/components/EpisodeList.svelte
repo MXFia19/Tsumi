@@ -49,6 +49,7 @@
   import EpisodeListSk from '@/components/skeletons/EpisodeListSk.svelte'
   import AudioLabel from '@/components/AudioLabel.svelte'
   import SmartImage from '@/components/visual/SmartImage.svelte'
+  import DownloadButton from '@/components/DownloadButton.svelte'
   import { tmdbClient } from '@/modules/tmdb.js'
 
   export let media
@@ -362,6 +363,9 @@
                       <div class='ml-auto pl-5'>
                         {length}m
                       </div>
+                    {/if}
+                    {#if !unreleased}
+                      <DownloadButton {media} episode={{ number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode, title: resolvedTitle, image }} class={length ? 'ml-5' : 'ml-auto'} />
                     {/if}
                   </div>
                   {#if completed}

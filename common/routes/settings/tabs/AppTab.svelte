@@ -51,6 +51,7 @@
   import { updateState } from '@/modals/UpdateModal.svelte'
   import { platformMap } from '@/routes/settings/SettingsPage.svelte'
   import SettingCard from '@/routes/settings/components/SettingCard.svelte'
+  import DownloadSettings from '@/routes/settings/components/DownloadSettings.svelte'
   import ChangelogTab from '@/routes/settings/tabs/ChangelogTab.svelte'
   import ConfirmButton from '@/components/inputs/ConfirmButton.svelte'
   import WPC from '@/modules/wpc.js'
@@ -168,6 +169,7 @@
   </SettingCard>
 {/if}
 
+<DownloadSettings bind:settings />
 <h4 class='mb-10 font-weight-bold'>Debug Settings</h4>
 <SettingCard title='Logging Levels' description='Enable logging of specific parts of the app.{!SUPPORTS.isAndroid ? ` These logs are saved to ${VERSION.platform === 'win32' ? '%appdata%' : '~/config'}/Tsumi/logs/main.log.` : ''}'>
   <select class='form-control bg-dark mw-150 w-150 text-truncate' bind:value={$debugStore}>

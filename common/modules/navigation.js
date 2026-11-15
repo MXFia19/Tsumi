@@ -18,6 +18,7 @@ const debug = Debug('ui:history')
  * @property {string} SETTINGS
  * @property {string} PLAYER
  * @property {string} WATCH_TOGETHER
+ * @property {string} DOWNLOADS
  */
 
 /**
@@ -63,7 +64,8 @@ export const page = (() => {
     CATALOGS: 'catalogs',
     SETTINGS: 'settings',
     PLAYER: 'player',
-    WATCH_TOGETHER: 'watch_together'
+    WATCH_TOGETHER: 'watch_together',
+    DOWNLOADS: 'downloads'
   }
   return {
     set,

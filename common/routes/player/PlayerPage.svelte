@@ -20,7 +20,8 @@
   import Seekbar from 'perfect-seekbar'
   import { click } from '@/modules/click.js'
   import VideoDeband from 'video-deband'
-  import Helper from '@/modules/helper.js'
+  import { downloadsSupported, downloadFromPlayer, updateEntryOrQueue } from '@/modules/downloads/downloads.js'
+  import { ArrowDownToLine } from 'lucide-svelte'
 
   import { w2gEmitter, state } from '@/routes/w2g/WatchTogetherPage.svelte'
   import PlayerW2G from '@/routes/w2g/components/PlayerW2G.svelte'
@@ -194,6 +195,8 @@
   export let playableFiles = []
   export let updateCurrent
   let streamServers = []
+  // "Download Episode" of the More menu: episodes played from an extension (not a downloaded file).
+  $: canDownload = downloadsSupported && !!current?.media?.media && !current?.offline
   let activeServerIndex = 0
   $: updateFiles(files)
   let src = null
@@ -1843,7 +1846,7 @@
       externalPlayerReady = false
       const _media = media.episodeRange ? structuredClone(media) : media
       if (media.episodeRange) _media.episode = media.episodeRange.last
-      Helper.updateEntry(_media)
+      updateEntryOrQueue(_media) // Helper.updateEntry, queued while offline
       if (externalPlayback) tryPlayNext()
     }
   }
@@ -2556,13 +2559,13 @@
           >
           <div
             class='position-absolute hm-40 text-capitalize text-nowrap bg-dark rounded dr-arrow'
-            style='margin-top: {launchedExternal
+            style='margin-top: {(canDownload ? -3.5 : 0) + (launchedExternal
               ? -14
               : externalPlayback
               ? -10.3
               : SUPPORTS.isAndroid || $settings.playerPath
               ? -21
-              : -17.5}rem !important; margin-left: {launchedExternal
+              : -17.5)}rem !important; margin-left: {launchedExternal
               ? -11.1
               : externalPlayback
               ? -9.8
@@ -2660,6 +2663,21 @@
               <SquareArrowOutUpRight size='2rem' strokeWidth={2.5} />
               <div class='ml-10'>External Player</div>
             </div>
+            {#if canDownload}
+              <div
+                role='button'
+                aria-label='Download This Episode'
+                class='pointer d-flex align-items-center justify-content-center font-size-16 bd-highlight py-5 px-10 option'
+                title='Download this episode to watch it offline'
+                use:click={() => {
+                  downloadFromPlayer(current, streamServers[activeServerIndex])
+                  showOptions.set(false)
+                }}
+              >
+                <ArrowDownToLine size='2rem' strokeWidth={2.5} />
+                <div class='ml-10'>Download Episode</div>
+              </div>
+            {/if}
             <div
               role='button'
               aria-label='Modify Existing Files or Change to a New File'

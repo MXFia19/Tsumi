@@ -17,6 +17,7 @@
   import SmartImage from '@/components/visual/SmartImage.svelte'
   import AudioLabel from '@/components/AudioLabel.svelte'
   import Following from '@/modals/details/components/Following.svelte'
+  import DownloadNextButton from '@/components/DownloadNextButton.svelte'
   import { IPC } from '@/modules/bridge.js'
   import SmallCard from '@/components/cards/SmallCard.svelte'
   import SmallCardSk from '@/components/skeletons/SmallCardSk.svelte'
@@ -478,6 +479,7 @@
                     {playButtonText}
                   </button>
                   <div class='mt-20 d-flex'>
+                    <DownloadNextButton {media} />
                     {#if Helper.isAuthorized() && typeof staticMedia.id !== 'string'}
                       <Scoring class='mr-10 ' {media} viewAnime={true} />
                     {/if}

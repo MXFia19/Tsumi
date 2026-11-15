@@ -608,6 +608,10 @@ export const defaults = {
   w2gDisplayName: '',
   // "Watch on my own": last choice, reused for the next lobby.
   w2gWatchOnMyOwn: false,
+  // Offline downloads: folder ('' = Videos/Tsumi), simultaneous downloads, HLS quality (highest | 1080 | 720 | 480 | 360 | lowest).
+  downloadFolder: '',
+  downloadMaxConcurrent: 2,
+  downloadQuality: 'highest',
   extensions: {},
   defaultExtension: null,
   starredExtension: null

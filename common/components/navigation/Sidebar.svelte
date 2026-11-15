@@ -11,7 +11,8 @@
   import { page, modal } from '@/modules/navigation.js'
   import { ELECTRON, VERSION } from '@/modules/bridge.js'
   import SidebarLink from '@/components/navigation/SidebarLink.svelte'
-  import { CalendarSearch, Clapperboard, CloudDownload, Home, Search, ListVideo, History, LogIn, Settings, Users, Bell, BellDot } from 'lucide-svelte'
+  import { downloads, downloadsSupported } from '@/modules/downloads/downloads.js'
+  import { CalendarSearch, Clapperboard, CloudDownload, Home, Search, ListVideo, History, LogIn, Settings, Users, Bell, BellDot, ArrowDownToLine } from 'lucide-svelte'
   const btnSize = !SUPPORTS.isAndroid ? '3.1rem' : '3.6rem'
   let _status = status.value
   $: statusTransition = false
@@ -157,6 +158,23 @@
         color={active ? 'currentColor' : 'var(--gray-color-very-dim)'}
       />
     </SidebarLink>
+    {#if downloadsSupported}
+      {@const running = $downloads.filter((item) => item.status === 'downloading' || item.status === 'resolving').length}
+      <SidebarLink
+        click={() => page.navigateTo(page.DOWNLOADS)}
+        _page={page.DOWNLOADS}
+        icon='download'
+        text={running ? `Downloads (${running})` : 'Downloads'}
+        let:active
+      >
+        <ArrowDownToLine
+          size={btnSize}
+          class='flex-shrink-0 p-5 m-5 rounded'
+          strokeWidth='2.5'
+          color={active || running ? 'currentColor' : 'var(--gray-color-very-dim)'}
+        />
+      </SidebarLink>
+    {/if}
 
     {#if $updateState === 'downloading'}
       <SidebarLink

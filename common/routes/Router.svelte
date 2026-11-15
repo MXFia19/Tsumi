@@ -4,6 +4,7 @@
   import WatchTogetherPage from '@/routes/w2g/WatchTogetherPage.svelte'
   import SchedulePage from '@/routes/SchedulePage.svelte'
   import CatalogPage from '@/routes/catalogs/CatalogPage.svelte'
+  import DownloadsPage from '@/routes/downloads/DownloadsPage.svelte'
   import { isMobile, isSuperSmall } from '@/components/Miniplayer.svelte'
   import SearchPage from '@/routes/search/SearchPage.svelte'
   import { cache, caches } from '@/modules/cache.js'
@@ -52,4 +53,6 @@
   <CatalogPage />
 {:else if $page === page.WATCH_TOGETHER}
   <WatchTogetherPage />
+{:else if $page === page.DOWNLOADS}
+  <DownloadsPage />
 {/if}
