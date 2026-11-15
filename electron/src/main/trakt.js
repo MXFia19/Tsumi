@@ -1,19 +1,20 @@
 import { app, ipcMain, safeStorage, shell } from 'electron'
 import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { TRAKT_AUTH, TRAKT_REDIRECT_URI, createPkce, authorizeUrl, parseCallback, callbackErrorMessage, oauthErrorCode } from './traktAuth.js'
 
-/* global __TRAKT_CLIENT_ID__, __TRAKT_CLIENT_SECRET__ */
-// Injected at build time from the TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET environment variables
-// (electron/webpack.config.cjs, DefinePlugin). Empty: Trakt is not available in this build.
+/* global __TRAKT_CLIENT_ID__ */
+// Injected at build time from the TRAKT_CLIENT_ID environment variable (electron/webpack.config.cjs, DefinePlugin).
+// Empty: Trakt is not available in this build. There is no client secret: the sign-in uses PKCE.
 const CLIENT_ID = typeof __TRAKT_CLIENT_ID__ === 'string' ? __TRAKT_CLIENT_ID__ : ''
-const CLIENT_SECRET = typeof __TRAKT_CLIENT_SECRET__ === 'string' ? __TRAKT_CLIENT_SECRET__ : ''
 
 const API = 'https://api.trakt.tv'
-const REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
 /** Trakt allows one POST / PUT / DELETE per second per user. */
 const WRITE_SPACING_MS = 1_100
 /** The renderer gets this long to send its last positions when the app quits. */
 const QUIT_FLUSH_MS = 3_000
+/** A sign-in started in the browser is abandoned after this long. */
+const LINK_TIMEOUT_MS = 10 * 60_000
 
 /** @param {number} ms */
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -23,29 +24,27 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
  * @typedef {'unavailable' | 'disconnected' | 'linking' | 'connected'} TraktState
  */
 
-const LINK_ERRORS = {
-  404: 'This code is not valid, try again.',
-  409: 'This code was already used, try again.',
-  410: 'The code expired, try again.',
-  418: 'Access was denied on Trakt.'
-}
-
 /**
- * Trakt account of the app: device code flow (code shown in Settings, trakt.tv/activate opened in the browser),
- * tokens encrypted with safeStorage in userData, refresh, and every API request of the renderer
+ * Trakt account of the app: sign-in with the authorization code flow and PKCE (the authorize page opens in the
+ * browser, Trakt redirects to https://mxfia19.github.io/Tsumi/trakt/, which opens tsumi://trakt/callback, routed here
+ * by protocol.js), tokens encrypted with safeStorage in userData, refresh, and every API request of the renderer
  * (common/modules/sync/trakt.js) so the tokens never reach the page.
  */
 export default class Trakt {
-  available = !!(CLIENT_ID && CLIENT_SECRET)
+  available = !!CLIENT_ID
   /** @type {TraktToken | null} */
   token = null
   tokenPath = join(app.getPath('userData'), 'trakt-token')
   /** @type {TraktState} */
   state = 'unavailable'
   error = ''
-  /** @type {{ code: string, url: string, expiresAt: number } | null} */
+  /**
+   * Sign-in waiting for the browser. The verifier and state belong to this attempt only: kept in memory, never sent to
+   * the page.
+   * @type {{ url: string, expiresAt: number, verifier: string, state: string, timer: ReturnType<typeof setTimeout> } | null}
+   */
   linking = null
-  /** Incremented by cancel / unlink, so a running link doesn't apply its result. */
+  /** Incremented by link / cancel / unlink, so a running exchange doesn't apply its result. */
   generation = 0
   /** @type {Promise<boolean> | null} */
   refreshing = null
@@ -63,7 +62,7 @@ export default class Trakt {
     ipcMain.on('trakt:link', () => this.link())
     ipcMain.on('trakt:cancel', () => this.cancel())
     ipcMain.on('trakt:unlink', () => this.unlink())
-    ipcMain.on('trakt:open', () => { if (this.linking?.url) shell.openExternal(this.linking.url) })
+    ipcMain.on('trakt:open', () => { if (this.linking?.url) shell.openExternal(this.linking.url).catch(() => {}) })
     ipcMain.handle('trakt:request', (event, { method, path, body } = {}) => this.request(method, path, body))
   }
 
@@ -72,8 +71,6 @@ export default class Trakt {
       available: this.available,
       state: this.state,
       user: this.token?.user || '',
-      code: this.linking?.code || '',
-      url: this.linking?.url || '',
       expiresAt: this.linking?.expiresAt || 0,
       error: this.error
     }
@@ -99,89 +96,101 @@ export default class Trakt {
   }
 
   /**
+   * OAuth request (token exchange, refresh, revoke): auth.trakt.tv, with the Client ID only.
    * @param {string} path
    * @param {any} body
    */
-  post (path, body) {
-    return fetch(API + path, { method: 'POST', headers: this.headers(false), body: JSON.stringify(body) })
+  postAuth (path, body) {
+    return fetch(TRAKT_AUTH + path, { method: 'POST', headers: this.headers(false), body: JSON.stringify(body) })
   }
 
-  async link () {
+  /** Starts a sign-in: opens the authorize page of Trakt in the browser and waits for tsumi://trakt/callback. */
+  link () {
     if (!this.available || this.state === 'linking') return
-    const generation = ++this.generation
+    this.generation++
     this.error = ''
-    try {
-      const res = await this.post('/oauth/device/code', { client_id: CLIENT_ID })
-      if (!res.ok) throw new Error(`Trakt returned ${res.status}.`)
-      const device = await res.json()
-      if (generation !== this.generation) return
-      this.linking = { code: device.user_code, url: device.verification_url, expiresAt: Date.now() + device.expires_in * 1000 }
-      this.setState('linking')
-      shell.openExternal(device.verification_url)
-      await this.poll(device.device_code, (device.interval || 5) * 1000, generation)
-    } catch (error) {
-      if (generation !== this.generation) return
-      this.error = `Could not reach Trakt: ${error instanceof Error ? error.message : error}`
-      this.linking = null
-      this.setState(this.token ? 'connected' : 'disconnected')
-    }
+    const { verifier, challenge, state } = createPkce()
+    const url = authorizeUrl({ clientId: CLIENT_ID, state, challenge })
+    const timer = setTimeout(() => this.endLink('Trakt did not answer in time, try again.'), LINK_TIMEOUT_MS)
+    timer.unref?.()
+    this.linking = { url, expiresAt: Date.now() + LINK_TIMEOUT_MS, verifier, state, timer }
+    this.setState('linking')
+    shell.openExternal(url).catch(error => {
+      if (this.linking?.state === state) this.endLink(`Could not open the browser: ${error instanceof Error ? error.message : error}`)
+    })
   }
 
   /**
-   * Polls /oauth/device/token until the user approved the code on trakt.tv (or it expired).
-   * @param {string} deviceCode
-   * @param {number} interval
-   * @param {number} generation
+   * Stops waiting for the browser.
+   * @param {string} [error]
    */
-  async poll (deviceCode, interval, generation) {
-    while (generation === this.generation && this.linking && Date.now() < this.linking.expiresAt) {
-      await sleep(interval)
+  endLink (error = '') {
+    if (this.linking) clearTimeout(this.linking.timer)
+    this.linking = null
+    this.error = error
+    this.setState(this.token ? 'connected' : 'disconnected')
+  }
+
+  /**
+   * tsumi://trakt/callback?code=...&state=... (protocol.js, opened by the redirect page). Ignored when no sign-in is
+   * waiting or when the state is another one (an old or forged link).
+   * @param {string} link
+   */
+  async callback (link) {
+    const result = parseCallback(link)
+    const linking = this.linking
+    if (!result || !linking || !result.state || result.state !== linking.state) return
+    ipcMain.emit('window-show')
+    clearTimeout(linking.timer)
+    this.linking = null // the code and the verifier are single-use
+    if (result.error || !result.code) {
+      this.endLink(callbackErrorMessage(result.error))
+      return
+    }
+    const generation = ++this.generation
+    try {
+      const res = await this.postAuth('/oauth/token', {
+        code: result.code,
+        client_id: CLIENT_ID,
+        redirect_uri: TRAKT_REDIRECT_URI,
+        grant_type: 'authorization_code',
+        code_verifier: linking.verifier
+      })
+      const answer = await res.json().catch(() => null)
       if (generation !== this.generation) return
-      let res
-      try {
-        res = await this.post('/oauth/device/token', { code: deviceCode, client_id: CLIENT_ID, client_secret: CLIENT_SECRET })
-      } catch {
-        continue
-      }
-      if (generation !== this.generation) return
-      if (res.status === 200) {
-        this.saveToken(await res.json())
-        await this.loadUser()
-        if (generation !== this.generation) return
-        this.linking = null
-        this.setState('connected')
+      if (!res.ok) {
+        this.endLink(`Trakt refused the sign-in (${oauthErrorCode(answer) || res.status}), try again.`)
         return
       }
-      if (res.status === 400) continue // the user has not approved yet
-      if (res.status === 429) {
-        interval += 1_000 // slow down
-        continue
+      if (!answer?.access_token || !answer?.refresh_token) {
+        this.endLink('Trakt sent an unreadable answer, try again.')
+        return
       }
-      this.error = LINK_ERRORS[res.status] || `Trakt returned ${res.status}, try again.`
-      break
+      this.saveToken(answer)
+      await this.loadUser()
+      if (generation !== this.generation) return
+      this.endLink()
+    } catch (error) {
+      if (generation !== this.generation) return
+      this.endLink(`Could not reach Trakt: ${error instanceof Error ? error.message : error}`)
     }
-    if (generation !== this.generation) return
-    if (!this.error) this.error = LINK_ERRORS[410]
-    this.linking = null
-    this.setState(this.token ? 'connected' : 'disconnected')
   }
 
   cancel () {
     if (this.state !== 'linking') return
     this.generation++
-    this.linking = null
-    this.error = ''
-    this.setState(this.token ? 'connected' : 'disconnected')
+    this.endLink()
   }
 
   unlink () {
     this.generation++
     const token = this.token
+    if (this.linking) clearTimeout(this.linking.timer)
     this.linking = null
     this.error = ''
     this.deleteToken()
     if (this.available) this.setState('disconnected')
-    if (token) this.post('/oauth/revoke', { token: token.access, client_id: CLIENT_ID, client_secret: CLIENT_SECRET }).catch(() => {})
+    if (token) this.postAuth('/oauth/revoke', { token: token.access, client_id: CLIENT_ID }).catch(() => {})
   }
 
   /** Name shown in Settings ("Connected as ..."). */
@@ -196,7 +205,8 @@ export default class Trakt {
   }
 
   /**
-   * Refreshes the access token; on a refused refresh token the account is disconnected.
+   * Refreshes the access token (refresh tokens are single-use: the answer replaces both); on a refused refresh token
+   * the account is disconnected.
    * @returns {Promise<boolean>}
    */
   refresh () {
@@ -205,11 +215,10 @@ export default class Trakt {
     if (!token) return Promise.resolve(false)
     this.refreshing = (async () => {
       try {
-        const res = await this.post('/oauth/token', {
+        const res = await this.postAuth('/oauth/token', {
           refresh_token: token.refresh,
           client_id: CLIENT_ID,
-          client_secret: CLIENT_SECRET,
-          redirect_uri: REDIRECT_URI,
+          redirect_uri: TRAKT_REDIRECT_URI,
           grant_type: 'refresh_token'
         })
         if (res.ok) {

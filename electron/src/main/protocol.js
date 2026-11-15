@@ -19,6 +19,8 @@ export default class Protocol {
     malanime: id => this.window.webContents.send('open-anime', { id, mal: true }),
     search: id => this.play(id),
     w2g: link => this.window.webContents.send('w2glink', link),
+    // Trakt sign-in: tsumi://trakt/callback?code=...&state=... (docs/trakt/index.html), handled by trakt.js in this process.
+    trakt: link => this.onTrakt?.(link),
     schedule: () => this.window.webContents.send('schedule'),
     update: () => ipcMain.emit('quit-and-install'),
     show: () => ipcMain.emit('window-show')
@@ -28,9 +30,11 @@ export default class Protocol {
 
   /**
    * @param {import('electron').BrowserWindow} window
+   * @param {(link: string) => void} [onTrakt] receives the rest of tsumi://trakt/ links ("callback?code=...&state=...")
    */
-  constructor (window) {
+  constructor (window, onTrakt) {
     this.window = window
+    this.onTrakt = onTrakt
 
     protocol.registerHttpProtocol('tsumi', (req, cb) => {
       const token = req.url.slice(7)

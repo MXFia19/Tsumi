@@ -9,8 +9,6 @@ on:
         required: false
       TRAKT_CLIENT_ID:
         required: false
-      TRAKT_CLIENT_SECRET:
-        required: false
   push:
     branches:
       - 'main'
@@ -84,7 +82,6 @@ jobs:
         env:
           NODE_ENV: production
           TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
-          TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
         run: pnpm run web:build
       # electron-builder is called directly: "pnpm run build -- <args>" would forward
       # a literal "--" and electron-builder would ignore the options after it.

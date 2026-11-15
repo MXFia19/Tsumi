@@ -54,11 +54,10 @@ module.exports = [
       }
     },
     plugins: [
-      // Trakt app credentials (electron/src/main/trakt.js), from the environment of the build (repository secrets
-      // on CI). Missing: the app shows "Trakt is not available in this build".
+      // Trakt Client ID (electron/src/main/trakt.js), from the environment of the build (repository secret on CI).
+      // Missing: the app shows "Trakt is not available in this build". No client secret: the sign-in uses PKCE.
       new DefinePlugin({
-        __TRAKT_CLIENT_ID__: JSON.stringify(process.env.TRAKT_CLIENT_ID?.trim() || ''),
-        __TRAKT_CLIENT_SECRET__: JSON.stringify(process.env.TRAKT_CLIENT_SECRET?.trim() || '')
+        __TRAKT_CLIENT_ID__: JSON.stringify(process.env.TRAKT_CLIENT_ID?.trim() || '')
       })
     ],
     mode,

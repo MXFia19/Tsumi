@@ -7,19 +7,19 @@ import Debug from 'debug'
 const debug = Debug('ui:trakt')
 
 /*
- * Trakt for the renderer. The account (device code flow, tokens encrypted with safeStorage, refresh) and every
- * API call live in the Electron main process (electron/src/main/trakt.js): the tokens never reach the page.
+ * Trakt for the renderer. The account (sign-in with PKCE in the browser, tokens encrypted with safeStorage, refresh)
+ * and every API call live in the Electron main process (electron/src/main/trakt.js): the tokens never reach the page.
  * Here: the account status, scrobbling targets and the playback progress (/sync/playback) used to resume.
  */
 
 const canInvoke = typeof IPC?.invoke === 'function'
 
 /**
- * @typedef {{ available: boolean, state: 'unavailable' | 'disconnected' | 'linking' | 'connected', user: string, code: string, url: string, expiresAt: number, error: string }} TraktStatus
- * `unavailable`: the build has no Trakt client id / secret.
+ * @typedef {{ available: boolean, state: 'unavailable' | 'disconnected' | 'linking' | 'connected', user: string, expiresAt: number, error: string }} TraktStatus
+ * `unavailable`: the build has no Trakt client id. `linking`: waiting for the sign-in in the browser until `expiresAt`.
  */
 /** @type {import('simple-store-svelte').Writable<TraktStatus>} */
-export const traktStatus = writable({ available: false, state: 'unavailable', user: '', code: '', url: '', expiresAt: 0, error: '' })
+export const traktStatus = writable({ available: false, state: 'unavailable', user: '', expiresAt: 0, error: '' })
 
 /** @type {{ at: number, promise: Promise<any[]> } | null} */
 let playbackCache = null
@@ -36,7 +36,7 @@ export function traktConnected () {
   return traktStatus.value.state === 'connected'
 }
 
-/** Starts the device code flow: the main process opens the verification page and polls. */
+/** Starts the sign-in: the main process opens the authorize page of Trakt in the browser and waits for its answer. */
 export function traktLink () {
   if (canInvoke) IPC.emit('trakt:link')
 }
@@ -49,8 +49,8 @@ export function traktUnlink () {
   if (canInvoke) IPC.emit('trakt:unlink')
 }
 
-/** Opens the verification page again (trakt.tv/activate). */
-export function traktOpenVerification () {
+/** Opens the authorize page of the running sign-in again. */
+export function traktOpenSignIn () {
   if (canInvoke) IPC.emit('trakt:open')
 }
 

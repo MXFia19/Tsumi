@@ -68,7 +68,7 @@ export default class App {
 
   discord = new Discord(this.mainWindow)
   trakt = new Trakt(this.mainWindow)
-  protocol = new Protocol(this.mainWindow)
+  protocol = new Protocol(this.mainWindow, link => this.trakt.callback(link))
   updater = new Updater(this.mainWindow)
   dialog = new Dialog()
   downloads = new DownloadManager(this.mainWindow)

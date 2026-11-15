@@ -1,9 +1,7 @@
 <script>
   import SettingCard from '@/routes/settings/components/SettingCard.svelte'
   import { click } from '@/modules/click.js'
-  import { copyToClipboard } from '@/modules/clipboard.js'
-  import { traktStatus, traktLink, traktCancel, traktUnlink, traktOpenVerification } from '@/modules/sync/trakt.js'
-  import { Copy } from 'lucide-svelte'
+  import { traktStatus, traktLink, traktCancel, traktUnlink, traktOpenSignIn } from '@/modules/sync/trakt.js'
 
   export let settings
 
@@ -15,11 +13,13 @@
   function statusText (status) {
     if (!status.available) return 'Trakt is not available in this build.'
     if (status.state === 'connected') return `Connected${status.user ? ` as ${status.user}` : ''}`
-    if (status.state === 'linking') return 'Waiting for the code to be entered on Trakt…'
+    if (status.state === 'linking') return 'Waiting for Trakt…'
     return 'Not connected'
   }
 
   const positionDescription = 'Keeps the position of the episode you are watching in the note of its AniList entry (the comments on MyAnimeList), so you can stop on one device and resume at the same second on another one.\nTsumi only adds, updates and removes its own "[Tsumi]" line: the rest of your note is never changed. The line is removed once the episode is completed. Only for titles on your list.'
+  // The notice is required by the Trakt API Use Policy.
+  const traktDescription = 'Connect your Trakt account to scrobble the shows and movies you watch, and to resume them where you left off on another device.\nTsumi uses Trakt but is not endorsed or certified by Trakt.'
 </script>
 
 <h4 class='mb-10 font-weight-bold'>Sync Settings</h4>
@@ -29,18 +29,14 @@
     <label for='sync-playback-position'>{settings.syncPlaybackPosition ? 'On' : 'Off'}</label>
   </div>
 </SettingCard>
-<SettingCard title='Trakt' description='Connect your Trakt account to scrobble the shows and movies you watch, and to resume them where you left off on another device.'>
+<SettingCard title='Trakt' description={traktDescription}>
   <div class='d-flex flex-column align-items-md-end mw-full'>
     <div class='font-weight-semi-bold text-truncate mw-full mb-5' title={traktText}>{traktText}</div>
     {#if trakt.available}
       {#if trakt.state === 'linking'}
-        <div class='d-flex align-items-center mb-5'>
-          <span class='font-size-24 font-weight-bold mr-10 user-select-all' title='Code to enter on Trakt'>{trakt.code}</span>
-          <button type='button' use:click={() => copyToClipboard(trakt.code, 'Trakt code')} class='btn btn-square d-flex align-items-center justify-content-center' title='Copy the code'><Copy size='1.6rem' /></button>
-        </div>
-        <div class='text-muted mb-5 text-md-right'>Enter this code at <span class='font-weight-semi-bold'>{trakt.url}</span></div>
+        <div class='text-muted mb-5 text-md-right'>Sign in to Trakt and allow Tsumi in your browser, then come back here.</div>
         <div class='d-flex'>
-          <button type='button' use:click={traktOpenVerification} class='btn btn-primary d-flex align-items-center justify-content-center mr-10'><span class='text-truncate'>Open Trakt</span></button>
+          <button type='button' use:click={traktOpenSignIn} class='btn btn-primary d-flex align-items-center justify-content-center mr-10'><span class='text-truncate'>Open Trakt again</span></button>
           <button type='button' use:click={traktCancel} class='btn btn-danger d-flex align-items-center justify-content-center'><span class='text-truncate'>Cancel</span></button>
         </div>
       {:else if trakt.state === 'connected'}
