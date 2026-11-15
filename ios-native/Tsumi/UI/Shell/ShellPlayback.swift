@@ -256,8 +256,14 @@ enum ShellPlayback {
     controller.resumePosition = { media, episode in
       AnimeProgressService.shared.record(mediaKey: media.id, episode: episode.number)?.currentTime
     }
-    controller.onProgress = { snapshot in
+    // Cross-device resume (note of the list entry) and Trakt scrobbling: Services/PlaybackSyncService.swift.
+    let sync = PlaybackSyncService.shared.attach(controller)
+    controller.onProgress = { [weak controller] snapshot in
       AnimeProgressService.shared.set(mediaKey: snapshot.media.id, episode: snapshot.episode.number, currentTime: snapshot.currentTime, safeDuration: snapshot.duration)
+      sync.progress(snapshot, playing: controller?.isPlaying ?? false)
+    }
+    controller.onPlaybackEnded = { _, _ in
+      sync.ended()
     }
     // checkCompletion → Helper.updateEntry.
     controller.onAutocomplete = { media, episode in
@@ -267,6 +273,7 @@ enum ShellPlayback {
     }
     // shareNowPlaying (launchPlayer) for every started episode, except the ones a peer asked for.
     controller.onEpisodeStarted = { session in
+      sync.started(session)
       if Date() < ShellState.shared.suppressShareUntil {
         ShellState.shared.suppressShareUntil = .distantPast
         return
@@ -274,6 +281,7 @@ enum ShellPlayback {
       WatchTogetherClient.shared.shareMedia(media: session.media, episode: session.episode)
     }
     controller.onClose = { [weak controller] in
+      sync.closed()
       if let closed = controller?.session.media {
         ShellState.shared.lastWatched = MediaStore.shared.media(closed.id) ?? closed
       }

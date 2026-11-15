@@ -162,7 +162,7 @@ final class AniListService: @unchecked Sendable {
   duration, averageScore, genres, tags { name, rank }, isFavourite, coverImage { extraLarge, medium, color }, \
   source, countryOfOrigin, isAdult, bannerImage, synonyms, popularity, stats { scoreDistribution { score, amount } }, \
   nextAiringEpisode { timeUntilAiring, episode }, trailer { id, site }, streamingEpisodes { title, thumbnail }, \
-  mediaListEntry { id, progress, repeat, status, customLists(asArray: true), score(format: POINT_10), updatedAt, \
+  mediaListEntry { id, progress, repeat, status, notes, customLists(asArray: true), score(format: POINT_10), updatedAt, \
   startedAt { year, month, day }, completedAt { year, month, day } }, \
   airingSchedule(page: 1, perPage: 1000) { nodes { episode, airingAt } }, \
   relations { edges { relationType(version: 2), node { id, type, format, genres, isAdult, seasonYear } } }
@@ -464,6 +464,7 @@ final class AniListService: @unchecked Sendable {
         var seen = Set<Int>()
         var parsedMedia: [Media] = []
         var parsedExtras: [String: MediaExtras] = [:]
+        var notes: [String: String] = [:]
         for list in collection.array("lists") {
           guard ListStatus(rawValue: list.string("status") ?? "") != nil else { continue }
           for entry in list.array("entries") {
@@ -475,10 +476,16 @@ final class AniListService: @unchecked Sendable {
             }
             parsedMedia.append(parsed.media)
             parsedExtras[parsed.media.id] = parsed.extras
+            if let listEntry = mediaDict.dict("mediaListEntry"), listEntry["notes"] != nil {
+              notes[parsed.media.id] = listEntry.string("notes") ?? ""
+            }
           }
         }
         if token == nil {
           MediaStore.shared.ingest(parsedMedia, extras: parsedExtras)
+          // Cross-device resume: positions written in the notes by the other devices.
+          let listNotes = notes
+          Task { @MainActor in PlaybackSyncService.shared.ingestListNotes(listNotes) }
         }
         return items
       } catch {

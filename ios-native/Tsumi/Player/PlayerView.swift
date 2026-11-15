@@ -187,6 +187,9 @@ struct PlayerView: View {
     if let episode = controller.loadingEpisode {
       PlayerEpisodeLoadingView(episode: episode)
     }
+
+    // Cross-device resume: "Resume at 12:34 (from PC)".
+    PlayerResumeOfferView(controller: controller)
   }
 
   /// Stats, notices, subtitle offset and keybind help.

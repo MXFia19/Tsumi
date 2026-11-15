@@ -151,6 +151,8 @@ struct BrowseDetailActions: View {
           Label("Choose Extension", systemImage: "puzzlepiece.extension")
         }
       }
+      // "Resume Episode 5 at 12:34 (from PC)": cross-device resume (BrowseRemoteResume.swift).
+      .modifier(BrowseRemoteResume(media: media))
       HStack(spacing: 10) {
         if BrowseMediaInfo.canEditList(media) {
           BrowseListEditorButton(media: media)
