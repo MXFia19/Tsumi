@@ -1,7 +1,7 @@
 <script>
   import SmartImage from '@/components/visual/SmartImage.svelte'
   import MonthChart from '@/routes/yearreview/components/MonthChart.svelte'
-  import { hoursValue, formatNumber, formatDay, dayKey, MONTH_NAMES } from '@/modules/yearreview/stats.js'
+  import { hoursValue, formatNumber, formatDay, dayKey, plural, MONTH_NAMES } from '@/modules/yearreview/stats.js'
   import { Flame, Play, Flag, Star, Tv } from 'lucide-svelte'
 
   /** @type {{ year: number, stats: any, media: Record<number, any>, fetchedAt: number, local: any }} */
@@ -13,9 +13,6 @@
 
   function lookup (map, id) {
     return map?.[id] || { title: 'Unknown title' }
-  }
-  function plural (value, word) {
-    return `${formatNumber(value)} ${word}${value === 1 ? '' : 's'}`
   }
   function dateOf (seconds) {
     return seconds ? formatDay(dayKey(seconds)) : ''

@@ -21,6 +21,7 @@ struct ProfilesView: View {
       ScrollView {
         VStack(spacing: 18) {
           ShellCurrentProfileHeader()
+          YearReviewProfileButton()
           ShellOtherProfilesList()
           ShellProfileActions(addingProfile: $addingProfile)
         }

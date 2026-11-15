@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import {
   yearBounds, parseProgress, activityKind, fuzzyToTime, dayKey, formatDay, formatShortDay, hoursValue, formatNumber,
-  episodeMinutes, mediaNeedingPrior, priorFromActivities, computeYearStats, computeLocalStats, availableYears, bannerYear
+  episodeMinutes, plural, mediaNeedingPrior, priorFromActivities, computeYearStats, computeLocalStats, availableYears, bannerYear
 } from './stats.js'
 
 let passed = 0
@@ -75,6 +75,9 @@ test('date helpers', () => {
   assert.equal(formatNumber(12), '12')
   assert.equal(formatNumber(1234.56), '1,234.6')
   assert.equal(formatNumber(undefined), '0')
+  assert.equal(plural(1, 'episode'), '1 episode')
+  assert.equal(plural(1200, 'episode'), '1,200 episodes')
+  assert.equal(plural(3, 'anime'), '3 anime')
   assert.equal(episodeMinutes({ duration: 0, format: 'MOVIE' }), 90)
   assert.equal(episodeMinutes({ format: 'TV' }), 24)
 })

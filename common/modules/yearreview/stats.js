@@ -120,6 +120,11 @@ export function formatNumber (value) {
   return rounded < 0 ? `-${text}` : text
 }
 
+/** "3 episodes" / "1 episode" ("anime" has no plural). */
+export function plural (value, word) {
+  return `${formatNumber(value)} ${word}${value === 1 || word === 'anime' ? '' : 's'}`
+}
+
 export function episodeMinutes (media) {
   if (media?.duration > 0) return media.duration
   return media?.format === 'MOVIE' ? DEFAULT_MOVIE_MINUTES : DEFAULT_EPISODE_MINUTES
