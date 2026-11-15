@@ -14,15 +14,77 @@ and iPad app.
 
 ## Features
 
-- **Windows app** (Electron) and **native iPhone / iPad app** (SwiftUI, iOS 17+)
-- **Extensions**: Sora modules and Stremio addons as sources, switch servers during playback
-- **AniList and MyAnimeList**: browse, search, airing schedule, lists and progress sync; **Trakt** sync
-- **Watch Together**: synced playback with friends, shared queue and voice chat, invite links
-- **Discord Rich Presence** (on Windows it also works with the Discord app closed)
-- **Downloads** to watch offline
-- **Chromecast** and **online subtitles**
-- **Home Screen widgets** on iPhone
-- **Updates**: the Windows app updates itself; the iPhone app tells you when a new version is out
+Two apps with the same features: a **Windows app** (Electron) and a **native iPhone / iPad app** (SwiftUI, iOS 17+).
+A feature marked *Windows* or *iPhone* exists on that app only.
+
+### Watching
+
+- **Extensions as sources**: Sora modules and Stremio addons; Stremio addon catalogs get their own page
+- **Anime, shows and movies**: anime from AniList, Western shows and movies from TMDB
+- **Server choice** during playback, with dub / sub preference (prefer dubs, preferred audio language)
+- **Offline downloads**: download an episode from the episode list, the details page ("Download next episodes") or
+  the player; a Downloads page with pause, resume, retry and storage used; downloaded episodes play without network
+  with their subtitles. Direct files and HLS streams (quality setting); if a server is dead, the next server of the
+  episode is used. List updates made offline are sent once back online
+- **Chromecast** *(Windows)* and **AirPlay** *(iPhone)*
+- **Picture in Picture** and a **miniplayer**
+
+### Player
+
+- **Subtitles**: ASS / SSA styles and fonts, preferred subtitle language, delay adjustment in 0.5 s steps
+- **Online subtitles**: search subtitles for the episode (anime included) when the source has none or not in your
+  language, or add them automatically
+- **Skip intro / outro** (automatic option) and chapters
+- **Autoplay the next episode**, auto-complete an episode on your list past a threshold
+- Playback speed, audio tracks, seek duration, keyboard shortcuts and seek bar thumbnails *(Windows)*,
+  video debanding *(Windows)*, external player *(Windows)*
+
+### Tracking
+
+- **AniList and MyAnimeList** accounts, several profiles, list and progress sync
+- **Resume on another device**: start an episode on Windows and continue it on iPhone at the same second (the
+  position is kept in the note of the AniList entry, or the comment on MyAnimeList)
+- **Trakt**: scrobbling of shows and movies (anime optional) and resuming from Trakt
+- **Year in Review**: episodes and hours watched, top anime, genres and studios, episodes per month, biggest binge
+  day, with an image to share
+
+### Discover
+
+- **Home** with customizable sections (anime and Western TMDB sections, order, hero banner), **search**
+- **Airing schedule** and **notifications** for new episodes, AniList notifications, sub / dub release announcements
+
+### Watch Together
+
+Peer-to-peer lobbies between Windows and iPhone, joined with a code or an invite link.
+
+- Synced playback with a **host**, sync check, a countdown before starting, and who paused or seeked
+- **Chat** in the lobby and in the player, reactions, **pause requests**
+- **Voice chat**: mute, push-to-talk, a volume per member, the video gets quieter while someone speaks
+- **Shared queue** ("Up next"): members add episodes, the host orders it, it plays on its own at the end of an
+  episode
+- See **who watches what**, "Watch on my own" while staying in the chat, **join the playback in progress**, the
+  host can invite anyone not watching
+
+### Discord
+
+- **Rich Presence** with the title, episode and cover, also when the Discord app is closed (Discord account linked
+  in the settings)
+- Buttons: the title on AniList (or TMDB), then MyAnimeList or the download page, or **Join Watch Together** in a
+  lobby
+- **Adult content** hidden from the status by default (generic "Watching something", or no activity)
+
+### iPhone
+
+- **Home Screen and Lock Screen widgets**: Continue Watching, Next Episode countdown
+- **Lock Screen countdown** to the next episode (Live Activity, Dynamic Island)
+- Background refresh for new episode notifications
+
+### App
+
+- **Updates**: the Windows app updates itself; the iPhone app shows when a new version is out (the Feather source
+  updates too)
+- Interface scale, accent colour, title language, card styles, custom CSS variables *(Windows)*
+- Settings import / export, DNS over HTTPS *(Windows)*
 
 ## Download
 
