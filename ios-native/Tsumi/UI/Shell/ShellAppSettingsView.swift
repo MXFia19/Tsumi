@@ -5,8 +5,8 @@ import UserNotifications
 // Settings > App (common/routes/settings/tabs/AppTab.svelte): about, query complexity, resets with
 // confirmation (ConfirmButton.svelte), settings import / export / reset, toast levels, app and device info,
 // plus the iOS notification permission. Desktop only parts (exit action, DNS over HTTPS, logging levels, log
-// files, devtools, updater) and the changelog (the repository is private, so there is no public release feed)
-// are not applicable.
+// files, devtools, updater) and the changelog are not applicable; new versions are announced by AppUpdateChecker
+// (Settings row and banner).
 
 /// Actions guarded by "Confirm Reset".
 enum ShellResetAction: String, Identifiable {
