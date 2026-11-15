@@ -373,7 +373,9 @@ class CastController {
     try {
       const status = await ipc.invoke('cast:start', { deviceId: device.id, ...this.request(startTime, playing) })
       this.starting = false
+      const wantedPaused = this.intentPaused
       this.onStatus(status)
+      this.reconcile(playing, wantedPaused)
     } catch (error) {
       this.starting = false
       debug('Cast start failed', error)
@@ -389,7 +391,9 @@ class CastController {
     clearTimeout(this.reloadTimer)
     try {
       const status = await ipc.invoke('cast:load', this.request(startTime, autoplay))
+      const wantedPaused = this.intentPaused
       this.onStatus(status)
+      this.reconcile(autoplay, wantedPaused)
     } catch (error) {
       debug('Cast reload failed', error)
       toast.error('Could not update the Cast device', { description: castErrorMessage(error) })
@@ -489,12 +493,26 @@ class CastController {
     this.publish()
     try {
       const status = await ipc.invoke('cast:load', this.request(startTime, wantsPlay))
+      const wantedPaused = this.intentPaused
       this.onStatus(status)
+      this.reconcile(wantsPlay, wantedPaused)
     } catch (error) {
       debug('Casting the new source failed', error)
       if (token !== this.switchToken || !this.active) return
       toast.error('Could not cast this video', { description: castErrorMessage(error) })
       this.stop({ resume: true })
+    }
+  }
+
+  /** Play / pause requested while the device was loading: apply it now that the media is loaded. */
+  reconcile (autoplay, wantedPaused) {
+    if (!this.active || this.switching || this.phase !== 'casting') return
+    if (autoplay && wantedPaused) {
+      this.setIntent(true)
+      this.command({ type: 'pause' })
+    } else if (!autoplay && !wantedPaused) {
+      this.setIntent(false)
+      this.command({ type: 'play' })
     }
   }
 

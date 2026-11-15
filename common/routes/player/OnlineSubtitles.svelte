@@ -25,6 +25,7 @@
   let busy = null
   let loadedFor = null
   let input
+  let panel
 
   $: preferred = preferredLanguage($settings.subtitleLanguage)
   $: key = media ? `${media.id}:${episode ?? ''}` : null
@@ -34,7 +35,9 @@
     error = 'Online subtitles need a recognized title.'
   }
   $: filtered = filterGroups(groups, filter)
-  $: if (open && input) input.focus()
+  // Focus inside the panel so the player shortcuts stay out of it (see keydown).
+  $: if (open && panel) panel.focus()
+  $: if (status === 'ready' && input) input.focus()
 
   async function load (force) {
     const target = key
@@ -120,12 +123,13 @@
 </script>
 
 {#if open}
-  <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+  <!-- svelte-ignore a11y-no-noninteractive-element-interactions a11y-no-noninteractive-tabindex -->
   <div
     class='online-subs position-absolute bg-dark rounded d-flex flex-column text-white'
     role='dialog'
     aria-label='Online Subtitles'
-    tabindex='-1'
+    tabindex='0'
+    bind:this={panel}
     on:keydown={keydown}
     on:click|stopPropagation
     on:dblclick|stopPropagation
@@ -192,6 +196,7 @@
     z-index: 60;
     box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.6);
     pointer-events: all;
+    outline: none;
   }
   .list {
     min-height: 8rem;

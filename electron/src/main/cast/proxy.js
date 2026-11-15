@@ -53,6 +53,8 @@ export default class CastProxy {
   allowedHosts = new Set()
   /** @type {Map<string, string>} published path -> WebVTT text */
   texts = new Map()
+  /** Requests received with the right token (tells a device that cannot reach the PC from a bad video). */
+  requests = 0
 
   async start (host) {
     if (this.server && this.host === host) return
@@ -154,6 +156,7 @@ export default class CastProxy {
       res.writeHead(404)
       return res.end()
     }
+    this.requests++
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
       return res.end()

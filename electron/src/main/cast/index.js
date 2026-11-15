@@ -154,22 +154,31 @@ export default class CastManager {
       ...(track.language ? { language: track.language } : {})
     }))
     const metadata = request.metadata || {}
-    await session.load({
-      contentUrl,
-      contentType: probe.kind === 'hls' ? 'application/x-mpegurl' : probe.contentType,
-      hls: probe.kind === 'hls' ? probe : null,
-      metadata: {
-        metadataType: 0,
-        title: metadata.title || 'Tsumi',
-        ...(metadata.subtitle ? { subtitle: metadata.subtitle } : {}),
-        images: metadata.image ? [{ url: metadata.image }] : []
-      },
-      tracks,
-      textTrackStyle: TEXT_TRACK_STYLE,
-      activeTrackIds: (request.activeTrackIds || []).filter(id => tracks.some(track => track.trackId === id)),
-      currentTime: request.startTime || 0,
-      autoplay: request.autoplay !== false
-    })
+    const requestsBefore = this.proxy.requests
+    try {
+      await session.load({
+        contentUrl,
+        contentType: probe.kind === 'hls' ? 'application/x-mpegurl' : probe.contentType,
+        hls: probe.kind === 'hls' ? probe : null,
+        metadata: {
+          metadataType: 0,
+          title: metadata.title || 'Tsumi',
+          ...(metadata.subtitle ? { subtitle: metadata.subtitle } : {}),
+          images: metadata.image ? [{ url: metadata.image }] : []
+        },
+        tracks,
+        textTrackStyle: TEXT_TRACK_STYLE,
+        activeTrackIds: (request.activeTrackIds || []).filter(id => tracks.some(track => track.trackId === id)),
+        currentTime: request.startTime || 0,
+        autoplay: request.autoplay !== false
+      })
+    } catch (error) {
+      // The device never fetched anything: it cannot reach this computer (firewall, isolated guest network...).
+      if (this.proxy.requests === requestsBefore) {
+        throw new Error('The Cast device could not reach this computer. Allow Tsumi through the firewall on private networks and make sure both devices are on the same network.')
+      }
+      throw error
+    }
     this.startPolling(session)
     this.setPhase('casting')
     return this.status()
