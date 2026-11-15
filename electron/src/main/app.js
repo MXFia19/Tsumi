@@ -26,6 +26,7 @@ import { startStreamProxy } from './streamProxy.js'
 import { setupVoicePermission } from './voice.js'
 import DownloadManager from './downloads/manager.js'
 import CastManager from './cast/index.js'
+import { setupContextMenu } from './contextMenu.js'
 
 export default class App {
   icon = nativeImage.createFromPath(join(__dirname, process.platform === 'win32' ? '/icon_filled.ico' : '/icon_filled.png'))
@@ -85,6 +86,8 @@ export default class App {
     this.mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     // Watch Together voice chat: microphone only while in voice.
     setupVoicePermission(this.mainWindow)
+    // Right-click menu (contextMenu.js): only where the page has no right-click handler of its own.
+    setupContextMenu(this.mainWindow, { inspect: development })
     if (development) this.mainWindow.once('ready-to-show', () => this.showAndFocus(true))
     else ipcMain.once('main-ready', () => this.showAndFocus(true)) // HACK: Prevents the window from being shown while it's still loading. This is nice for production as the window can't be moved without the elements being rendered.
     ipcMain.on('ui-devtools', ({ sender }) => sender.openDevTools({ mode: 'detach' }))
@@ -246,6 +249,7 @@ export default class App {
         })
 
         authWindow.webContents.setWindowOpenHandler(() => { return { action: 'deny' } })
+        setupContextMenu(authWindow)
         authWindow.webContents.on('did-finish-load', () => authWindow.show())
         authWindow.webContents.on('did-start-loading', () => authWindow.webContents.insertCSS
         (`

@@ -81,13 +81,14 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | 1.14 | `modal.open/close/toggle` of DetailsModal, NotificationsModal, Profiles | NAV, APP | `AppRouter.presentedMedia / showNotifications / showProfiles` → one root sheet (`ShellRootSheet`, item replacement handles details ↔ notifications switches) | done |
 | 1.15 | DetailsModal content replaced in place when another title is opened | APP handleAnime | Root sheet identity stays `details`; `MediaDetailView` is re-created by its `.id` | done |
 | 1.16 | Modals stacked over modals (ExtensionModal over DetailsModal / NotificationsModal) | APP | Playback dialogs hosted by the top layer (`ShellPlaybackDialogHost`) | done |
-| 1.17 | Back / forward history, Android back button, `modal.focused` | NAV 241-420 | Native navigation stacks, swipe back, sheet swipe-down | n.a. (platform navigation) |
+| 1.17 | Back / forward history (mouse back / forward buttons, Alt+Left / Alt+Right, BrowserBack / BrowserForward keys: `modules/navkeys.js`), Android back button, `modal.focused` | NAV 241-420 | Native navigation stacks, swipe back, sheet swipe-down | n.a. (platform navigation) |
 | 1.18 | Global player layer (MediaHandler) over every page | APP | `ShellPlayerHost` full screen cover on the root | done |
 | 1.19 | Miniplayer while browsing (draggable, padding of pages) | APP, RT | Picture in Picture (player module) + "Now Playing" entry | partial (system PiP window instead of the in-app miniplayer) |
 | 1.20 | Details modal over the player pauses it (pagePause) and resumes after | APP, PP | `ShellPlayerDetailsSheet` → `setExternalOverlay(presented: true/false)` | done |
 | 1.21 | Navigating to a page from the details over the player shows the page with the miniplayer | APP | The details close, the player stays in front | partial (no programmatic miniplayer) |
 | 1.22 | MinimizeModal (desktop close prompt), Menubar (window controls / drag region), "Debug Mode" ribbon | APP | — | n.a. (desktop window) |
 | 1.23 | `IPC.emit('main-ready')`, `window-show`, fullscreen listeners, `pl-safe-area` classes | APP | — | n.a. (desktop / Android bridge) |
+| 1.24 | Right-click menu: Cut / Copy / Paste / Select All, Copy Link / Open Link in Browser, Copy Image / Copy Image Address, Inspect (`electron/src/main/contextMenu.js`) | Electron main | System edit menu of text fields and selections | n.a. (desktop window; iOS has the system edit menu) |
 
 ## 2. Connection status (ST)
 
@@ -398,8 +399,8 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | done | 146 | 60 | 206 |
 | partial | 3 | 2 | 5 |
 | different | 1 | 0 | 1 |
-| n.a. | 29 | 1 | 30 |
-| **total** | **179** | **63** | **242** |
+| n.a. | 30 | 1 | 31 |
+| **total** | **180** | **63** | **243** |
 
 ## Issues found in other blocks (not modified here)
 
