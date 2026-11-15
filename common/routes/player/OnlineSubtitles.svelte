@@ -128,7 +128,7 @@
     class='online-subs position-absolute bg-dark rounded d-flex flex-column text-white'
     role='dialog'
     aria-label='Online Subtitles'
-    tabindex='0'
+    tabindex='-1'
     bind:this={panel}
     on:keydown={keydown}
     on:click|stopPropagation
@@ -186,6 +186,8 @@
 {/if}
 
 <style>
+  /* tabindex -1: focusable by script only, and left out of the global "[tabindex]:active" press effect in css.css,
+     whose transform would replace the centering translate and make the panel jump away while it is clicked. */
   .online-subs {
     top: 50%;
     left: 50%;
