@@ -8,8 +8,49 @@ const debug = Debug('ui:episodes')
 
 /*
  * MAL Episode Information
- * Dub information is fetched from api.jikan.moe.
+ * api.jikan.moe was discontinued: episode titles, filler / recap flags and trailers come from Jikan v4 mirrors.
  */
+
+/** Jikan v4 mirrors, tried in order. Tenrai follows the Jikan v4 schema; jikan-edge has its own camelCase schema (normalizeJikanEdge). */
+const JIKAN_MIRRORS = [
+  { name: 'tenrai', base: 'https://api.tenrai.org/v1' },
+  { name: 'jikanEdge', base: 'https://jikan.lucashdo.com/v1', normalize: normalizeJikanEdge }
+]
+
+const EDGE_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+
+/** jikan-edge dates look like "Sep 29, 2023": converted to the Jikan ISO form ("2023-09-29T00:00:00+00:00"). */
+function edgeDate (text) {
+  const match = /^([A-Za-z]{3})\w*\s+(\d{1,2}),\s*(\d{4})$/.exec(String(text || '').trim())
+  const month = match && EDGE_MONTHS.indexOf(match[1].toLowerCase())
+  if (!match || month < 0) return null
+  return `${match[3]}-${String(month + 1).padStart(2, '0')}-${match[2].padStart(2, '0')}T00:00:00+00:00`
+}
+
+/** Converts a jikan-edge answer to the Jikan v4 fields this module reads. */
+function normalizeJikanEdge (json, root) {
+  if (!json || typeof json !== 'object') return json
+  if (root) {
+    const data = json.data || {}
+    return { data: { ...data, mal_id: data.malId, title_english: data.titleEnglish, title_japanese: data.titleJapanese, trailer: { youtube_id: data.trailer?.youtubeId ?? null, url: data.trailer?.url ?? null, embed_url: data.trailer?.embedUrl ?? null } } }
+  }
+  const pagination = json.meta?.pagination
+  return {
+    pagination: { has_next_page: !!pagination?.hasNextPage, current_page: pagination?.page },
+    data: (Array.isArray(json.data) ? json.data : []).map(e => ({
+      mal_id: e.number,
+      url: e.url,
+      title: e.title,
+      title_romanji: e.titleRomanji,
+      title_japanese: e.titleJapanese,
+      aired: edgeDate(e.aired),
+      score: e.score,
+      filler: !!e.filler,
+      recap: !!e.recap
+    }))
+  }
+}
+
 class Episodes {
   limiter = new Bottleneck({
     reservoir: 60,
@@ -22,7 +63,13 @@ class Episodes {
   rateLimitPromise = null
   concurrentRequests = new Map()
   /** An API that timed out or could not be reached is skipped for a while, so the episode list never waits on it. */
-  downUntil = { jikan: 0, kitsu: 0 }
+  downUntil = { tenrai: 0, jikanEdge: 0, kitsu: 0 }
+
+  /** True when at least one server of the API ('jikan' = any Jikan mirror, or 'kitsu') is not being skipped. */
+  available (api) {
+    if (api === 'jikan') return JIKAN_MIRRORS.some(mirror => Date.now() >= this.downUntil[mirror.name])
+    return Date.now() >= this.downUntil[api]
+  }
 
   constructor () {
     this.limiter.on('failed', async (error) => {
@@ -101,27 +148,40 @@ class Episodes {
     if (cachedEntry) return cachedEntry
     else if (status.value === 'offline') return
     const api = jikan ? 'jikan' : 'kitsu'
-    if (Date.now() < this.downUntil[api]) return cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true) || null
+    if (!this.available(api)) return cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true) || null
     if (this.concurrentRequests.has(`${id}:${page}:${root}`)) return this.concurrentRequests.get(`${id}:${page}:${root}`)
     const requestPromise = this.limiter.wrap(async () => {
       await this.rateLimitPromise
-      if (Date.now() < this.downUntil[api]) return cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true) || null
+      if (!this.available(api)) return cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true) || null
       debug(`Fetching Episode ${episode} for ${id} with Page ${page}`)
-      let res = {}
-      try {
-        res = await fetch(jikan ? `https://api.jikan.moe/v4/anime/${id}${!root ? `/episodes?page=${page}` : ''}` : `https://kitsu.app/api/edge/anime/${id}/episodes`, { signal: AbortSignal.timeout(10_000) })
-      } catch (e) {
-        // Timeout or unreachable server: skip this API for 10 minutes instead of blocking the episode list.
-        this.downUntil[api] = Date.now() + 10 * 60 * 1000
-        debug(`${api} is unreachable, skipping it for 10 minutes`, e)
-        return cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true) || null
+      const targets = jikan
+        ? JIKAN_MIRRORS.map(mirror => ({ name: mirror.name, url: `${mirror.base}/anime/${id}${!root ? `/episodes?page=${page}` : ''}`, normalize: mirror.normalize }))
+        : [{ name: 'kitsu', url: `https://kitsu.app/api/edge/anime/${id}/episodes` }]
+      let res = null
+      let normalize = null
+      for (const target of targets) {
+        if (Date.now() < this.downUntil[target.name]) continue
+        try {
+          const response = await fetch(target.url, { signal: AbortSignal.timeout(10_000) })
+          // Server error or Cloudflare block (403): treated like an unreachable server, the next mirror is tried.
+          if (response.status >= 500 || response.status === 403) throw new Error(`${target.name} answered ${response.status}`)
+          res = response
+          normalize = target.normalize
+          break
+        } catch (e) {
+          // Timeout or unreachable server: skip it for 10 minutes instead of blocking the episode list.
+          this.downUntil[target.name] = Date.now() + 10 * 60 * 1000
+          debug(`${target.name} is unreachable, skipping it for 10 minutes`, e)
+        }
       }
-      if (!res.ok && (res.status === 429 || res.status === 500)) {
+      if (!res) return cache.cachedEntry(caches.EPISODES, `${id}:${page}:${root}`, true) || null
+      if (res.status === 429) {
         throw res
       }
       let json = null
       try {
         json = await res.json()
+        if (res.ok && normalize) json = normalize(json, root)
       } catch (error) {
         if (res.ok) this.checkError(error, `${jikan ? 'jikan' : 'kitsu'}`)
       }

@@ -75,6 +75,8 @@ final class DiscordPresence {
   @ObservationIgnored private var presenceSynced = false
   @ObservationIgnored private var lastSentAt = Date.distantPast
   @ObservationIgnored private var browsingSince: Date?
+  /// Start of the generic "Watching something" status shown for adult content (rpcHideAdult "title").
+  @ObservationIgnored private var adultSince: Date?
   private let launchDate = Date()
   /// Party id outside Watch Together (the SDK wants one with the party size).
   private let partyId = "tsumi-" + UUID().uuidString.prefix(12).lowercased()
@@ -349,6 +351,14 @@ final class DiscordPresence {
     let code = watchTogetherCode?()
     if let playing = nowPlaying?(), !(playing.isPaused && !playing.isPresented) {
       browsingSince = nil
+      // Adult content stays private (rpcHideAdult): no presence at all, or a generic status without title, cover or links.
+      if DiscordActivityBuilder.isAdult(playing.media) && settings.rpcHideAdult != "off" {
+        if settings.rpcHideAdult == "hidden" { return nil }
+        let since = adultSince ?? now
+        adultSince = since
+        return DiscordActivityBuilder.privateActivity(since: since, buttons: DiscordActivityBuilder.buttons(media: nil, code: code, secondButton: "download"))
+      }
+      adultSince = nil
       return DiscordActivityBuilder.watching(playing, code: code, secondButton: settings.rpcSecondButton, partyId: partyId, now: now)
     }
     let since = browsingSince ?? now
@@ -406,12 +416,31 @@ extension DiscordPresence.Account {
 
 /// Activity contents of PlayerPage.svelte setDiscordRPC and presenceButtons.
 enum DiscordActivityBuilder {
-  static let tsumiLink = "https://mxfia19.github.io/tsumi-link/"
+  static let tsumiLink = "https://mxfia19.github.io/Tsumi/"
   static let browsingDetails = "Watching Media on Tsumi"
   static let browsingState = "Browsing the library"
   static let browsingImageText = "Tsumi — Media Streaming"
+  static let privateState = "Watching something"
   /// Asset uploaded to the Discord application (Rich Presence > Art Assets).
   static let iconAsset = "icon"
+
+  /// Adult media (AniList isAdult or the Hentai genre), hidden by the rpcHideAdult setting (PlayerPage.svelte isAdultMedia).
+  static func isAdult(_ media: Media) -> Bool {
+    media.isAdult || media.genres.contains("Hentai")
+  }
+
+  /// Adult content with rpcHideAdult "title": "Watching Media on Tsumi" / "Watching something", app icon, no title or links.
+  static func privateActivity(since: Date, buttons: [DiscordActivityContent.Button]) -> DiscordActivityContent {
+    DiscordActivityContent(
+      details: browsingDetails,
+      state: privateState,
+      largeImage: iconAsset,
+      largeText: browsingImageText,
+      start: since,
+      end: nil,
+      buttons: buttons
+    )
+  }
 
   /// No media: "Watching Media on Tsumi" / "Browsing the library", counting up since `since`.
   static func browsing(since: Date, buttons: [DiscordActivityContent.Button]) -> DiscordActivityContent {

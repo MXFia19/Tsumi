@@ -1943,6 +1943,25 @@
     let activity
     if (!browsing) {
       const w2g = state.value?.code
+      const playingMedia = $nowPlaying?.media ?? fullMedia
+      if (isAdultMedia(playingMedia) && $settings.rpcHideAdult !== 'off') {
+        // Adult content stays private: no presence at all, or a generic status without title, cover or links.
+        if ($settings.rpcHideAdult === 'hidden') {
+          IPC.emit('discord-clear')
+          return
+        }
+        activity = {
+          timestamps: { start: Date.now() },
+          details: 'Watching Media on Tsumi',
+          state: 'Watching something',
+          assets: { large_image: 'icon', large_text: 'Tsumi — Media Streaming' },
+          instance: true,
+          type: 3,
+          buttons: presenceButtons(null, w2g)
+        }
+        IPC.emit('discord', { activity })
+        return
+      }
       const currentParseObject = $nowPlaying?.parseObject || current?.media?.parseObject
       const cleanCurrentName = current?.name
         ? AnimeResolver.cleanFileName(current.name)
@@ -2024,7 +2043,12 @@
     IPC.emit('discord', { activity })
   }
 
-  const TSUMI_LINK = 'https://mxfia19.github.io/tsumi-link/'
+  const TSUMI_LINK = 'https://mxfia19.github.io/Tsumi/'
+
+  /** Adult media (AniList isAdult or the Hentai genre), hidden from the presence by the rpcHideAdult setting. */
+  function isAdultMedia (media) {
+    return !!(media?.isAdult || media?.genres?.includes?.('Hentai'))
+  }
 
   /**
    * Rich presence buttons (2 at most): the title page first (AniList, or TMDB for shows and movies), then

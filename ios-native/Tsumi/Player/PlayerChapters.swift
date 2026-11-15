@@ -244,24 +244,12 @@ enum PlayerChapterLoader {
   }
 }
 
-/// Filler/recap lookup on Jikan (episodesList.getSingleEpisode in common/modules/episodes.js).
+/// Filler/recap lookup on Jikan (episodesList.getSingleEpisode in common/modules/episodes.js), through the
+/// Jikan mirrors and caches of AnimeMappingsService.
 enum PlayerEpisodeFlagsLookup {
-  private struct Response: Decodable {
-    let data: Episode?
-  }
-
-  private struct Episode: Decodable {
-    let filler: Bool?
-    let recap: Bool?
-  }
-
   static func jikan(media: Media, episode: EpisodeRef) async -> PlayerEpisodeFlags? {
     guard media.isAnime, let malId = media.malId, episode.number > 0,
-          let url = URL(string: "https://api.jikan.moe/v4/anime/\(malId)/episodes/\(episode.number)") else { return nil }
-    guard let response = try? await HTTP.data(url, timeout: 5, allowErrorStatus: true),
-          response.1.statusCode == 200,
-          let decoded = try? JSONDecoder().decode(Response.self, from: response.0),
-          let data = decoded.data else { return nil }
-    return PlayerEpisodeFlags(isFiller: data.filler ?? false, isRecap: data.recap ?? false)
+          let data = await AnimeMappingsService.shared.jikanEpisode(malId: malId, episode: episode.number) else { return nil }
+    return PlayerEpisodeFlags(isFiller: data.filler, isRecap: data.recap)
   }
 }

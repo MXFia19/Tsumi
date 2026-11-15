@@ -32,6 +32,12 @@ struct ShellRichPresenceSettingsSection: View {
         options: [ShellOption("mal", "MyAnimeList"), ShellOption("download", "Download Tsumi")],
         selection: ShellBind.value(\.rpcSecondButton)
       )
+      ShellSettingPicker(
+        title: "Adult Content on Discord",
+        description: "What your Discord status shows while you watch adult content (hentai).\nHide the title shows \"Watching something\" without the title, cover or links, hide activity shows nothing, show normally shows it like anything else.",
+        options: [ShellOption("title", "Hide the title"), ShellOption("hidden", "Hide activity"), ShellOption("off", "Show normally")],
+        selection: ShellBind.value(\.rpcHideAdult)
+      )
     } header: {
       Text("Rich Presence Settings")
     }

@@ -54,6 +54,7 @@ struct SettingsValues: Codable, Equatable {
   // Discord (Settings > Discord, DiscordPresence)
   var enableRPC = "full"             // full | limited (no title / episode) | disabled
   var rpcSecondButton = "mal"        // mal | download: second presence button outside Watch Together
+  var rpcHideAdult = "title"         // title (generic "Watching something") | hidden (no presence) | off: adult content
 
   // App
   var queryComplexity = "Complex"    // Complex | Simple (anilist.js queryComplexObjects)
@@ -69,7 +70,7 @@ struct SettingsValues: Codable, Equatable {
     case titleLang, bannerProvider, hideMyAnime, cardPreview, cardAudio, toggleList, uiScale, accentColor
     case adult, hentaiBanner, toasts, homeSections, customSections, westernSections
     case systemNotify, aniNotify, releasesNotify, releasesNotifyNotOnList, subAnnounce, dubAnnounce, hentaiAnnounce
-    case enableRPC, rpcSecondButton
+    case enableRPC, rpcSecondButton, rpcHideAdult
     case queryComplexity, defaultExtension, starredExtension
   }
 
@@ -85,7 +86,7 @@ struct SettingsValues: Codable, Equatable {
       .titleLang, .bannerProvider, .hideMyAnime, .cardPreview, .cardAudio, .toggleList, .uiScale, .accentColor,
       .adult, .hentaiBanner, .toasts, .homeSections, .customSections, .westernSections,
       .systemNotify, .aniNotify, .releasesNotify, .releasesNotifyNotOnList, .subAnnounce, .dubAnnounce, .hentaiAnnounce,
-      .enableRPC, .rpcSecondButton,
+      .enableRPC, .rpcSecondButton, .rpcHideAdult,
       .queryComplexity, .defaultExtension, .starredExtension
     ]
     return keys.map { $0.stringValue }
@@ -148,6 +149,9 @@ extension SettingsValues {
     }
     if let button = container.settingsValue(String.self, .rpcSecondButton), ["mal", "download"].contains(button) {
       rpcSecondButton = button
+    }
+    if let mode = container.settingsValue(String.self, .rpcHideAdult), ["title", "hidden", "off"].contains(mode) {
+      rpcHideAdult = mode
     }
 
     queryComplexity = container.settingsValue(String.self, .queryComplexity) ?? queryComplexity

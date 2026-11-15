@@ -584,6 +584,8 @@ export const defaults = {
   enableRPC: 'full',
   // Second Discord presence button outside Watch Together: 'mal' (MyAnimeList page) or 'download' (Tsumi download page).
   rpcSecondButton: 'mal',
+  // Presence while watching adult content (AniList isAdult / Hentai genre): 'title' (generic "Watching something"), 'hidden' (no presence) or 'off' (shown normally).
+  rpcHideAdult: 'title',
   cards: 'small',
   cardPreview: true,
   cardAudio: false,

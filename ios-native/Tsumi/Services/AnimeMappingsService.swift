@@ -194,6 +194,8 @@ final class AnimeMappingsService: @unchecked Sendable {
   private let jikanMemory = ServiceLocked<[String: JikanEpisodePage]>([:])
   /// Jikan pages that failed recently ("malId.page" -> time): not requested again for 10 minutes.
   private let jikanFailures = ServiceLocked<[String: Date]>([:])
+  /// Jikan mirrors that failed recently (unreachable, server error, blocked): skipped for 10 minutes.
+  private let jikanMirrorDown = ServiceLocked<[String: Date]>([:])
 
   private init() {}
 
@@ -419,6 +421,90 @@ final class AnimeMappingsService: @unchecked Sendable {
 
   // MARK: - Jikan (episodes.js)
 
+  /// Jikan v4 mirrors (api.jikan.moe was discontinued), tried in order, as episodes.js JIKAN_MIRRORS.
+  /// Tenrai follows the Jikan v4 schema; jikan-edge has its own camelCase schema.
+  private enum JikanMirror: String, CaseIterable {
+    case tenrai = "https://api.tenrai.org/v1"
+    case jikanEdge = "https://jikan.lucashdo.com/v1"
+  }
+
+  private func availableJikanMirrors() -> [JikanMirror] {
+    let down = jikanMirrorDown.get()
+    return JikanMirror.allCases.filter { mirror in
+      guard let since = down[mirror.rawValue] else { return true }
+      return Date().timeIntervalSince(since) >= 600
+    }
+  }
+
+  /// GET on the first Jikan mirror that answers, with the JSON and the mirror it came from. 429 waits for
+  /// Retry-After; network errors, 5xx and 403 (Cloudflare block) skip the mirror for 10 minutes and try the next one.
+  /// Other errors (404...) are final: the anime or page doesn't exist.
+  private func jikanRequest(_ path: String, timeout: TimeInterval = 30) async throws -> (json: [String: Any], mirror: JikanMirror) {
+    var lastError: Error = ServiceError.invalidResponse
+    for mirror in availableJikanMirrors() {
+      guard let url = URL(string: mirror.rawValue + path) else { continue }
+      var attempt = 0
+      retrying: while true {
+        attempt += 1
+        await episodesLimiter.acquire()
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+          (data, response) = try await HTTP.data(url, timeout: timeout, allowErrorStatus: true)
+        } catch {
+          jikanMirrorDown.update { $0[mirror.rawValue] = Date() }
+          lastError = error
+          break retrying
+        }
+        if response.statusCode == 429 && attempt < 4 {
+          let retry = Double(response.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 2
+          await episodesLimiter.pause(for: retry + 1)
+          continue
+        }
+        if response.statusCode >= 500 || response.statusCode == 403 {
+          jikanMirrorDown.update { $0[mirror.rawValue] = Date() }
+          lastError = HTTPError.status(response.statusCode, url)
+          break retrying
+        }
+        guard (200..<300).contains(response.statusCode), let json = ServiceJSON.object(data) else {
+          throw HTTPError.status(response.statusCode, url)
+        }
+        return (json, mirror)
+      }
+    }
+    throw lastError
+  }
+
+  /// jikan-edge dates look like "Sep 29, 2023": converted to the Jikan ISO form ("2023-09-29T00:00:00+00:00").
+  private static func jikanEdgeDate(_ text: String?) -> String? {
+    guard let text = text?.trimmingCharacters(in: .whitespaces), !text.isEmpty else { return nil }
+    let parts = text.replacingOccurrences(of: ",", with: " ").split(separator: " ")
+    let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+    guard parts.count == 3,
+          let month = months.firstIndex(of: String(parts[0].prefix(3)).lowercased()),
+          let day = Int(parts[1]), let year = Int(parts[2]) else { return nil }
+    return String(format: "%04d-%02d-%02dT00:00:00+00:00", year, month + 1, day)
+  }
+
+  private static func jikanEpisodePage(_ json: [String: Any], mirror: JikanMirror) -> JikanEpisodePage {
+    switch mirror {
+    case .tenrai:
+      let episodes = json.array("data").compactMap { item -> JikanEpisode? in
+        guard let id = item.int("mal_id") else { return nil }
+        return JikanEpisode(malId: id, title: item.string("title") ?? item.string("title_romanji") ?? item.string("title_japanese"), aired: item.string("aired"), filler: item.bool("filler") ?? false, recap: item.bool("recap") ?? false)
+      }
+      let pagination = json.dict("pagination")
+      return JikanEpisodePage(episodes: episodes, lastVisiblePage: pagination?.int("last_visible_page"), hasNextPage: pagination?.bool("has_next_page") ?? false)
+    case .jikanEdge:
+      let episodes = json.array("data").compactMap { item -> JikanEpisode? in
+        guard let id = item.int("number") else { return nil }
+        return JikanEpisode(malId: id, title: item.string("title") ?? item.string("titleRomanji") ?? item.string("titleJapanese"), aired: jikanEdgeDate(item.string("aired")), filler: item.bool("filler") ?? false, recap: item.bool("recap") ?? false)
+      }
+      let pagination = json.dict("meta")?.dict("pagination")
+      return JikanEpisodePage(episodes: episodes, lastVisiblePage: nil, hasNextPage: pagination?.bool("hasNextPage") ?? false)
+    }
+  }
+
   private func jikanPage(malId: Int, page: Int) async -> JikanEpisodePage? {
     let cacheKey = "jikan.episodes.\(malId).\(page)"
     let online = ServiceNetworkMonitor.shared.isOnline
@@ -426,27 +512,8 @@ final class AnimeMappingsService: @unchecked Sendable {
     if !online { return nil }
     do {
       let result: JikanEpisodePage = try await inflight.run(cacheKey) {
-        guard let url = URL(string: "https://api.jikan.moe/v4/anime/\(malId)/episodes?page=\(page)") else { throw ServiceError.invalidResponse }
-        var attempt = 0
-        while true {
-          attempt += 1
-          await self.episodesLimiter.acquire()
-          let (data, response) = try await HTTP.data(url, timeout: 30, allowErrorStatus: true)
-          if (response.statusCode == 429 || response.statusCode == 500) && attempt < 4 {
-            let retry = Double(response.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 2
-            await self.episodesLimiter.pause(for: response.statusCode == 500 ? 1 : retry + 1)
-            continue
-          }
-          guard (200..<300).contains(response.statusCode), let json = ServiceJSON.object(data) else {
-            throw HTTPError.status(response.statusCode, url)
-          }
-          let episodes = json.array("data").compactMap { item -> JikanEpisode? in
-            guard let id = item.int("mal_id") else { return nil }
-            return JikanEpisode(malId: id, title: item.string("title") ?? item.string("title_romanji") ?? item.string("title_japanese"), aired: item.string("aired"), filler: item.bool("filler") ?? false, recap: item.bool("recap") ?? false)
-          }
-          let pagination = json.dict("pagination")
-          return JikanEpisodePage(episodes: episodes, lastVisiblePage: pagination?.int("last_visible_page"), hasNextPage: pagination?.bool("has_next_page") ?? false)
-        }
+        let answer = try await self.jikanRequest("/anime/\(malId)/episodes?page=\(page)")
+        return Self.jikanEpisodePage(answer.json, mirror: answer.mirror)
       }
       await DiskCache.shared.set(cacheKey, result, ttl: TimeInterval(Int.random(in: 1...3) * 24 * 3600))
       return result
@@ -503,10 +570,9 @@ final class AnimeMappingsService: @unchecked Sendable {
     if let cached = await DiskCache.shared.get(cacheKey, as: String.self, allowExpired: !ServiceNetworkMonitor.shared.isOnline) {
       return cached.isEmpty ? nil : cached
     }
-    guard let url = URL(string: "https://api.jikan.moe/v4/anime/\(malId)") else { return nil }
-    await episodesLimiter.acquire()
-    guard let json = (try? await HTTP.jsonObject(from: url)) as? [String: Any] else { return nil }
-    let trailer = json.dict("data")?.dict("trailer")?.string("youtube_id") ?? ""
+    guard let answer = try? await jikanRequest("/anime/\(malId)") else { return nil }
+    let trailerInfo = answer.json.dict("data")?.dict("trailer")
+    let trailer = (answer.mirror == .tenrai ? trailerInfo?.string("youtube_id") : trailerInfo?.string("youtubeId")) ?? ""
     await DiskCache.shared.set(cacheKey, trailer, ttl: TimeInterval(Int.random(in: 1...3) * 24 * 3600))
     return trailer.isEmpty ? nil : trailer
   }

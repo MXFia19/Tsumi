@@ -65,6 +65,13 @@
       <option value='download'>Download Tsumi</option>
     </select>
   </SettingCard>
+  <SettingCard title='Adult Content on Discord' description={'What your Discord status shows while you watch adult content (hentai).\nHide the title shows "Watching something" without the title, cover or links, hide activity shows nothing, show normally shows it like anything else.'}>
+    <select class='form-control bg-dark w-100 mw-full text-truncate' bind:value={settings.rpcHideAdult}>
+      <option value='title' selected>Hide the title</option>
+      <option value='hidden'>Hide activity</option>
+      <option value='off'>Show normally</option>
+    </select>
+  </SettingCard>
 {/if}
 
 <h4 class='mb-10 font-weight-bold'>Interface Settings</h4>
