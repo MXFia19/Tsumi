@@ -18,6 +18,7 @@
   import AudioLabel from '@/components/AudioLabel.svelte'
   import Following from '@/modals/details/components/Following.svelte'
   import RemoteResume from '@/modals/details/components/RemoteResume.svelte'
+  import DownloadNextButton from '@/components/DownloadNextButton.svelte'
   import { IPC } from '@/modules/bridge.js'
   import SmallCard from '@/components/cards/SmallCard.svelte'
   import SmallCardSk from '@/components/skeletons/SmallCardSk.svelte'
@@ -501,6 +502,7 @@
                         <ListPlus size='1.7rem' />
                       </button>
                     {/if}
+                    <DownloadNextButton {media} />
                     {#if Helper.isAuthorized() && typeof staticMedia.id !== 'string'}
                       <Scoring class='mr-10 ' {media} viewAnime={true} />
                     {/if}

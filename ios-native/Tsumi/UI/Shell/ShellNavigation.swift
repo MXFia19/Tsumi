@@ -45,6 +45,8 @@ struct ShellMediaItem: Identifiable, Hashable {
 enum ShellRoute: Hashable {
   /// Catalogs on compact width, where it is not a tab (the mobile Navbar.svelte has no Catalogs entry).
   case catalogs
+  /// Offline downloads (toolbar button / offline banner), pushed on the current tab.
+  case downloads
 }
 
 /// Observable shell state shared by the root view, the toolbar and the wiring.

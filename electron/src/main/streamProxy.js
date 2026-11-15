@@ -1,6 +1,7 @@
 import express from 'express'
 import { app } from 'electron'
 import Debug from 'debug'
+import { registerDownloadRoutes } from './downloads/routes.js'
 
 const debug = Debug('electron:streaming-proxy')
 
@@ -149,6 +150,8 @@ export async function startStreamProxy () {
           }
         }
       })
+
+      registerDownloadRoutes(expressApp)
 
       expressApp.get('/health', (req, res) => {
         res.json({ status: 'ok' })

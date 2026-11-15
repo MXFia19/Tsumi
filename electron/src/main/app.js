@@ -24,6 +24,7 @@ import Dialog from './dialog.js'
 import Debug from './debugger.js'
 import { startStreamProxy } from './streamProxy.js'
 import { setupVoicePermission } from './voice.js'
+import DownloadManager from './downloads/manager.js'
 
 export default class App {
   icon = nativeImage.createFromPath(join(__dirname, process.platform === 'win32' ? '/icon_filled.ico' : '/icon_filled.png'))
@@ -69,6 +70,7 @@ export default class App {
   protocol = new Protocol(this.mainWindow)
   updater = new Updater(this.mainWindow)
   dialog = new Dialog()
+  downloads = new DownloadManager(this.mainWindow)
   tray = new Tray(this.trayIcon)
   imageDir = join(app.getPath('userData'), 'Cache', 'Image_Data')
   debug = new Debug()

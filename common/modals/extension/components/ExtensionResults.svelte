@@ -135,6 +135,7 @@
     const capturedEpisode = search?.episode
     const ext = extensionManager.extensions.get(result.extensionKey)
     launchSource = ext?.manifest?.sourceName || result.extensionName || ''
+    launchOrigin = { extensionKey: result.extensionKey, sourceHref: result.href, sourceTitle: result.title }
 
     try {
       const rawEpisodes = await callExtensionFunction(
@@ -291,6 +292,8 @@
 
   // Name of the extension / addon the stream comes from (Watch Together shows it as the source).
   let launchSource = ''
+  // Extension + search result of the stream ("Download Episode" of the player resolves a fresh link from it).
+  let launchOrigin = {}
 
   function launchPlayer (
     streamData,
@@ -322,7 +325,9 @@
           }
         },
         activeServerIndex: serverIndex,
-        sourceName: launchSource
+        sourceName: launchSource,
+        ...launchOrigin,
+        episodeRef: typeof search?.episode === 'object' ? search.episode : null
       }
     ])
 

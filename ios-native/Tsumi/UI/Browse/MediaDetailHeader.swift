@@ -164,6 +164,7 @@ struct BrowseDetailActions: View {
           trailerButton(trailerId, media: media)
         }
         LiveCountdownDetailButton(media: media)
+        DownloadNextMenu(media: media)
         ForEach(BrowseMediaInfo.links(media)) { link in
           BrowseShareLinkButton(link: link)
         }

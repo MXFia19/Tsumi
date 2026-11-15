@@ -42,6 +42,8 @@ final class PlayerController {
   /// "Now Playing [O]": shows the media details. The app reports the sheet with `setExternalOverlay(presented:)`
   /// (playback continues, like the Svelte app; the player restores its keyboard focus when it closes).
   @ObservationIgnored var onOpenDetails: ((Media) -> Void)?
+  /// "Download Episode" of the More menu (offline downloads); the item shows only when the app sets it.
+  @ObservationIgnored var onDownloadEpisode: (() -> Void)?
   /// Watch Together: local play/pause/seek (w2gEmitter 'player', time floored to the second).
   @ObservationIgnored var onLocalStateChange: (((paused: Bool, time: Double)) -> Void)?
   /// Watch Together: the user changed episode. Index in `episodeList`, or the episode number without a list.

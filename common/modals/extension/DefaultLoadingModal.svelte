@@ -62,6 +62,8 @@
 
   // Name of the extension / addon the stream comes from (Watch Together shows it as the source).
   let launchSource = ''
+  // Extension + search result of the stream ("Download Episode" of the player resolves a fresh link from it).
+  let launchOrigin = {}
 
   function launchPlayer (
     streamData,
@@ -93,7 +95,9 @@
           }
         },
         activeServerIndex: serverIndex,
-        sourceName: launchSource
+        sourceName: launchSource,
+        ...launchOrigin,
+        episodeRef: typeof episode === 'object' ? episode : null
       }
     ])
 
@@ -153,6 +157,7 @@
         .sort((a, b) => b.score - a.score)
 
       const best = scored[0]
+      launchOrigin = { extensionKey: defaultExt.key, sourceHref: best.href, sourceTitle: best.title }
       statusText = 'Extracting episodes...'
 
       const rawEps = await callExtensionFunction(

@@ -66,6 +66,10 @@ struct SettingsValues: Codable, Equatable {
   // App
   var queryComplexity = "Complex"    // Complex | Simple (anilist.js queryComplexObjects)
 
+  // Downloads (Settings > App > Downloads; the desktop app also has a download folder)
+  var downloadQuality = "highest"    // highest | 1080 | 720 | 480 | 360 | lowest (HLS variant)
+  var downloadMaxConcurrent = 2      // simultaneous downloads (1-5)
+
   // Extensions (managed by the extension manager)
   var defaultExtension: String?
   var starredExtension: String?
@@ -80,6 +84,7 @@ struct SettingsValues: Codable, Equatable {
     case enableRPC, rpcSecondButton, rpcHideAdult
     case syncPlaybackPosition, traktScrobble, traktScrobbleAnime
     case queryComplexity, defaultExtension, starredExtension
+    case downloadQuality, downloadMaxConcurrent
   }
 
   /// releasesNotify value of the Svelte app for "Not on List".
@@ -96,7 +101,8 @@ struct SettingsValues: Codable, Equatable {
       .systemNotify, .aniNotify, .releasesNotify, .releasesNotifyNotOnList, .subAnnounce, .dubAnnounce, .hentaiAnnounce,
       .enableRPC, .rpcSecondButton, .rpcHideAdult,
       .syncPlaybackPosition, .traktScrobble, .traktScrobbleAnime,
-      .queryComplexity, .defaultExtension, .starredExtension
+      .queryComplexity, .defaultExtension, .starredExtension,
+      .downloadQuality, .downloadMaxConcurrent
     ]
     return keys.map { $0.stringValue }
   }
@@ -170,6 +176,10 @@ extension SettingsValues {
     traktScrobbleAnime = container.svcLossyBool(.traktScrobbleAnime) ?? traktScrobbleAnime
 
     queryComplexity = container.settingsValue(String.self, .queryComplexity) ?? queryComplexity
+    if let quality = container.settingsValue(String.self, .downloadQuality), ["highest", "1080", "720", "480", "360", "lowest"].contains(quality) {
+      downloadQuality = quality
+    }
+    if let concurrent = container.svcLossyInt(.downloadMaxConcurrent) { downloadMaxConcurrent = min(max(concurrent, 1), 5) }
 
     defaultExtension = container.settingsValue(String.self, .defaultExtension)
     starredExtension = container.settingsValue(String.self, .starredExtension)

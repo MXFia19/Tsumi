@@ -619,6 +619,10 @@ export const defaults = {
   w2gVoiceDucking: true,
   w2gPushToTalk: false,
   w2gPushToTalkKey: 'KeyT',
+  // Offline downloads: folder ('' = Videos/Tsumi), simultaneous downloads, HLS quality (highest | 1080 | 720 | 480 | 360 | lowest).
+  downloadFolder: '',
+  downloadMaxConcurrent: 2,
+  downloadQuality: 'highest',
   extensions: {},
   defaultExtension: null,
   starredExtension: null

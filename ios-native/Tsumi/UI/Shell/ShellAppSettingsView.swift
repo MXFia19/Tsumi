@@ -47,6 +47,7 @@ struct ShellAppSettingsView: View {
       } header: {
         Text("App Settings")
       }
+      DownloadSettingsSection()
       ShellResetSection(confirming: $confirming, clearingCaches: clearingCaches)
       ShellSettingsManagementSection(confirming: $confirming)
       ShellNotificationPermissionSection()

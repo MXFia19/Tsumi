@@ -6,34 +6,49 @@ const debug = Debug('ui:streaming')
 let hlsLibrary
 let proxyPort = null
 
+// Downloaded episodes are served by the local proxy itself (electron/src/main/downloads/routes.js).
+const localDownloadRx = /^http:\/\/(localhost|127\.0\.0\.1):\d+\/downloads\//i
+
 function getProxyUrl (streamUrl, headers = {}, proxyPort) {
-  if (!proxyPort) return streamUrl
+  if (!proxyPort || localDownloadRx.test(streamUrl)) return streamUrl
   const encodedUrl = encodeURIComponent(streamUrl)
   const encodedHeaders = encodeURIComponent(JSON.stringify(headers))
   return `http://localhost:${proxyPort}/proxy?url=${encodedUrl}&headers=${encodedHeaders}`
 }
 
+function loadScript (src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = src
+    script.async = true
+    script.onload = resolve
+    script.onerror = () => {
+      script.remove()
+      reject(new Error(`Failed to load ${src}`))
+    }
+    document.head.appendChild(script)
+  })
+}
+
 async function loadHLSLibrary () {
-  if (hlsLibrary !== undefined) return hlsLibrary
+  if (hlsLibrary) return hlsLibrary
 
   try {
     if (typeof window !== 'undefined' && !window.Hls) {
-      const script = document.createElement('script')
-      script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.4.5'
-      script.async = true
-
-      await new Promise((resolve, reject) => {
-        script.onload = resolve
-        script.onerror = reject
-        document.head.appendChild(script)
-      })
+      try {
+        await loadScript('https://cdn.jsdelivr.net/npm/hls.js@1.4.5')
+      } catch (error) {
+        // Offline: the copy saved with the HLS downloads (served by the local proxy).
+        const port = await getProxyPortInternal()
+        if (!port) throw error
+        await loadScript(`http://localhost:${port}/downloads/hls.js`)
+      }
     }
 
     hlsLibrary = window.Hls || null
     return hlsLibrary
   } catch (error) {
     debug('HLS.js unavailable, using native playback:', error)
-    hlsLibrary = null
     return null
   }
 }

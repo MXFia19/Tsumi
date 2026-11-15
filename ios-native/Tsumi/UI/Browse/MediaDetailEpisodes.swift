@@ -244,6 +244,7 @@ struct BrowseEpisodeRow: View {
         W2GQueueAddButton {
           WatchTogetherClient.shared.addToQueue(media: media, episode: episode.ref)
         }
+        DownloadEpisodeButton(media: media, episode: episode.ref, title: episode.title)
       }
     }
   }

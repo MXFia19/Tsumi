@@ -49,6 +49,7 @@
   import EpisodeListSk from '@/components/skeletons/EpisodeListSk.svelte'
   import AudioLabel from '@/components/AudioLabel.svelte'
   import SmartImage from '@/components/visual/SmartImage.svelte'
+  import DownloadButton from '@/components/DownloadButton.svelte'
   import { tmdbClient } from '@/modules/tmdb.js'
   import { anilistClient } from '@/modules/anilist.js'
   import { toast } from 'svelte-sonner'
@@ -378,6 +379,9 @@
                         use:click={() => addToW2GQueue({ number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode })}>
                         <ListPlus size='1.5rem' />
                       </button>
+                    {/if}
+                    {#if !unreleased}
+                      <DownloadButton {media} episode={{ number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode, title: resolvedTitle, image }} class={length || $w2gState ? 'ml-5' : 'ml-auto'} />
                     {/if}
                   </div>
                   {#if completed}

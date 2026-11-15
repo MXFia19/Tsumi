@@ -195,6 +195,8 @@ enum ShellLaunch {
     TsumiWidgetBridge.start()
     _ = ExtensionManager.shared
     ShellConnectionMonitor.shared.start()
+    // Offline downloads: reconnects to the background download sessions.
+    DownloadCenter.shared.start()
   }
 
   static func startFromView() async {
@@ -241,6 +243,11 @@ final class ShellAppDelegate: NSObject, UIApplicationDelegate {
 
   func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
     PlayerOrientation.supportedMask
+  }
+
+  /// Offline downloads finished while the app was suspended / closed.
+  func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
+    DownloadCenter.shared.handleBackgroundEvents(identifier, completion: completionHandler)
   }
 }
 

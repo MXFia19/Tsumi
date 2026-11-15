@@ -46,6 +46,8 @@ struct ShellRouteDestination: View {
     switch route {
     case .catalogs:
       ShellCatalogsScreen()
+    case .downloads:
+      DownloadsView()
     }
   }
 }
@@ -70,6 +72,7 @@ struct ShellMainToolbar: ToolbarContent {
   var body: some ToolbarContent {
     ToolbarItemGroup(placement: .topBarLeading) {
       ShellNowPlayingButton()
+      ShellDownloadsButton()
       if compact && tab == .search {
         ShellCatalogsButton()
       }
