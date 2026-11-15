@@ -312,13 +312,17 @@ export function loadDiscordSdk (koffi, libraryPath) {
       applicationId: () => f.Client_GetApplicationId(self),
       /** @returns {number} Discord_Client_Status */
       status: () => f.Client_GetStatus(self),
+      // Listeners run after Discord_RunCallbacks has returned: calling the SDK again from inside one of its
+      // callbacks (UpdateRichPresence on Ready, RefreshToken on expiry...) corrupts the heap and crashes the app.
       /** @param {(status: number, error: number, errorDetail: number) => void} fn */
       onStatusChanged (fn) {
-        f.Client_SetStatusChangedCallback(self, ...callback(StatusCallback, fn))
+        f.Client_SetStatusChangedCallback(self, ...callback(StatusCallback, (/** @type {number} */ status, /** @type {number} */ error, /** @type {number} */ errorDetail) => {
+          setImmediate(() => fn(status, error, errorDetail))
+        }))
       },
       /** Called before the access token expires. @param {() => void} fn */
       onTokenExpiration (fn) {
-        f.Client_SetTokenExpirationCallback(self, ...callback(TokenExpirationCallback, () => fn()))
+        f.Client_SetTokenExpirationCallback(self, ...callback(TokenExpirationCallback, () => { setImmediate(() => fn()) }))
       },
       connect: () => f.Client_Connect(self),
       disconnect: () => f.Client_Disconnect(self),

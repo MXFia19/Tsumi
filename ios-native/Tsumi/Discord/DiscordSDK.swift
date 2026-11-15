@@ -502,7 +502,7 @@ final class DiscordSignalBox: DiscordCallbackBox {
 }
 
 /// Bodies of the C callbacks. They copy and release the SDK values at once (on the calling thread), then run
-/// the Swift handler on the main actor (synchronously: Discord_RunCallbacks is called from the main thread).
+/// the Swift handler on the main actor, on the next main-queue turn (never inside Discord_RunCallbacks).
 enum DiscordCallbacks {
   static func retain(_ box: DiscordCallbackBox) -> UnsafeMutableRawPointer {
     Unmanaged.passRetained(box).toOpaque()
@@ -518,16 +518,13 @@ enum DiscordCallbacks {
     return Unmanaged<DiscordCallbackBox>.fromOpaque(userData).takeUnretainedValue() as? Box
   }
 
+  /// Always after Discord_RunCallbacks has returned: calling the SDK again from inside one of its callbacks
+  /// (UpdateRichPresence on Ready, UpdateToken after RefreshToken, Connect after UpdateToken...) corrupts the heap
+  /// and crashes the app (reproduced with the Windows build of the same SDK). The values are already copied.
   private static func onMain(_ work: @escaping @MainActor () -> Void) {
-    if Thread.isMainThread {
+    DispatchQueue.main.async {
       MainActor.assumeIsolated {
         work()
-      }
-    } else {
-      DispatchQueue.main.async {
-        MainActor.assumeIsolated {
-          work()
-        }
       }
     }
   }
