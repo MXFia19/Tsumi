@@ -153,6 +153,7 @@ export default class Subtitles {
         this.onHeader()
       }
     } else console.error(`Failed to load the file ${file.name} as it is not a subtitle file.`)
+    return index
   }
 
   initSubtitleRenderer () {

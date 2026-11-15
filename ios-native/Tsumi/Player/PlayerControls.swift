@@ -13,6 +13,8 @@ struct PlayerControlsOverlay: View {
   let onShowKeybinds: () -> Void
   /// Opens the Watch Together panel; the button only shows while in a lobby.
   var onShowWatchTogether: (() -> Void)? = nil
+  /// "Search Online Subtitles…" (PlayerOnlineSubtitles.swift).
+  var onSearchOnlineSubtitles: (() -> Void)? = nil
 
   var body: some View {
     ZStack {
@@ -225,6 +227,14 @@ struct PlayerControlsOverlay: View {
         }
       }
       Section {
+        if let onSearchOnlineSubtitles {
+          Button {
+            onInteraction()
+            onSearchOnlineSubtitles()
+          } label: {
+            Label("Search Online Subtitles…", systemImage: "globe")
+          }
+        }
         Button {
           onInteraction()
           onImportSubtitles()

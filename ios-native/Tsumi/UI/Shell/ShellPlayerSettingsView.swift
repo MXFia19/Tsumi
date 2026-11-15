@@ -16,6 +16,11 @@ struct ShellPlayerSettingsView: View {
           options: ShellPlayerSettingsView.subtitleLanguages,
           selection: ShellBind.value(\.subtitleLanguage)
         )
+        ShellSettingToggle(
+          title: "Automatic Online Subtitles",
+          description: "Automatically adds online subtitles in your Preferred Subtitle Language (English when it is set to None) when the video's source doesn't provide any. You can always search online subtitles from the player's subtitle menu.",
+          isOn: ShellBind.value(\.onlineSubtitlesAuto)
+        )
       } header: {
         Text("Language Settings")
       }

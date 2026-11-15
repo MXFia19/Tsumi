@@ -285,11 +285,11 @@ struct PlayerSubtitleOffsetPanel: View {
         stepButton("plus", delta: 0.1)
       }
       HStack(spacing: 10) {
-        Button("-1 s") { onChange(delay - 1) }
+        Button("-0.5 s") { onChange(delay - 0.5) }
           .buttonStyle(.bordered)
         Button("Reset") { onChange(0) }
           .buttonStyle(.bordered)
-        Button("+1 s") { onChange(delay + 1) }
+        Button("+0.5 s") { onChange(delay + 0.5) }
           .buttonStyle(.bordered)
         Button("Done", action: onClose)
           .buttonStyle(.borderedProminent)

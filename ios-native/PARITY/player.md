@@ -26,11 +26,11 @@ given); **app** = the player exposes the hook, the app/other module wires it.
 
 | Status | Count |
 |---|---|
-| done | 114 |
+| done | 118 |
 | partial | 14 |
 | n.a. | 22 |
 | app (hook exposed, wired by the app) | 8 |
-| **total** | **158** |
+| **total** | **162** |
 
 Audit items handled in this pass (ids of `AUDIT.md`): M1 (8.6), M2 (7.17), M3 (4.3), L1 (4.8, 4.9), L2 (3.5),
 L3 (2.12), L4 (3.11), L5 (2.7), L6 (6.10), L8 (8.1, 8.7), L9 (2.37), L10 (5.12), L11 (2.24), L12 (2.27),
@@ -93,7 +93,7 @@ L13 (2.28), L14 (2.29), L15 (7.21), L17 (4.16), L18 (4.17), the PiP restore devi
 | 2.30 | Keybind Space / N / B / M / P / S / W / C / I / O / H / ← / → / ↑ / ↓ / [ / ] / \ / ` / X | PP 939-1141 | `PlayerView.handleKey` | done |
 | 2.31 | Keybind A (deband), F (fullscreen), V (gain) | PP 1002-1009, 1024-1030, 1057-1063 | — | n.a. (see 1.15, 2.18, 2.19) |
 | 2.32 | Seekbar arrow keys (`handleSeekbarKey`) | PP 1793-1810 | covered by the global ←/→ | done |
-| 2.33 | Cast (PresentationRequest, commented out) | PP 228-239, 868-876, 1174-1229 | AirPlay (`PlayerAirPlayButton`, `allowsExternalPlayback`) | done (AirPlay replaces Cast) |
+| 2.33 | Cast: Chromecast on the PC app (`routes/player/CastButton.svelte`, `CastOverlay.svelte`, `modules/cast.js`, `electron/src/main/cast/`: mDNS discovery, Default Media Receiver, LAN proxy with CORS / headers / HLS rewriting, WebVTT tracks, remote controls) | PP CastButton | AirPlay (`PlayerAirPlayButton`, `allowsExternalPlayback`) | done (AirPlay replaces Chromecast on iPhone) |
 | 2.34 | `menubarOffset` (Windows title bar) | PP 1679-1700 | — | n.a. (desktop only) |
 | 2.35 | Video tracks menu (`selectVideo`) | PP 860-867, 2604-2643 | AVPlayer picks the HLS variant automatically | n.a. |
 | 2.36 | Status bar / home indicator hidden in fullscreen | PP 258-265 | `.statusBarHidden`, `.persistentSystemOverlays(.hidden)`, idle timer disabled while playing | done |
@@ -190,7 +190,7 @@ L13 (2.28), L14 (2.29), L15 (7.21), L17 (4.16), L18 (4.17), the PiP restore devi
 | 7.7 | "Preferred Subtitle Language" setting (`subtitleLanguage`, None) | PT 73-101 | read from `AppSettings.values.subtitleLanguage` | done |
 | 7.8 | `checkSubtitle`: last subtitle per media ('lastSubtitle', OFF or track name) | PP 192-226, 2668-2714 | `PlayerPreferences.lastSubtitle` / `setLastSubtitle`, applied before the language preference | done |
 | 7.9 | `cycleSubtitles` (KeyC) | PP 556-565, 1050-1056 | `cycleSubtitles()` (+ notice with the track name) | done |
-| 7.10 | Subtitle offset input (`subDelay` → renderer `timeOffset`) | PP 567-571, 2723-2747 | `setSubtitleDelay(_:)`, `PlayerSubtitleOffsetPanel` (±0.1 s, ±1 s, reset) | partial (external subtitles only; AVPlayer cannot offset embedded ones) |
+| 7.10 | Subtitle offset input (`subDelay` → renderer `timeOffset`) | PP 567-571, 2723-2747 | `setSubtitleDelay(_:)`, `PlayerSubtitleOffsetPanel` (±0.1 s, ±0.5 s like the Svelte ±0.5 s buttons, reset) | partial (external subtitles only; AVPlayer cannot offset embedded ones) |
 | 7.11 | "Add Subtitles" file input (.srt,.vtt,.ass,.ssa,.sub,.txt) from the subtitle menu and More menu | PP 1812-1821, 2373-2380, 2440-2453 | `fileImporter` → `importSubtitleFile(at:)` | done |
 | 7.12 | Paste subtitles (clipboard text starting with [Script Info], subtitle files) | SUB 104-120 | "Paste Subtitles" → `pasteSubtitles()` (any supported format) | done |
 | 7.13 | `addSingleSubtitleFile` naming ("Subtitles" for the URL, file name otherwise) and auto-select | SUB 127-156 | `addExternalTrack` (unique names, user files selected) | done |
@@ -202,6 +202,9 @@ L13 (2.28), L14 (2.29), L15 (7.21), L17 (4.16), L18 (4.17), the PiP restore devi
 | 7.19 | Default font / missing fonts / fast rendering / render resolution settings | PT 40-70; SUB 8-21, 158-184 | System font overlay | n.a. (no libass renderer) |
 | 7.20 | `renderer.resize()` timing workarounds | PP 199, 220, 563, ... | — | n.a. (SwiftUI layout) |
 | 7.21 | Drag and drop of subtitle files (or text) onto the player | clipboard.js 16-17; SUB 109-113 | `PlayerView.onDrop(of: [.data])` → `importDroppedSubtitles` (file name and extension from the item, format detected from the content) | done (L15) |
+| 7.22 | "Search online subtitles…" (subs.wing.st) in the subtitle menu: list grouped by language (preferred language, then English, then by name), release names, filter, duplicates removed; picking one downloads it, adds it as a track and selects it | `routes/player/OnlineSubtitles.svelte`, `modules/onlinesubs/` | `PlayerOnlineSubtitlesSheet` ("Search Online Subtitles…" in `subtitleMenu`) → `addOnlineSubtitle(_:)` → `addExternalTrack` | done |
+| 7.23 | Online subtitle lookup: TMDB id of TMDB titles (absolute episode → TMDB season), ani.zip `themoviedb_id` + TVDB season / episode for anime, absolute numbering fallback, animap fallback, movies by TMDB id; results cached per episode for an hour; clear messages on failure | `modules/onlinesubs/core.js`, `index.js` | `OnlineSubtitlesService` (`queries`, `episodeCandidates`, `tmdbSeasonEpisode`, `search`, `message(for:)`) | done |
+| 7.24 | "Automatic Online Subtitles": first SRT in the preferred language added when the source has no subtitle track (quiet on failure) | `OnlineSubtitles.svelte` `scheduleAutomatic` | `scheduleAutomaticOnlineSubtitles()` (called by `begin`, waits for the stream to be ready) | done |
 
 ## 8. Background, Picture in Picture, miniplayer (PP)
 
@@ -249,6 +252,7 @@ L13 (2.28), L14 (2.29), L15 (7.21), L17 (4.16), L18 (4.17), the PiP restore devi
 | 11.7 | `subtitleLanguage` / `audioLanguage` | PT 73-101; PP 180 | `applySubtitlePreference` / `selectPreferredAudio` | done |
 | 11.8 | `volume` | PP 110, 117 | `configurePlayer`, `adjustVolume` | done |
 | 11.9 | `playerDeband`, `font`, `missingFont`, `disableSubtitleBlur`, `subtitleRenderHeight`, `enableExternal`, `playerPath` | PT 40-70, 132-137, 159-178 | — | n.a. (see 1.15, 7.19, 9.2) |
+| 11.10 | `onlineSubtitlesAuto` ("Automatic Online Subtitles") | PT Language Settings | `AppSettings.values.onlineSubtitlesAuto` (see 7.24) | done |
 
 ## Wiring notes for the app step
 

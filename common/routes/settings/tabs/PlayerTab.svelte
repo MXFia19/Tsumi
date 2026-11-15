@@ -112,6 +112,12 @@
     <option value='idn'>Indonesian</option>
   </select>
 </SettingCard>
+<SettingCard title='Automatic Online Subtitles' description="Automatically adds online subtitles in your Preferred Subtitle Language (English when it is set to None) when the video's source doesn't provide any. You can always search online subtitles from the player's subtitle menu.">
+  <div class='custom-switch'>
+    <input type='checkbox' id='player-online-subtitles' bind:checked={settings.onlineSubtitlesAuto} />
+    <label for='player-online-subtitles'>{settings.onlineSubtitlesAuto ? 'On' : 'Off'}</label>
+  </div>
+</SettingCard>
 
 <h4 class='mb-10 font-weight-bold'>Playback Settings</h4>
 <SettingCard title='Autoplay Next Episode' description='Automatically starts playing next episode when a video ends.'>
