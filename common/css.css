@@ -454,7 +454,9 @@ details:active,
   /* --error-text: hsl(358, 100%, 81%); */
 }
 
-[data-sonner-toast]>button {
+/* The close button (Toaster closeButton) sits at the top right. Only the close button: an action or cancel
+   button (data-button, e.g. "Downloads", "Join") stays in the toast's row, with room left for the close button. */
+[data-sonner-toast]>button[data-close-button] {
   position: absolute !important;
   margin-left: 94% !important;
   right: 0 !important;
@@ -465,10 +467,15 @@ details:active,
   color: hsla(var(--white-color-hsl), 0.93) !important;
 }
 
-[data-sonner-toast]>button svg {
+[data-sonner-toast]>button[data-close-button] svg {
   width: 2rem !important;
   height: 2rem !important;
   stroke-width: 2.5 !important;
+}
+
+[data-sonner-toast]>button[data-button] {
+  margin-right: 2.6rem !important;
+  white-space: nowrap;
 }
 
 [data-sonner-toast]>div:nth-child(2)>div:first-child {
