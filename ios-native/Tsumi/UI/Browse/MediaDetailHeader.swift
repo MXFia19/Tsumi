@@ -85,8 +85,13 @@ struct BrowseDetailStats: View {
   let media: Media
 
   var body: some View {
+    // Spoiler protection (Core/SpoilerProtection.swift): rating, length and review count.
+    let entry = BrowseMediaInfo.entry(media)
+    let hideRating = SpoilerProtection.hidesMedia(.rating, entry: entry)
+    let hideDuration = SpoilerProtection.hidesMedia(.duration, entry: entry)
+    let hideReviews = SpoilerProtection.hidesMedia(.reviews, entry: entry)
     BrowseFlowLayout(spacing: 14, lineSpacing: 8) {
-      if let score = media.averageScore {
+      if let score = media.averageScore, !hideRating {
         stat("chart.line.uptrend.xyaxis", "Rating: \(score)%")
       }
       if media.format != .unknown {
@@ -95,10 +100,10 @@ struct BrowseDetailStats: View {
       if media.episodes != 1 {
         let maxEpisode = AnimeHelpers.maxEpisode(media)
         stat("film.stack", "Episodes: \(maxEpisode > 0 ? String(maxEpisode) : "?")")
-      } else if let duration = media.duration {
+      } else if let duration = media.duration, !hideDuration {
         stat("timer", "Length: \(duration) min")
       }
-      if media.averageScore != nil {
+      if media.averageScore != nil && !hideReviews {
         let reviews = Services.shared.details.reviews(media)
         if reviews != "?" {
           stat("person.2", "Reviews: \(reviews)")
@@ -504,7 +509,8 @@ struct BrowseDetailInfoStrip: View {
     if let rating = extras.contentRating, !rating.isEmpty, rating != "NR" {
       result.append(Item(label: "Rating", value: rating, systemImage: "checkmark.shield", glyph: nil))
     }
-    if let duration = media.duration, duration > 0, media.episodes != 1 {
+    if let duration = media.duration, duration > 0, media.episodes != 1,
+       !SpoilerProtection.hidesMedia(.duration, entry: BrowseMediaInfo.entry(media)) {
       result.append(Item(label: "Duration", value: "\(duration) min", systemImage: "timer", glyph: nil))
     }
     if let popularity = media.popularity, popularity > 0, media.source == .anilist {
@@ -598,12 +604,18 @@ struct BrowseDetailChips: View {
   let media: Media
 
   var body: some View {
-    let ranks = Services.shared.store.extras(for: media).tagRanks
+    let extras = Services.shared.store.extras(for: media)
+    let ranks = extras.tagRanks
+    // Spoiler protection (Core/SpoilerProtection.swift): AniList tags marked as spoilers.
+    let entry = BrowseMediaInfo.entry(media)
+    let tags = media.tags.filter { tag in
+      !SpoilerProtection.hidesTag(general: extras.generalSpoilerTags?.contains(tag) == true, media: extras.mediaSpoilerTags?.contains(tag) == true, entry: entry)
+    }
     VStack(alignment: .leading, spacing: 10) {
-      if !media.tags.isEmpty {
+      if !tags.isEmpty {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 8) {
-            ForEach(media.tags, id: \.self) { tag in
+            ForEach(tags, id: \.self) { tag in
               tagChip(tag, rank: ranks[tag])
             }
           }
@@ -689,7 +701,17 @@ struct BrowseDetailSynopsis: View {
     let text = BrowseText.attributed(media.description)
     let blocks = BrowseText.markdownBlocks(media.description)
     let toggleTitle: String = expanded ? "Show Less" : "Show More"
-    if !text.characters.isEmpty {
+    // Spoiler protection (Core/SpoilerProtection.swift).
+    let hidden = SpoilerProtection.hidesMedia(.synopsis, entry: BrowseMediaInfo.entry(media))
+    if !text.characters.isEmpty && hidden {
+      VStack(alignment: .leading, spacing: 12) {
+        BrowseSectionDivider(title: "Synopsis")
+        Text(SpoilerProtection.hiddenText)
+          .font(.callout)
+          .italic()
+          .foregroundStyle(BrowsePalette.muted)
+      }
+    } else if !text.characters.isEmpty {
       VStack(alignment: .leading, spacing: 12) {
         BrowseSectionDivider(title: "Synopsis")
         if BrowseText.hasStructure(blocks) {

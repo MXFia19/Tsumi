@@ -7,6 +7,9 @@
   import { page, modal } from '@/modules/navigation.js'
   import { click } from '@/modules/click.js'
   import { ArrowDownToLine, Play, Pause, RotateCcw, X, Trash2, FolderOpen, TriangleAlert, Loader, Settings } from 'lucide-svelte'
+  import { mediaCache } from '@/modules/cache.js'
+  import { settings } from '@/modules/settings.js'
+  import { hidesEpisode } from '@/modules/spoilers.js'
 
   // Downloads: progress of the running downloads (pause / resume / cancel / retry) and the finished episodes
   // (play offline, delete), with the storage they use. Works without network: everything comes from the main process.
@@ -42,10 +45,12 @@
     return item.media?.coverImage?.large || item.media?.coverImage?.medium || item.media?.coverImage?.extraLarge || ''
   }
 
-  function episodeText (item) {
+  /** Spoiler protection (modules/spoilers.js) leaves the title out after the list progress. */
+  function episodeText (item, spoilerSettings, cachedMedia) {
     const { number, season, localEpisode } = item.episode || {}
     const label = season != null && localEpisode != null ? `S${season} E${localEpisode}` : `Episode ${number}`
-    return item.episodeTitle ? `${label} - ${item.episodeTitle}` : label
+    const hidden = hidesEpisode('episodeTitle', cachedMedia?.[item.mediaId] || item.media, number, spoilerSettings)
+    return item.episodeTitle && !hidden ? `${label} - ${item.episodeTitle}` : label
   }
 
   function statusText (item) {
@@ -147,7 +152,7 @@
           <img src={cover(item, port)} alt='' class='cover rounded flex-shrink-0 pointer' loading='lazy' on:error={(e) => { e.currentTarget.style.visibility = 'hidden' }} use:click={() => openDetails(item.media)} />
           <div class='flex-grow-1 mx-15 overflow-hidden'>
             <div class='font-weight-bold text-white text-truncate'>{item.media ? anilistClient.title(item.media) : item.title}</div>
-            <div class='text-muted font-size-12 text-truncate'>{episodeText(item)}</div>
+            <div class='text-muted font-size-12 text-truncate'>{episodeText(item, $settings, $mediaCache)}</div>
             {#if item.status === 'downloading' || item.status === 'paused'}
               <div class='progress my-5' class:paused={item.status === 'paused'}>
                 <div class='progress-bar' style='width: {Math.floor((item.progress || 0) * 100)}%'></div>
@@ -188,7 +193,7 @@
         <div class='download-row d-flex align-items-center bg-dark-light rounded mx-20 my-5 p-10 pointer' role='button' tabindex='0' use:click={() => playDownload(item)}>
           <img src={cover(item, port)} alt='' class='cover rounded flex-shrink-0' loading='lazy' on:error={(e) => { e.currentTarget.style.visibility = 'hidden' }} />
           <div class='flex-grow-1 mx-15 overflow-hidden'>
-            <div class='font-weight-bold text-white text-truncate'>{episodeText(item)}</div>
+            <div class='font-weight-bold text-white text-truncate'>{episodeText(item, $settings, $mediaCache)}</div>
             <div class='text-muted font-size-12 text-truncate'>{completedText(item)}</div>
             {#if item.subtitleError}
               <div class='text-warning font-size-12 text-truncate'>{item.subtitleError}</div>

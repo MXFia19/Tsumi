@@ -13,6 +13,7 @@
   import { settings } from '@/modules/settings.js'
   import { mediaCache } from '@/modules/cache.js'
   import { modal } from '@/modules/navigation.js'
+  import { hidesEpisode, hidesEpisodeThumbnail, hidesMedia, spoilerText, SPOILER_TEXT } from '@/modules/spoilers.js'
 
   export let data
   export let prompt
@@ -22,7 +23,14 @@
   const media = data.media && mediaCache.value[data.media.id]
   const episodeRange = episodesList.handleArray(data?.episode, data?.parseObject?.file_name)
   const lastEpisode = (data?.episodeRange || data?.parseObject?.episodeRange)?.last || episodeRange?.last || (isValidNumber(data?.episode) && (data?.episode + (zeroEpisode ? 1 : 0))) || (media?.episodes === 1 && media?.episodes)
-  const episodeThumbnail = ((data.similarity || (!media?.mediaListEntry?.status || !(['CURRENT', 'REPEATING', 'PAUSED', 'PLANNING'].includes(media.mediaListEntry.status) && media.mediaListEntry.progress < lastEpisode))) && data.episodeData?.image) || media?.bannerImage || media?.coverImage.extraLarge || ' '
+  const episodeThumbnail = ((data.similarity || !hidesEpisodeThumbnail(media, lastEpisode, settings.value)) && data.episodeData?.image) || media?.bannerImage || media?.coverImage.extraLarge || ' '
+  // Spoiler protection (modules/spoilers.js): episode clip, title, description and duration after the list progress, synopsis.
+  const hideEpisode = (item) => !data.similarity && hidesEpisode(item, media, lastEpisode, settings.value)
+  const hideClip = hideEpisode('episodeImage')
+  const hideTitle = hideEpisode('episodeTitle')
+  const hideDescription = hideEpisode('episodeDescription')
+  const hideDuration = hideEpisode('duration')
+  const hideSynopsis = hidesMedia('synopsis', media, settings.value)
   const watched = media?.mediaListEntry?.status === 'COMPLETED'
   const completed = !watched && media?.mediaListEntry?.progress >= lastEpisode
   const progress = liveAnimeEpisodeProgress(media?.id, data?.episode, completed)
@@ -33,7 +41,7 @@
 <div class='position-absolute w-400 mw-full mh-400 absolute-container top-0 m-auto bg-dark-light z-30 rounded overflow-hidden pointer d-flex flex-column fade-change' in:fadeIn out:fadeOut on:introend={() => animating = false} on:outrostart={() => animating = true} bind:this={element}>
   <div class='image h-200 w-full position-relative d-flex justify-content-between align-items-end text-white'>
     <SmartImage class='img-cover w-full h-full position-absolute rounded p-0 m-0 {!(data.episodeData?.image || media?.bannerImage) && media?.genres?.includes('Hentai') ? 'cover-rotated cr-400' : ''}' color={media?.coverImage.color || 'var(--tertiary-color)'} images={[episodeThumbnail, './404_episode.png']} />
-    {#if data.episodeData?.video && !animating}
+    {#if data.episodeData?.video && !animating && !hideClip}
       <video src={data.episodeData.video}
         class='img-cover w-full h-full position-absolute'
         style='opacity: {hide ? 0 : 1}; transition: opacity .3s ease'
@@ -51,7 +59,7 @@
     {/if}
     <Play class='mb-5 ml-5 pl-10 pb-10 z-10' fill='currentColor' size='3rem' />
     <div class='pr-20 pb-10 font-size-16 font-weight-medium z-10'>
-      {#if media?.duration}
+      {#if media?.duration && !hideDuration}
         {#if (data.episodeRange || data.parseObject?.episodeRange)}
           {media.duration * (((data.episodeRange || data.parseObject?.episodeRange).last - (data.episodeRange || data.parseObject?.episodeRange).first) + 1)}m
         {:else if episodeRange && isValidNumber(episodeRange.first) && isValidNumber(episodeRange.last)}
@@ -80,7 +88,9 @@
           {/if}
           {anilistClient.title(media) || data.parseObject.anime_title}
         </div>
-        {#if data.episodeData?.title?.en || data.episodeData?.title?.['x-jat'] || data.episodeData?.title?.ja || data.episodeData?.title?.jp}
+        {#if hideTitle}
+          <div class='text-muted font-size-12 title overflow-hidden text-spoiler'>{SPOILER_TEXT}</div>
+        {:else if data.episodeData?.title?.en || data.episodeData?.title?.['x-jat'] || data.episodeData?.title?.ja || data.episodeData?.title?.jp}
           <div class='text-muted font-size-12 title overflow-hidden' title={data.episodeData?.title?.en || data.episodeData?.title?.['x-jat'] || data.episodeData?.title?.ja || data.episodeData?.title?.jp}>
             {data.episodeData?.title?.en || data.episodeData?.title?.['x-jat'] || data.episodeData?.title?.ja || data.episodeData?.title?.jp}
           </div>
@@ -141,15 +151,16 @@
     </div>
     <div class='w-full text-muted description overflow-hidden pt-15'>
       {#if data.episodeData?.summary || data.episodeData?.overview}
-        {(data.episodeData?.summary || data.episodeData?.overview).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()}
+        <span class:text-spoiler={hideDescription}>{spoilerText((data.episodeData?.summary || data.episodeData?.overview).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim(), hideDescription)}</span>
       {:else if data.episode != null}
         {@const episode = (data.episodeRange || data.parseObject?.episodeRange)?.first || episodeRange?.first || data.episode}
         {#await episodesList.getKitsuEpisodes(media?.id) then mappings}
           {@const kitsuMappings = data.episode != null && mappings?.data?.find(ep => ep?.attributes?.number === isValidNumber(episode) ? Number(episode) : episode)?.attributes}
-          {(kitsuMappings?.synopsis || kitsuMappings?.description || media?.description || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()}
+          {@const hideText = (kitsuMappings?.synopsis || kitsuMappings?.description) ? hideDescription : hideSynopsis}
+          <span class:text-spoiler={hideText}>{spoilerText((kitsuMappings?.synopsis || kitsuMappings?.description || media?.description || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim(), hideText)}</span>
         {/await}
       {:else}
-        {(media?.description || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()}
+        <span class:text-spoiler={hideSynopsis}>{spoilerText((media?.description || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim(), hideSynopsis)}</span>
       {/if}
     </div>
     {#if media}

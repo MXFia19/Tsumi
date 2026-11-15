@@ -30,6 +30,8 @@ export type Media = {
   tags?: {
     name: string
     rank: number
+    isGeneralSpoiler?: boolean
+    isMediaSpoiler?: boolean
   }[]
   isFavourite: boolean
   coverImage?: {

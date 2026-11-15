@@ -82,8 +82,14 @@ struct PlayerEpisodeListSheet: View {
     return controller.episodeList.filter { info in
       String(info.number) == query
         || String(info.localEpisode ?? info.number) == query
-        || (info.title?.lowercased().contains(query) ?? false)
+        || (!spoilers(info).title && (info.title?.lowercased().contains(query) ?? false))
     }
+  }
+
+  /// Spoiler protection (Core/SpoilerProtection.swift) of an episode after the list progress (not the one playing).
+  private func spoilers(_ info: EpisodeInfo) -> EpisodeSpoilers {
+    guard !controller.isCurrent(info) else { return .none }
+    return EpisodeSpoilers(entry: BrowseMediaInfo.entry(controller.session.media), episode: info.number)
   }
 
   /// FileCard prompt text.
@@ -147,16 +153,19 @@ struct PlayerEpisodeListSheet: View {
   }
 
   private func episodeRow(_ info: EpisodeInfo) -> some View {
-    Button {
+    let hidden = spoilers(info)
+    return Button {
       select(info)
     } label: {
       HStack(spacing: 12) {
-        thumbnail(info.thumbnail ?? controller.session.media.images.cover)
+        // A hidden episode image shows the cover instead.
+        thumbnail((hidden.image ? nil : info.thumbnail) ?? controller.session.media.images.cover)
         VStack(alignment: .leading, spacing: 4) {
           Text(episodeLabel(info))
             .font(.subheadline.weight(.semibold))
-          if let title = PlayerText.cleanedTitle(info.title) {
+          if let title = SpoilerProtection.text(PlayerText.cleanedTitle(info.title), hidden: hidden.title) {
             Text(title)
+              .italic(hidden.title)
               .font(.footnote)
               .foregroundStyle(.secondary)
               .lineLimit(2)

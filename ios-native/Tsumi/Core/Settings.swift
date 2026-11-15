@@ -45,6 +45,10 @@ struct SettingsValues: Codable, Equatable {
   var homeSections: [HomeSectionSetting] = HomeSectionSetting.defaults
   var customSections: [CustomAnimeSection] = CustomAnimeSection.defaults
   var westernSections: [WesternSection] = WesternSection.defaults
+  /// Spoiler protection (Core/SpoilerProtection.swift): off | minimal | moderate | strict | hermit, and the list
+  /// statuses it applies to (ListStatus raw values or "NOTONLIST", like the Svelte settings.spoilerStatus).
+  var spoilers = "off"
+  var spoilerStatus: [String] = SpoilerProtection.defaultStatuses
 
   // Notifications
   var systemNotify = true
@@ -85,6 +89,7 @@ struct SettingsValues: Codable, Equatable {
     case w2gAutoSync, w2gDisplayName, w2gWatchOnMyOwn, w2gVoiceDucking, w2gPushToTalk
     case titleLang, bannerProvider, hideMyAnime, cardPreview, cardAudio, toggleList, uiScale, accentColor
     case adult, hentaiBanner, toasts, homeSections, customSections, westernSections
+    case spoilers, spoilerStatus
     case systemNotify, aniNotify, releasesNotify, releasesNotifyNotOnList, subAnnounce, dubAnnounce, hentaiAnnounce
     case enableRPC, rpcSecondButton, rpcHideAdult
     case syncPlaybackPosition, traktScrobble, traktScrobbleAnime
@@ -105,6 +110,7 @@ struct SettingsValues: Codable, Equatable {
       .w2gAutoSync, .w2gDisplayName, .w2gWatchOnMyOwn, .w2gVoiceDucking, .w2gPushToTalk,
       .titleLang, .bannerProvider, .hideMyAnime, .cardPreview, .cardAudio, .toggleList, .uiScale, .accentColor,
       .adult, .hentaiBanner, .toasts, .homeSections, .customSections, .westernSections,
+      .spoilers, .spoilerStatus,
       .systemNotify, .aniNotify, .releasesNotify, .releasesNotifyNotOnList, .subAnnounce, .dubAnnounce, .hentaiAnnounce,
       .enableRPC, .rpcSecondButton, .rpcHideAdult,
       .syncPlaybackPosition, .traktScrobble, .traktScrobbleAnime,
@@ -153,6 +159,10 @@ extension SettingsValues {
     homeSections = container.settingsArray(HomeSectionSetting.self, .homeSections) ?? homeSections
     customSections = container.settingsArray(CustomAnimeSection.self, .customSections) ?? customSections
     westernSections = container.settingsArray(WesternSection.self, .westernSections) ?? westernSections
+    if let level = container.settingsValue(String.self, .spoilers), SpoilerLevel(rawValue: level) != nil { spoilers = level }
+    if let statuses = container.settingsValue([SettingsJSONValue].self, .spoilerStatus) {
+      spoilerStatus = statuses.compactMap { $0.stringValue }.filter { !$0.isEmpty }
+    }
 
     systemNotify = container.svcLossyBool(.systemNotify) ?? systemNotify
     aniNotify = container.settingsValue(String.self, .aniNotify) ?? aniNotify

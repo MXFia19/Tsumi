@@ -55,6 +55,8 @@
   import { toast } from 'svelte-sonner'
   import { ListPlus } from 'lucide-svelte'
   import { state as w2gState, queueEpisode, queueResultText } from '@/routes/w2g/components/session.js'
+  import { mediaCache } from '@/modules/cache.js'
+  import { hidesEpisode, spoilerText } from '@/modules/spoilers.js'
 
   /** Watch Together "Add to Watch Together queue" on an episode card. */
   function addToW2GQueue (episode) {
@@ -85,6 +87,8 @@
   $: idMal = media.idMal
   $: duration = media.duration
   $: animeProgress = liveAnimeProgress(id)
+  // Spoiler protection follows the live list entry (the details keep their first copy of the media).
+  $: spoilerMedia = $mediaCache?.[id] || media
 
   let loadScroll = false
   const maxEpisodes = 15
@@ -343,13 +347,18 @@
             {@const hasFiller = filler?.filler || filler?.recap}
             {@const progress = !watched && ($animeProgress?.[episode] ?? 0)}
             {@const resolvedTitle = episodeList.filter((ep) => ep.episode < episode).some((ep) => matchPhrase(ep.title, title, 0.1, true)) ? null : title}
+            {@const spoilerEpisode = episode + (zeroEpisode ? 1 : 0)}
+            {@const hideImage = hidesEpisode('episodeImage', spoilerMedia, spoilerEpisode, $settings)}
+            {@const shownTitle = hidesEpisode('episodeTitle', spoilerMedia, spoilerEpisode, $settings) ? null : resolvedTitle}
+            {@const hideSummary = !unreleased && hidesEpisode('episodeDescription', spoilerMedia, spoilerEpisode, $settings)}
+            {@const shownLength = hidesEpisode('duration', spoilerMedia, spoilerEpisode, $settings) ? null : length}
             {@const largeCard = image}
             <div class='w-full content-visibility-auto scale my-20' class:load-in={!loadScroll} class:opacity-half={completed} class:scale-target={target} class:px-20={!target} class:px-10={target} class:h-150={!SUPPORTS.isAndroid && largeCard} class:h-165={SUPPORTS.isAndroid && largeCard}>
               <div role='button' tabindex='0' class='episode-card rounded-2 w-full h-full overflow-hidden d-flex flex-xsm-column flex-row position-relative {unreleased ? 'unreleased not-allowed' : 'pointer'}' class:not-reactive={!$reactive} class:smallCard={!largeCard} class:android={SUPPORTS.isAndroid} class:border={target || hasFiller} class:bg-black={completed} class:border-secondary={hasFiller} class:bg-dark-light={!completed} use:click={() => !unreleased && play(media, { number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode })} on:contextmenu|preventDefault={() => !unreleased && play(media, { number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode }, true)}>
                 <div class='unreleased-overlay position-absolute top-0 left-0 right-0 h-full pointer-events-none rounded-2' class:d-none={!unreleased}></div>
                 {#if image}
                   <div class='d-flex'>
-                    <SmartImage class='img-cover {!SUPPORTS.isAndroid ? 'h-150' : 'h-165'} w-full w-sm-265' images={[image, './404_episode.png']} />
+                    <SmartImage class='img-cover {!SUPPORTS.isAndroid ? 'h-150' : 'h-165'} w-full w-sm-265 {hideImage ? 'img-spoiler' : ''}' images={[image, './404_episode.png']} />
                     {#if dubAiring}
                       <div class='position-relative d-none sm-label'>
                         <AudioLabel {media} episodeList={true} dubbed={dubAiring?.airdate && (new Date(dubAiring.airdate).getTime() <= new Date().getTime())} subbed={(airdate && (new Date(airdate).getTime() <= new Date().getTime())) || (dubAiring?.airdate && (new Date(dubAiring.airdate).getTime() <= new Date().getTime()))} />
@@ -366,22 +375,22 @@
                 <div class='h-full w-full px-20 pt-15 d-flex flex-column'>
                   <div class='w-full d-flex flex-row mb-15'>
                     <div class='text-white font-weight-bold font-size-16 overflow-hidden title'>
-                      {#if resolvedTitle && !new RegExp(`(?<![\\d.])${episode}(?![\\d.])`).test(resolvedTitle) && media?.episodes !== 1}{episode}. {/if}{resolvedTitle || 'Episode ' + episode}
+                      {#if shownTitle && !new RegExp(`(?<![\\d.])${episode}(?![\\d.])`).test(shownTitle) && media?.episodes !== 1}{episode}. {/if}{shownTitle || 'Episode ' + episode}
                     </div>
-                    {#if length}
+                    {#if shownLength}
                       <div class='ml-auto pl-5'>
-                        {length}m
+                        {shownLength}m
                       </div>
                     {/if}
                     {#if $w2gState && !unreleased}
-                      <button type='button' class='btn btn-sm btn-square d-flex align-items-center justify-content-center flex-shrink-0 ml-5 w2g-queue-add' class:ml-auto={!length}
+                      <button type='button' class='btn btn-sm btn-square d-flex align-items-center justify-content-center flex-shrink-0 ml-5 w2g-queue-add' class:ml-auto={!shownLength}
                         title='Add to Watch Together queue' aria-label='Add episode {episode} to Watch Together queue'
                         use:click={() => addToW2GQueue({ number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode })}>
                         <ListPlus size='1.5rem' />
                       </button>
                     {/if}
                     {#if !unreleased}
-                      <DownloadButton {media} episode={{ number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode, title: resolvedTitle, image }} class={length || $w2gState ? 'ml-5' : 'ml-auto'} />
+                      <DownloadButton {media} episode={{ number: episode, season: currentEpisodes[index]?.season, localEpisode: currentEpisodes[index]?.localEpisode, title: resolvedTitle, image }} class={shownLength || $w2gState ? 'ml-5' : 'ml-auto'} />
                     {/if}
                   </div>
                   {#if completed}
@@ -393,8 +402,8 @@
                       <div class='progress-bar' style='width: {progress}%'></div>
                     </div>
                   {/if}
-                  <div class='font-size-12 overflow-hidden {(!completed && !progress) || !dubAiring ? 'line-3 line-sm-4' : 'line-2 line-sm-3'}' class:mb-10={!largeCard} class:summary={unreleased} class:font-weight-bold={unreleased}>
-                    {summary?.replace(/\s*\(?source:\s*[\s\S]+?\)?$/i, '') || ''}
+                  <div class='font-size-12 overflow-hidden {(!completed && !progress) || !dubAiring ? 'line-3 line-sm-4' : 'line-2 line-sm-3'}' class:mb-10={!largeCard} class:summary={unreleased} class:font-weight-bold={unreleased} class:text-spoiler={hideSummary && summary}>
+                    {spoilerText(summary?.replace(/\s*\(?source:\s*[\s\S]+?\)?$/i, '') || '', hideSummary)}
                   </div>
                   <div class='font-size-12 mt-auto' class:mb-5={dubAiring} class:mb-10={!dubAiring}>
                     {#if dubAiring}

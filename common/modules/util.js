@@ -603,6 +603,9 @@ export const defaults = {
   closeAction: 'Prompt',
   queryComplexity: 'Complex',
   expandingSidebar: false,
+  // Spoiler protection (modules/spoilers.js): off | minimal | moderate | strict | hermit, for the titles with these list statuses.
+  spoilers: 'off',
+  spoilerStatus: ['CURRENT', 'REPEATING'],
 
   font: undefined,
   angle: 'default',

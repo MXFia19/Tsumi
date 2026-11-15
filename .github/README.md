@@ -47,6 +47,9 @@ A feature marked *Windows* or *iPhone* exists on that app only.
 - **Trakt**: scrobbling of shows and movies (anime optional) and resuming from Trakt
 - **Year in Review**: episodes and hours watched, top anime, genres and studios, episodes per month, biggest binge
   day, with an image to share
+- **Spoiler protection** (off by default): hides what comes after your progress for the list statuses you choose,
+  from episode thumbnails (Minimal) to descriptions and spoiler tags (Moderate), titles, synopsis and rating (Strict)
+  and durations (Hermit)
 
 ### Discover
 

@@ -93,7 +93,21 @@ struct BrowseEpisodeCardState {
   /// Preview text: the episode summary, else the media description.
   var summaryText: String {
     let summary = BrowseText.plain(data.summary)
-    return summary.isEmpty ? BrowseText.plain(media.description) : summary
+    if summary.isEmpty {
+      let description = BrowseText.plain(media.description)
+      return SpoilerProtection.text(description, hidden: SpoilerProtection.hidesMedia(.synopsis, entry: entry)) ?? description
+    }
+    return SpoilerProtection.text(summary, hidden: spoilers.description) ?? summary
+  }
+
+  /// Spoiler protection (Core/SpoilerProtection.swift) of the episode, nothing for trace.moe matches.
+  var spoilers: EpisodeSpoilers {
+    data.similarity == nil ? EpisodeSpoilers(entry: entry, episode: lastEpisode) : .none
+  }
+
+  /// Episode title, or the spoiler placeholder.
+  var episodeTitleText: String? {
+    SpoilerProtection.text(data.episodeTitle, hidden: spoilers.title)
   }
 
   var watched: Bool { entry?.status == .completed }
@@ -103,13 +117,10 @@ struct BrowseEpisodeCardState {
     return progress >= lastEpisode
   }
 
-  /// Hides episode thumbnails (spoilers) of watched-list titles that did not reach this episode yet.
+  /// Hides episode thumbnails (spoilers) of watched-list titles that did not reach this episode yet, and of the
+  /// titles spoiler protection applies to.
   var thumbnailURLs: [URL?] {
-    var showEpisodeImage = true
-    if data.similarity == nil, let entry, let lastEpisode {
-      let followed: [ListStatus] = [.current, .repeating, .paused, .planning]
-      if followed.contains(entry.status) && entry.progress < lastEpisode { showEpisodeImage = false }
-    }
+    let showEpisodeImage = data.similarity != nil || !SpoilerProtection.hidesEpisodeThumbnail(entry: entry, episode: lastEpisode)
     var urls: [URL?] = []
     if showEpisodeImage { urls.append(data.thumbnail) }
     urls.append(media.images.banner)
@@ -260,8 +271,9 @@ struct BrowseEpisodeCardContent: View {
       HStack(alignment: .top, spacing: 8) {
         VStack(alignment: .leading, spacing: 3) {
           titleRow
-          Text(state.data.episodeTitle ?? "")
+          Text(state.episodeTitleText ?? "")
             .font(.caption)
+            .italic(state.spoilers.title)
             .foregroundStyle(BrowsePalette.muted)
             .lineLimit(1)
         }
@@ -328,7 +340,7 @@ struct BrowseEpisodeThumbnail: View {
           .padding(10)
       }
       .overlay(alignment: .bottomTrailing) {
-        if let duration = state.durationMinutes {
+        if let duration = state.durationMinutes, !state.spoilers.duration {
           Text("\(duration)m")
             .font(.subheadline.weight(.medium))
             .foregroundStyle(.white)
@@ -402,8 +414,9 @@ struct BrowseEpisodePreviewCard: View {
             .foregroundStyle(.white)
             .lineLimit(1)
         }
-        if let title = state.data.episodeTitle, !title.isEmpty {
+        if let title = state.episodeTitleText, !title.isEmpty {
           Text(title)
+            .italic(state.spoilers.title)
             .font(.caption)
             .foregroundStyle(BrowsePalette.muted)
             .lineLimit(1)

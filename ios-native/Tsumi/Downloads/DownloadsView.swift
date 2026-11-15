@@ -202,8 +202,10 @@ struct DownloadPendingRow: View {
     .padding(.vertical, 2)
   }
 
+  /// Spoiler protection (Core/SpoilerProtection.swift) leaves the title out after the list progress.
   private var episodeLine: String {
-    if let title = item.episodeTitle, !title.isEmpty { return "\(item.displayEpisode) - \(title)" }
+    let hidden = SpoilerProtection.hidesEpisode(.episodeTitle, entry: BrowseMediaInfo.entry(item.media), episode: item.episode.number)
+    if let title = item.episodeTitle, !title.isEmpty, !hidden { return "\(item.displayEpisode) - \(title)" }
     return item.displayEpisode
   }
 
@@ -281,8 +283,10 @@ struct DownloadCompletedRow: View {
     .accessibilityLabel("Play \(episodeLine) offline")
   }
 
+  /// Spoiler protection (Core/SpoilerProtection.swift) leaves the title out after the list progress.
   private var episodeLine: String {
-    if let title = item.episodeTitle, !title.isEmpty { return "\(item.displayEpisode) - \(title)" }
+    let hidden = SpoilerProtection.hidesEpisode(.episodeTitle, entry: BrowseMediaInfo.entry(item.media), episode: item.episode.number)
+    if let title = item.episodeTitle, !title.isEmpty, !hidden { return "\(item.displayEpisode) - \(title)" }
     return item.displayEpisode
   }
 
