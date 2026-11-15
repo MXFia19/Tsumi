@@ -514,6 +514,28 @@ final class HomeSectionsService {
 
   /// createFallbackLoad: AniList search / TMDB search / mixed search, with hide / show my anime and dubs only.
   static func searchMedia(_ query: SectionQuery, page: Int = 1, perPage: Int = 50) async throws -> MediaPage {
+    if query.isSearch, let text = query.text, SearchRelevance.isRelevanceSort(text: text, sort: query.sort) {
+      // Search page (no section) text query, no explicit sort: ranked by relevance with local fuzzy matches.
+      var relevanceQuery = query
+      relevanceQuery.sort = "SEARCH_MATCH"
+      var hasher = Hasher()
+      hasher.combine(query)
+      hasher.combine(perPage)
+      hasher.combine(AccountStore.shared.current?.id)
+      let result = try await SearchRelevancePager.shared.page(key: hasher.finalize(), page: page, perPage: perPage, query: text) { sourcePage in
+        try await sourceMedia(relevanceQuery, page: sourcePage, perPage: perPage)
+      }
+      let injected = await TMDBService.shared.injectImages(result.items)
+      return MediaPage(items: injected, hasNextPage: result.hasNextPage)
+    }
+    let result = try await sourceMedia(query, page: page, perPage: perPage).page
+    let injected = await TMDBService.shared.injectImages(result.items)
+    return MediaPage(items: injected, hasNextPage: result.hasNextPage)
+  }
+
+  /// One page of the search sources (AniList, TMDB or both) and what it searched (relevance local matches).
+  private static func sourceMedia(_ query: SectionQuery, page: Int, perPage: Int) async throws -> (page: MediaPage, sources: SearchRelevanceSources) {
+    var sources = SearchRelevanceSources()
     var dubbed: [Int] = []
     if query.dubOnly {
       dubbed = await MALDubsService.shared.lists().dubbed
@@ -540,18 +562,23 @@ final class HomeSectionsService {
           anilist.idMal = ids
         }
       }
+      sources.anime = anilist
       result = try await AniListService.shared.search(anilist)
     } else if query.western == false {
+      sources.anime = anilist
       result = try await AniListService.shared.search(anilist)
     } else if query.western == true {
+      sources.western = true
       result = await westernSearch(query, page: page)
     } else if query.isSearch {
+      sources.anime = anilist
+      sources.western = true
       result = try await mixedSearch(query, anilist: anilist, page: page)
     } else {
+      sources.anime = anilist
       result = try await AniListService.shared.search(anilist)
     }
-    let injected = await TMDBService.shared.injectImages(result.items)
-    return MediaPage(items: injected, hasNextPage: result.hasNextPage)
+    return (result, sources)
   }
 
   private static func westernSearch(_ query: SectionQuery, page: Int) async -> MediaPage {
@@ -573,7 +600,7 @@ final class HomeSectionsService {
   private static func mixedSearch(_ query: SectionQuery, anilist: AniListVariables, page: Int) async throws -> MediaPage {
     var anilistQuery = anilist
     anilistQuery.perPage = 20
-    anilistQuery.sort = "TRENDING_DESC"
+    anilistQuery.sort = anilist.sort == "SEARCH_MATCH" ? "SEARCH_MATCH" : "TRENDING_DESC"
     async let animePage = AniListService.shared.search(anilistQuery)
     async let westernPage = westernSearch(query, page: page)
     let anime = (try? await animePage) ?? MediaPage.empty

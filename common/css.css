@@ -478,6 +478,11 @@ details:active,
   white-space: nowrap;
 }
 
+/* A cancel button sits before the action button (e.g. "Log out" / "Log in again"). */
+[data-sonner-toast]>button[data-cancel] {
+  margin-right: .6rem !important;
+}
+
 [data-sonner-toast]>div:nth-child(2)>div:first-child {
   line-height: 1.1 !important;
 }

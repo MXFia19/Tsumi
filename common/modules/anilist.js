@@ -10,6 +10,9 @@ import { printError, status } from '@/modules/networking.js'
 import { cache, caches, mediaCache } from '@/modules/cache.js'
 import { malClient } from '@/modules/myanimelist.js'
 import Helper from '@/modules/helper.js'
+import { prepare, scoreMedia, relevancePopularity } from '@/modules/search/relevance.js'
+import { isAniListAuthError, isMutationBody, SESSION_EXPIRED_MESSAGE } from '@/modules/auth/token.js'
+import { isAniListTokenUsable, markSessionExpired, checkStoredSessions } from '@/modules/auth/expiry.js'
 import Debug from 'debug'
 const debug = Debug('ui:anilist')
 const query = Debug('ui:alquery')
@@ -171,6 +174,7 @@ class AnilistClient {
 
   constructor () {
     debug('Initializing Anilist Client for ID ' + this.userID?.viewer?.data?.Viewer?.id)
+    setTimeout(() => checkStoredSessions(), 3_000) // expired / expiring AniList and MyAnimeList sessions
     this.limiter.on('failed', async (error) => {
       if (status.value.match(/offline/i)) throw new Error('Failed making request to Anilist, network is offline... not retrying')
       else await printError('Search Failed', 'Failed making request to Anilist!\nTry again in a minute.', error)
@@ -212,9 +216,34 @@ class AnilistClient {
   /** @type {(options: RequestInit) => Promise<any>} */
   handleRequest = this.limiter.wrap(async opts => {
     await this.rateLimitPromise
-    query(`[${this.numberOfQueries}] requesting`, JSON.stringify(opts))
+    query(`[${this.numberOfQueries}] requesting`, JSON.stringify({ ...opts, headers: { ...opts.headers, Authorization: opts.headers?.Authorization ? '[redacted]' : undefined } }))
     this.numberOfQueries++
     if (status.value.match(/offline/i)) throw new Error('AniList API is temporarily disabled or network is offline')
+    let { res, json } = await this.fetchGraphQL(opts)
+    let sessionExpired = !!opts.sessionExpired
+    if (opts.headers?.Authorization && isAniListAuthError(res.status, json)) {
+      // Expired or revoked token: prompt once, stop sending it and answer queries without it (public data).
+      markSessionExpired(opts.headers.Authorization)
+      if (isMutationBody(opts.body)) return { data: null, errors: [{ message: SESSION_EXPIRED_MESSAGE, status: 401 }] }
+      const headers = { ...opts.headers }
+      delete headers.Authorization
+      ;({ res, json } = await this.fetchGraphQL({ ...opts, headers }))
+      sessionExpired = true
+    }
+    if (!res.ok && res.status !== 404 && !sessionExpired) { // errors of a dead session are covered by its prompt
+      if (json) {
+        for (const error of json?.errors || []) {
+          printError('Search Failed', 'Failed making request to Anilist!\nTry again in a minute.', error)
+        }
+      } else {
+        printError('Search Failed', 'Failed making request to Anilist!\nTry again in a minute.', res)
+      }
+    }
+    return json || res
+  })
+
+  /** @returns {Promise<{ res: Response | any, json: any }>} */
+  async fetchGraphQL (opts) {
     let res = {}
     try {
       res = await fetch('https://graphql.anilist.co', opts)
@@ -230,17 +259,8 @@ class AnilistClient {
     } catch (error) {
       if (res.ok) printError('Search Failed', 'Failed making request to Anilist!\nTry again in a minute.', error)
     }
-    if (!res.ok && res.status !== 404) {
-      if (json) {
-        for (const error of json?.errors || []) {
-          printError('Search Failed', 'Failed making request to Anilist!\nTry again in a minute.', error)
-        }
-      } else {
-        printError('Search Failed', 'Failed making request to Anilist!\nTry again in a minute.', res)
-      }
-    }
-    return json || res
-  })
+    return { res, json }
+  }
 
   /**
    * @param {string} query
@@ -271,8 +291,12 @@ class AnilistClient {
         ...vars
       })
     }
-    if (variables?.token) options.headers.Authorization = variables.token
-    else if (alToken?.token) options.headers.Authorization = alToken.token
+    const token = variables?.token || alToken?.token
+    if (token && isAniListTokenUsable(token)) options.headers.Authorization = token
+    else if (token) { // expired session: public queries still work without the token, mutations cannot
+      if (isMutationBody(options.body)) return Promise.resolve({ data: null, errors: [{ message: SESSION_EXPIRED_MESSAGE, status: 401 }] })
+      options.sessionExpired = true
+    }
 
     return this.handleRequest(options)
   }
@@ -301,7 +325,7 @@ class AnilistClient {
   }
 
   async findNewNotifications () {
-    if (settings.value.aniNotify !== 'none') {
+    if (settings.value.aniNotify !== 'none' && isAniListTokenUsable(this.userID?.token)) { // notifications need a live session
       debug('Checking for new AniList notifications')
       const res = await this.getNotifications()
       const notifications = res?.data?.Page?.notifications
@@ -927,6 +951,9 @@ class AnilistClient {
   fallbackSearch (variables, single = false) {
     debug('AniList search failed, falling back to searching the mediaCache...')
     let media = Object.values(mediaCache.value || {})
+    // Text queries match titles with the relevance scorer (typos, accents, word order), SEARCH_MATCH sorts by it.
+    const searchQuery = !single && variables.search ? prepare(variables.search) : null
+    const relevance = new Map()
 
     if (single) {
       media = media.filter(_media => !(variables.id && _media.id !== variables.id) && !(variables.idMal && _media.idMal !== variables.idMal))
@@ -956,10 +983,10 @@ class AnilistClient {
         if (variables.tag && !variables.tag.some(tag => _media.tags?.some(mediaTag => mediaTag.name === tag))) return false
         if (variables.tag_not && variables.tag_not.some(tag => _media.tags?.some(mediaTag => mediaTag.name === tag))) return false
 
-        if (variables.search) {
-          const searchText = variables.search.toLowerCase()
-          const titles = [_media.title?.romaji, _media.title?.english, _media.title?.native, _media.title?.userPreferred, ...(_media.synonyms || [])].filter(Boolean).map(t => t.toLowerCase())
-          if (!titles.some(t => t.includes(searchText))) return false
+        if (searchQuery) {
+          const score = scoreMedia(searchQuery, _media)
+          if (!score) return false
+          relevance.set(_media.id, score)
         }
         return true
       })
@@ -968,6 +995,8 @@ class AnilistClient {
     if (variables.sort) {
       media.sort((a, b) => {
         switch (variables.sort) {
+          case 'SEARCH_MATCH':
+            return ((relevance.get(b.id) || 0) - (relevance.get(a.id) || 0)) || (relevancePopularity(b) - relevancePopularity(a))
           case 'TRENDING_DESC':
             return (b.popularity || 0) - (a.popularity || 0)
           case 'POPULARITY_DESC':

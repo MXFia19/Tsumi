@@ -6,7 +6,7 @@ import { IPC } from '@/modules/bridge.js'
 import Debug from 'debug'
 const debug = Debug('ui:settings')
 
-/** @type {{viewer: import('./al').Query<{Viewer: import('./al').Viewer}>, token: string} | null} */
+/** @type {{viewer: import('./al').Query<{Viewer: import('./al').Viewer}>, token: string, expires_in?: number, reauth?: boolean} | null} */
 export let alToken = JSON.parse(localStorage.getItem('ALviewer')) || null
 /** @type {{viewer: import('./mal').Query<{Viewer: import('./mal').Viewer}>, token: string, refresh: string, refresh_in: number, reauth: boolean} | null} */
 export let malToken = JSON.parse(localStorage.getItem('MALviewer')) || null
@@ -130,7 +130,9 @@ async function handleToken (token) {
     debug('Failed to sign in with AniList:', JSON.stringify(viewer))
     return
   }
-  await swapProfiles({ token, viewer }, true)
+  const { decodeTokenExpiry } = await import('./auth/token.js')
+  // expires_in: the token's JWT exp (AniList tokens last about a year, see auth/expiry.js).
+  await swapProfiles({ token, viewer, expires_in: decodeTokenExpiry(token) || undefined, reauth: false }, true)
 }
 
 IPC.on('maltoken', handleMalToken)
@@ -188,8 +190,10 @@ export async function refreshMalToken (token) {
     })
   }
   if (!refresh || refresh.length <= 0 || !response?.ok) {
-    if (currentProfile && !malToken.reauth) {
-      toast.error('Failed to re-authenticate with MyAnimeList. You will need to log in again.', { description: JSON.stringify(response?.status || response) })
+    const expiredProfile = currentProfile ? malToken : profiles.value.find(profile => profile.token === token)
+    if (expiredProfile && !expiredProfile.reauth) {
+      const { promptSession } = await import('./auth/expiry.js')
+      promptSession(expiredProfile, 'expired') // "Your MyAnimeList session has expired": Log in again / Log out
     }
     debug(`Failed to refresh MyAnimeList User Token ${!refresh || refresh.length <= 0 ? 'as the refresh token could not be fetched!' : 'the refresh token has likely expired: ' + JSON.stringify(response)}`)
     if (currentProfile) {

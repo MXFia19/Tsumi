@@ -157,7 +157,6 @@ final class MyAnimeListService: @unchecked Sendable {
   }
 
   private func performRefresh(_ profile: AccountProfile) async -> AccountProfile? {
-    let isCurrent = AccountStore.shared.current?.token == profile.token
     var candidate: AccountProfile?
     if let refresh = profile.refreshToken, !refresh.isEmpty {
       let form = ["client_id": Self.clientID, "grant_type": "refresh_token", "refresh_token": refresh]
@@ -170,8 +169,9 @@ final class MyAnimeListService: @unchecked Sendable {
       }
     }
     guard let refreshed = candidate else {
-      if isCurrent && !profile.reauth {
-        ServiceMessages.send(.error, "Failed to re-authenticate with MyAnimeList. You will need to log in again.")
+      if !profile.reauth {
+        // "Your MyAnimeList session has expired": Log in again / Log out (SessionExpiry.swift).
+        Task { @MainActor in SessionExpiryCenter.shared.prompt(profile, kind: .expired) }
       }
       failedRefresh.update { $0.insert(profile.token) }
       AccountStore.shared.markReauth(token: profile.token)
