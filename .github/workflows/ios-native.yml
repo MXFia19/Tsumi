@@ -68,13 +68,30 @@ jobs:
                      CODE_SIGN_IDENTITY="" 2>&1 | tee build/xcodebuild.log | grep -E "error:|warning: unre|BUILD|ARCHIVE" || true
           test -d build/Tsumi.xcarchive/Products/Applications/Tsumi.app
           test -d build/Tsumi.xcarchive/Products/Applications/Tsumi.app/Frameworks/discord_partner_sdk.framework
+          test -d build/Tsumi.xcarchive/Products/Applications/Tsumi.app/PlugIns/TsumiWidgets.appex
       - name: Show compile errors
         if: failure()
         run: grep -E "error:" build/xcodebuild.log | sort | uniq | head -150 || true
       - name: Package IPA
         run: |
+          set -eu
           mkdir -p output/Payload
           cp -R build/Tsumi.xcarchive/Products/Applications/Tsumi.app output/Payload/
+          # Ad-hoc signature carrying the App Group entitlement (Entitlements/*.entitlements), so the re-signers
+          # that keep or adapt the binary's entitlements (AltStore / SideStore, TrollStore, Sideloadly) give the app
+          # and its widget extension a shared container. Feather / zsign replace it with their profile's anyway.
+          app=output/Payload/Tsumi.app
+          for item in "$app"/Frameworks/*; do
+            [ -e "$item" ] || continue
+            codesign --force --sign - --timestamp=none "$item"
+          done
+          for appex in "$app"/PlugIns/*.appex; do
+            [ -e "$appex" ] || continue
+            codesign --force --sign - --timestamp=none --generate-entitlement-der --entitlements Entitlements/TsumiWidgets.entitlements "$appex"
+          done
+          codesign --force --sign - --timestamp=none --generate-entitlement-der --entitlements Entitlements/Tsumi.entitlements "$app"
+          codesign -d --entitlements - "$app/PlugIns/TsumiWidgets.appex"
+          codesign -d --entitlements - "$app"
           cd output
           zip -qr Tsumi-native-unsigned.ipa Payload
           rm -rf Payload
