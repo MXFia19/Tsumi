@@ -123,7 +123,7 @@
 </script>
 
 {#if open}
-  <!-- svelte-ignore a11y-no-noninteractive-element-interactions a11y-no-noninteractive-tabindex -->
+  <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
   <div
     class='online-subs position-absolute bg-dark rounded d-flex flex-column text-white'
     role='dialog'
