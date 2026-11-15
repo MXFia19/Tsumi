@@ -126,6 +126,8 @@ struct W2GMember: Identifiable, Hashable {
   var introduced: Bool = true
   /// When its first `init` arrived (ms, local clock): v2.3 "No signal" 10 s later without `status`.
   var introducedAt: Double? = nil
+  /// v2.4 `init.features` ("voice", "queue").
+  var features: [String] = []
 
   /// PROTOCOL "Identity": the `init` id, else the transport id.
   var userId: String { user.id }
@@ -281,6 +283,10 @@ struct W2GMemberView: Identifiable, Equatable {
   var source: String = ""
   /// v2.1 "Invite to watch" is offered on this row.
   var canInvite: Bool = false
+  /// v2.4: the member's app has voice chat.
+  var hasVoice: Bool = false
+  /// v2.4: in voice, muted, speaking, our mix for it.
+  var voice: W2GMemberVoice = .off
 
   var id: String { userId }
 

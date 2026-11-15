@@ -23,6 +23,8 @@ struct SettingsValues: Codable, Equatable {
   var w2gAutoSync = true             // follow the host when drifting more than 2 s (PROTOCOL.md "Auto-sync")
   var w2gDisplayName = ""            // name shown to the lobby when not logged in
   var w2gWatchOnMyOwn = false        // "Watch on my own" (PROTOCOL.md v2.2), remembered for the next lobby
+  var w2gVoiceDucking = true         // voice chat: lower the video while someone speaks (PROTOCOL.md v2.4)
+  var w2gPushToTalk = false          // voice chat: the microphone sends only while the talk button is held
 
   // Interface
   var titleLang: TitleLanguage = .english
@@ -71,7 +73,7 @@ struct SettingsValues: Codable, Equatable {
   enum CodingKeys: String, CodingKey {
     case volume, playerAutoplay, playerPause, playerAutocomplete, playerAutocompleteThreshold, playerSeek, playerSkip
     case subtitleLanguage, audioLanguage, preferDubs
-    case w2gAutoSync, w2gDisplayName, w2gWatchOnMyOwn
+    case w2gAutoSync, w2gDisplayName, w2gWatchOnMyOwn, w2gVoiceDucking, w2gPushToTalk
     case titleLang, bannerProvider, hideMyAnime, cardPreview, cardAudio, toggleList, uiScale, accentColor
     case adult, hentaiBanner, toasts, homeSections, customSections, westernSections
     case systemNotify, aniNotify, releasesNotify, releasesNotifyNotOnList, subAnnounce, dubAnnounce, hentaiAnnounce
@@ -88,7 +90,7 @@ struct SettingsValues: Codable, Equatable {
     let keys: [CodingKeys] = [
       .volume, .playerAutoplay, .playerPause, .playerAutocomplete, .playerAutocompleteThreshold, .playerSeek, .playerSkip,
       .subtitleLanguage, .audioLanguage, .preferDubs,
-      .w2gAutoSync, .w2gDisplayName, .w2gWatchOnMyOwn,
+      .w2gAutoSync, .w2gDisplayName, .w2gWatchOnMyOwn, .w2gVoiceDucking, .w2gPushToTalk,
       .titleLang, .bannerProvider, .hideMyAnime, .cardPreview, .cardAudio, .toggleList, .uiScale, .accentColor,
       .adult, .hentaiBanner, .toasts, .homeSections, .customSections, .westernSections,
       .systemNotify, .aniNotify, .releasesNotify, .releasesNotifyNotOnList, .subAnnounce, .dubAnnounce, .hentaiAnnounce,
@@ -118,6 +120,8 @@ extension SettingsValues {
     w2gAutoSync = container.svcLossyBool(.w2gAutoSync) ?? w2gAutoSync
     w2gDisplayName = container.settingsValue(String.self, .w2gDisplayName) ?? w2gDisplayName
     w2gWatchOnMyOwn = container.svcLossyBool(.w2gWatchOnMyOwn) ?? w2gWatchOnMyOwn
+    w2gVoiceDucking = container.svcLossyBool(.w2gVoiceDucking) ?? w2gVoiceDucking
+    w2gPushToTalk = container.svcLossyBool(.w2gPushToTalk) ?? w2gPushToTalk
 
     titleLang = container.settingsValue(TitleLanguage.self, .titleLang) ?? titleLang
     bannerProvider = container.settingsValue(String.self, .bannerProvider) ?? bannerProvider

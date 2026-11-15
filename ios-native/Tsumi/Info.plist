@@ -52,6 +52,8 @@
 	<string>Save your Year in Review image to your photo library.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Watch Together connects directly to the other people in your lobby, including devices on the same network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Watch Together voice chat uses the microphone while you are in voice.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

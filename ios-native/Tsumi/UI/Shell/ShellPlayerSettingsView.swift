@@ -155,6 +155,17 @@ struct ShellWatchTogetherSettingsSection: View {
         description: "In a Watch Together lobby, jumps to the host’s position when your video drifts more than 2 seconds away while you both play the same episode. At most once every 10 seconds, and nobody else is told.",
         isOn: ShellBind.value(\.w2gAutoSync)
       )
+      // PlayerTab.svelte w2gVoiceDucking / w2gPushToTalk (PROTOCOL.md v2.4 voice chat).
+      ShellSettingToggle(
+        title: "Lower the Video While Someone Speaks",
+        description: "In Watch Together voice chat, plays the video at 30% of its volume while another member is talking.",
+        isOn: ShellBind.value(\.w2gVoiceDucking)
+      )
+      ShellSettingToggle(
+        title: "Push-to-Talk",
+        description: "In Watch Together voice chat, your microphone only sends sound while you hold the talk button.",
+        isOn: ShellBind.value(\.w2gPushToTalk)
+      )
     } header: {
       Text("Watch Together Settings")
     }

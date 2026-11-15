@@ -261,3 +261,119 @@ Nothing ever starts on its own: the user always presses Join.
 - **Payload time and paused state:** the inviter's own playback when it is playing the offered media, otherwise the reference's expected time and state.
 
 **Host tool "Invite everyone not watching":** sends one `invite` to each eligible member, 200 ms apart. It is shown in the player panel and on the lobby page while the host has a media to offer and at least one member is eligible.
+
+## v2.4 additions: voice chat and the shared queue ("Up next")
+
+Everything here is additive. A v2.3 client ignores the new events and fields, never joins voice and never has a queue; a v2.4 client keeps working with it.
+
+### `init.features`
+
+`init` gains an optional `features` array of strings. A v2.4 client sends `["voice", "queue"]`. A missing or malformed value means no feature.
+- `"voice"`: the member can join voice. Voice links are only made with members that announce it.
+- `"queue"`: the member understands the queue events. The queue only exists when the host announces it. With a host without `"queue"` (v2.3), the queue UI is hidden on everyone's side.
+
+`protocol` stays `2`: the features say what a v2 client can do.
+
+### Voice chat
+
+#### Events
+
+| type | payload | who sends | effect |
+|---|---|---|---|
+| `voice` | `{ joined, muted, speaking }` (booleans) | everyone | The sender's voice state, sent to every peer when it changes and to each new peer right after `init` (with `status`). `muted` and `speaking` mean nothing while `joined` is false. `speaking` is always false while `muted`. |
+| `voiceSignal` | `{ id, sdp: { type: "offer" \| "answer", sdp } }` | members in voice | Signaling of the audio link between the sender and the receiver. It is sent to that peer only, never broadcast. `id` is chosen by the offerer and echoed in the answer. |
+
+#### Audio links
+
+Audio does not go through the data channel connections. P2PT creates them with the `lite` build of simple-peer, which has no media support, and it keeps up to three backup connections per peer, so two clients could pick different ones. Each pair of members who are both in voice has one dedicated `RTCPeerConnection`, signaled through `voiceSignal`:
+- The same STUN servers as the data channels: `stun:stun.l.google.com:19302` and `stun:global.stun.twilio.com:3478`. Unified plan, one audio transceiver (Opus), no data channel.
+- **Who offers:** of two members who are both `joined`, the one with the smaller `userId` (string comparison) sends the offer. The other one only answers, so two offers never cross.
+- **No trickle:** a description is sent once ICE gathering is complete, or 3 s after the first candidate, or after 8 s at most. Every candidate is in the SDP.
+- The answerer sets the offer, adds its microphone track to the audio transceiver (or answers receive-only without a microphone), then answers.
+- An offer received while a link with that member exists replaces that link. An answer whose `id` is not the pending offer is ignored. An offer from a member who is not `joined` here, or received while we are not `joined`, is ignored.
+- **Retry:** when a link fails (ICE `failed`, or not connected 20 s after the offer), both sides close it. While both are still `joined`, the offerer sends a new offer after 3 s, at most 5 times in a row (the count resets once a link connects).
+- **Closing:** a link is closed when either side leaves voice (`voice` with `joined: false`), when the member leaves the lobby or is kicked, and when we leave the lobby.
+
+#### Microphone, mute, push-to-talk
+
+- **Join voice** is opt-in, a toggle on the lobby page and in the player panel. It is never on by default, not even in the next lobby.
+- The microphone is captured with echo cancellation, noise suppression and automatic gain control on. Without a microphone (denied or missing), the member still joins and listens, with `muted: true`.
+- **Mute:** the microphone track is disabled, so it sends silence, and `muted` is true.
+- **Push-to-talk** (setting, off by default): the microphone is muted except while the push-to-talk key (desktop, configurable, `T` by default) or the hold-to-talk button (iOS) is held. `muted` says whether the member is transmitting right now.
+- **Speaking:** each client measures its own processed microphone level: the peak amplitude from 0 to 1 over about 100 ms. It sets `speaking` to true as soon as the level reaches 0.05 while transmitting, and back to false after 600 ms below that. A `voice` is sent on each change.
+
+#### Listening
+
+- Every remote voice is played. **Per-member mute and volume** (0–100 %) are local only and kept for the lobby. They don't change what the others hear.
+- **Ducking** (setting, on by default): while we are in voice and at least one other member in voice is `speaking`, isn't muted locally and doesn't have its volume at 0, the video plays at 30 % of its volume. It goes back to normal when nobody speaks. The user's own volume setting is never changed.
+- Leaving voice (toggle off, leaving the lobby, being kicked) stops the microphone, closes every link and sends `voice` with `joined: false`. On iOS, the audio session goes back to what the player uses.
+
+#### UI
+
+- **Member rows** (lobby page and player panel) show an "in voice" mark, a muted mark, and a speaking ring around the avatar. While we are in voice, a member in voice gets a menu with Mute and a volume slider.
+- **Voice controls** (lobby page and player panel): Join voice / Leave voice, Mute / Unmute, and "Hold T to talk" or a hold button when push-to-talk is on.
+- **Player overlay:** while we are in voice, a microphone button sits next to the Watch Together button. It mutes and unmutes, or is the hold-to-talk button on iOS with push-to-talk on. While the panel is closed, the names of the members speaking show over the video.
+
+### Shared queue ("Up next")
+
+The host owns the queue. Everyone else keeps a copy of the last `queue` it received from the host, so a new host can take it over.
+
+#### Item
+
+```
+{
+  id,          // string, random, chosen by the member who adds it
+  media,       // the shared media shape of the `media` event (session.js SHARED_MEDIA_FIELDS):
+               //   AniList id, or "tmdb-<id>" with idTmdb / isTmdb, and format ("MOVIE" for a movie)
+  episode,     // as in `media`: a number, or { number, season, localEpisode }
+  key,         // the adder's media key of media + episode, used verbatim like `media.key`
+  title,       // display title in the adder's language (max 120)
+  cover,       // cover image URL or "" (max 500)
+  addedBy,     // userId of the member who added it
+  addedByName, // that member's display name, kept for when it leaves
+  votes        // userIds that up-voted it, only in `queue`
+}
+```
+
+#### Events
+
+| type | payload | who sends | effect |
+|---|---|---|---|
+| `queue` | `{ items: Item[], pending: Item[], policy: "open" \| "approval", rev }` | the host | The whole queue. It is sent to everyone after each change, and to each new peer after `host` and the lobby media. `rev` grows by one with each change. Accepted only from the current host, or from anyone while no host is known or the host is provisional. |
+| `queueAdd` | `{ item }` (no `votes`) | anyone | Sent to the host only. The host appends it to `items` when the policy is `open`, or to `pending` when it is `approval`. It is ignored when the same episode is already there as an item or a suggestion (same `key`, or same `media.id` and the same episode, since apps may write the key differently), or when the list is full (50 items, 20 pending). The host sets `addedBy` to the sender's `userId` and `addedByName` to its name. |
+| `queueVote` | `{ id, up }` | anyone | Sent to the host only. Adds (`up: true`) or removes the sender's vote on an item. |
+| `queueRemove` | `{ id }` | the member who added the item | Sent to the host only. Removes that member's own item or suggestion. |
+
+Everything else only the host can do. It changes its own copy, then broadcasts `queue`:
+- reorder (move up, move down);
+- remove any item;
+- accept or decline a suggestion (accepted ones go to the end of `items`);
+- switch the policy: "Members need approval" (`approval`) or not (`open`, the default);
+- **Play now**.
+
+The host's own additions always go straight to `items`.
+
+#### Play now and auto-advance
+
+**Play now** (host only, following): the host removes the item from the queue and makes it the lobby media. It sends `media` with the item's `media`, `episode` and `key` (`key` used verbatim), and starts it itself through the same path as a received `media`. Followers already watching move to it, as with any `media`. The others get the Join card. Once the host's player has loaded it, the host starts the existing countdown: `countdown` from its position, 5 s. Members still loading snap to the host when they're ready, as before.
+
+**Auto-advance:** when the host's episode ends while it follows the lobby and `items` isn't empty, the host sees "Up next: {title · episode}" with a 5 s countdown, **Play now** and **Cancel**. When the countdown ends, it does Play now with the first item. With an empty queue, the end of an episode behaves as before.
+
+A `countdown` is only applied by a member whose player is on the lobby media (or isn't playing anything), never to another episode.
+
+#### Host changes and late joiners
+
+- The host sends `queue` to each newcomer, so late joiners get the current queue.
+- A member who becomes host (transfer or migration) keeps its last copy, including `pending`, and broadcasts it as a `queue` at once.
+
+#### System lines
+
+Each client compares each new `queue` with the previous one. It adds "Alice added {title · episode} to Up next" for each new item and "Alice suggested {title · episode}" for each new suggestion ("You added…" for our own). When one of our suggestions is gone without being added, it adds "The host declined your suggestion: {title · episode}". The first `queue` after joining announces nothing.
+
+#### UI
+
+- **Where:** the queue shows on the lobby page and in the player panel. Each row has the cover, title, episode label ("Episode 5", "S2 E5", "Movie"), "added by {name}", the vote count with the member's own vote toggle, and the host tools (move up, move down, Play now, remove). The adder can remove its own item.
+- **Pending:** suggestions waiting for approval are listed for everyone. The host gets Accept / Decline. The suggester can cancel its own.
+- **Adding:** members add with "Add to Watch Together queue" on each episode of the episode list and on the details page, while in a lobby whose host supports the queue. The lobby page and the player panel have "Add next episode", which queues the episode after the lobby media (or after the last queued episode of the same title).
+- **Host toggle:** "Members need approval".
+- **Prompt:** while the panel is closed, the host gets a notice for each new suggestion.

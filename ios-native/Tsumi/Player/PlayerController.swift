@@ -1174,10 +1174,21 @@ final class PlayerController {
 
   /// ArrowUp / ArrowDown: app volume, persisted in the settings like the Svelte cache entry.
   func adjustVolume(by delta: Double) {
-    let value = min(max(Double(player.volume) + delta, 0), 1)
-    player.volume = Float(value)
+    let value = min(max(Double(player.volume) / duckLevel + delta, 0), 1)
+    player.volume = Float(value * duckLevel)
     AppSettings.shared.values.volume = value
     showNotice("Volume \(Int((value * 100).rounded()))%")
+  }
+
+  /// Watch Together voice ducking: the video plays at this fraction of the user's volume while someone speaks.
+  @ObservationIgnored private var duckLevel: Double = 1
+
+  func setDuck(_ level: Double) {
+    let value = min(max(level.isFinite ? level : 1, 0.05), 1)
+    guard value != duckLevel else { return }
+    let base = Double(player.volume) / duckLevel
+    duckLevel = value
+    player.volume = Float(min(max(base, 0), 1) * value)
   }
 
   func setVideoFill(_ fill: Bool) {

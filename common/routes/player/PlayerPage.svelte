@@ -26,6 +26,7 @@
   import { w2gEmitter, state } from '@/routes/w2g/WatchTogetherPage.svelte'
   import PlayerW2G from '@/routes/w2g/components/PlayerW2G.svelte'
   import { LocalActionTracker, formatSource } from '@/routes/w2g/components/sync.js'
+  import { voiceDuck } from '@/routes/w2g/components/voice.js'
   import ManagerModal from '@/modals/manager/ManagerModal.svelte'
   import Keybinds, { loadWithDefaults, condition } from 'svelte-keybinds'
   import { SUPPORTS } from '@/modules/support.js'
@@ -227,6 +228,8 @@
   let playbackRate = 1
   let externalPlayerReady = false
   $: cache.setEntry(caches.GENERAL, 'volume', String(volume || 0))
+  // Watch Together voice: the video is lowered while someone speaks; `volume` (the user's choice) never changes.
+  $: if (video) video.volume = Math.min(1, Math.max(0, (volume || 0) * $voiceDuck))
   $: launchedExternal = false
   $: externalPlayback =
     ($settings.enableExternal || launchedExternal) &&
@@ -850,6 +853,8 @@
   function tryPlayNext () {
     currentSkippable = null
     if ($settings.playerAutoplay && !state.value) playNext()
+    // Watch Together: the host plays the next queued item ("Up next"), else nothing as before.
+    else if (state.value && !externalPlayback) state.value.episodeEnded()
   }
   function playNext () {
     if (hasNext) {
@@ -2143,7 +2148,6 @@
       bind:videoHeight
       bind:videoWidth
       bind:this={video}
-      bind:volume
       bind:duration
       bind:currentTime
       bind:paused

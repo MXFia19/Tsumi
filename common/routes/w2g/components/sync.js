@@ -673,6 +673,402 @@ export function autoStartsMedia ({ following, localState, senderJoinedAt, now })
 }
 
 /**
+ * v2.4: a `countdown` is applied only by a member whose player is on the lobby media, or plays nothing.
+ * @param {{ localKey: string | null | undefined, lobbyKey: string | null | undefined }} input
+ */
+export function appliesCountdown ({ localKey, lobbyKey }) {
+  return !localKey || !lobbyKey || localKey === lobbyKey
+}
+
+// ---------------------------------------------------------------- v2.4: features, voice chat, shared queue
+
+/** `init.features` sent by this client. */
+export const FEATURES = /** @type {const} */ (['voice', 'queue'])
+
+/**
+ * `init.features`, cleaned: distinct short strings, an empty list when missing or malformed.
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+export function normalizeFeatures (value) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter(item => typeof item === 'string' && item.length > 0 && item.length <= 32))].slice(0, 16)
+}
+
+/** A transmitting microphone whose peak level reaches this is speaking... */
+export const VOICE_SPEAKING_LEVEL = 0.05
+/** ... until it stayed below for this long. */
+export const VOICE_SPEAKING_HOLD_MS = 600
+/** Ducking: the video plays at this fraction of its volume while someone speaks. */
+export const VOICE_DUCK_LEVEL = 0.3
+/** No trickle: the description is sent this long after the first candidate if gathering is not complete... */
+export const VOICE_GATHER_AFTER_CANDIDATE_MS = 3_000
+/** ... and after this long at most. */
+export const VOICE_GATHER_MAX_MS = 8_000
+/** A link not connected this long after the offer failed. */
+export const VOICE_CONNECT_TIMEOUT_MS = 20_000
+/** The offerer retries a failed link after this delay... */
+export const VOICE_RETRY_MS = 3_000
+/** ... at most this many times in a row. */
+export const VOICE_MAX_RETRIES = 5
+/** STUN servers of the audio links (same as the data channels, simple-peer's defaults). */
+export const VOICE_ICE_SERVERS = ['stun:stun.l.google.com:19302', 'stun:global.stun.twilio.com:3478']
+
+/**
+ * `voice` payload, cleaned. `speaking` is false unless joined and not muted.
+ * @param {unknown} payload
+ * @returns {{ joined: boolean, muted: boolean, speaking: boolean }}
+ */
+export function normalizeVoice (payload) {
+  const raw = /** @type {any} */ (payload) ?? {}
+  const joined = raw.joined === true
+  const muted = raw.muted === true
+  return { joined, muted, speaking: joined && !muted && raw.speaking === true }
+}
+
+/**
+ * Of two members in voice, the one with the smaller userId sends the offer.
+ * @param {unknown} selfId
+ * @param {unknown} otherId
+ */
+export function voiceOffers (selfId, otherId) {
+  return String(selfId) < String(otherId)
+}
+
+/**
+ * What to do with the audio link to one member.
+ * @param {{ selfJoined: boolean, memberJoined: boolean, memberHasVoice: boolean, hasLink: boolean, selfOffers: boolean }} input
+ * @returns {'offer' | 'wait' | 'close' | 'none'} offer: we create it; wait: the member will offer
+ */
+export function voiceLinkAction ({ selfJoined, memberJoined, memberHasVoice, hasLink, selfOffers }) {
+  if (!(selfJoined && memberJoined && memberHasVoice)) return hasLink ? 'close' : 'none'
+  if (hasLink) return 'none'
+  return selfOffers ? 'offer' : 'wait'
+}
+
+/**
+ * Whether an incoming `voiceSignal` offer is taken: both of us in voice, and the sender is the offerer.
+ * @param {{ selfJoined: boolean, memberJoined: boolean, selfId: string, senderId: string }} input
+ */
+export function acceptsVoiceOffer ({ selfJoined, memberJoined, selfId, senderId }) {
+  return selfJoined && memberJoined && voiceOffers(senderId, selfId)
+}
+
+/**
+ * Delay before the offerer re-offers a failed link, null when it gave up.
+ * @param {number} failures failed attempts in a row
+ */
+export function voiceRetryDelay (failures) {
+  return failures <= VOICE_MAX_RETRIES ? VOICE_RETRY_MS : null
+}
+
+/**
+ * The microphone sends sound: in voice, with a microphone, not muted, and the push-to-talk key held if it is on.
+ * @param {{ joined: boolean, hasMic: boolean, muted: boolean, pushToTalk: boolean, held: boolean }} input
+ */
+export function voiceTransmitting ({ joined, hasMic, muted, pushToTalk, held }) {
+  return joined && hasMic && !muted && (!pushToTalk || held)
+}
+
+/**
+ * Speaking detection on our own microphone, called about every 100 ms.
+ * @param {{ lastLoudAt?: number } | null | undefined} memory
+ * @param {{ level: number | null | undefined, transmitting: boolean, now: number }} input level: peak amplitude 0-1
+ * @returns {{ speaking: boolean, lastLoudAt: number }}
+ */
+export function speakingStep (memory, { level, transmitting, now }) {
+  if (!transmitting) return { speaking: false, lastLoudAt: -Infinity }
+  const lastLoudAt = isFiniteNumber(memory?.lastLoudAt) ? memory.lastLoudAt : -Infinity
+  if (isFiniteNumber(level) && level >= VOICE_SPEAKING_LEVEL) return { speaking: true, lastLoudAt: now }
+  return { speaking: now - lastLoudAt < VOICE_SPEAKING_HOLD_MS, lastLoudAt }
+}
+
+/**
+ * Video volume factor: lowered while we are in voice and another member we hear is speaking.
+ * @param {{ enabled: boolean, selfJoined: boolean, members: Array<{ joined: boolean, speaking: boolean, localMuted?: boolean, volume?: number }> }} input
+ *   members: the other members
+ */
+export function duckLevel ({ enabled, selfJoined, members }) {
+  if (!enabled || !selfJoined) return 1
+  const heard = members.some(member => member.joined && member.speaking && !member.localMuted && (isFiniteNumber(member.volume) ? member.volume : 1) > 0)
+  return heard ? VOICE_DUCK_LEVEL : 1
+}
+
+/** Queue limits. */
+export const QUEUE_MAX_ITEMS = 50
+export const QUEUE_MAX_PENDING = 20
+/** Auto-advance: "Up next" waits this long before playing the first item. */
+export const QUEUE_ADVANCE_S = 5
+/** Length of the countdown the host starts once a queued item is loaded. */
+export const QUEUE_COUNTDOWN_S = 5
+
+/**
+ * @typedef {{ id: string, media: any, episode: number | { number: number, season?: number, localEpisode?: number }, key: string, title: string, cover: string, addedBy: string, addedByName: string, votes: string[] }} QueueItem
+ * @typedef {{ items: QueueItem[], pending: QueueItem[], policy: 'open' | 'approval', rev: number }} Queue
+ */
+
+/** @returns {Queue} */
+export function emptyQueue () {
+  return { items: [], pending: [], policy: 'open', rev: 0 }
+}
+
+const cleanText = (value, max) => (typeof value === 'string' ? value.trim().slice(0, max) : '')
+const cleanId = value => ((typeof value === 'string' && value !== '') || isFiniteNumber(value) ? String(value).slice(0, 64) : null)
+
+/**
+ * Episode of a queue item: a number, or `{ number, season?, localEpisode? }`. Null when unusable.
+ * @param {unknown} episode
+ */
+export function normalizeQueueEpisode (episode) {
+  if (isFiniteNumber(episode)) return episode
+  if (typeof episode === 'string' && /^\d+$/.test(episode)) return Number(episode)
+  if (episode && typeof episode === 'object') {
+    const raw = /** @type {any} */ (episode)
+    const number = isFiniteNumber(raw.number) ? raw.number : isFiniteNumber(raw.localEpisode) ? raw.localEpisode : null
+    if (number === null) return null
+    /** @type {{ number: number, season?: number, localEpisode?: number }} */
+    const out = { number }
+    if (isFiniteNumber(raw.season)) out.season = raw.season
+    if (isFiniteNumber(raw.localEpisode)) out.localEpisode = raw.localEpisode
+    return out
+  }
+  return null
+}
+
+/**
+ * A queue item, cleaned. Null without an id, a media with an id, an episode or a key.
+ * @param {unknown} value
+ * @returns {QueueItem | null}
+ */
+export function normalizeQueueItem (value) {
+  if (!value || typeof value !== 'object') return null
+  const raw = /** @type {any} */ (value)
+  const id = cleanId(raw.id)
+  const media = raw.media && typeof raw.media === 'object' && !Array.isArray(raw.media) && cleanId(raw.media.id) ? raw.media : null
+  const episode = normalizeQueueEpisode(raw.episode)
+  const key = cleanText(raw.key, 200)
+  if (!id || !media || episode === null || !key) return null
+  const votes = Array.isArray(raw.votes) ? [...new Set(raw.votes.map(cleanId).filter(Boolean))].slice(0, 64) : []
+  return {
+    id,
+    media,
+    episode,
+    key,
+    title: cleanText(raw.title, 120),
+    cover: cleanText(raw.cover, 500),
+    addedBy: cleanId(raw.addedBy) ?? '',
+    addedByName: cleanText(raw.addedByName, 64),
+    votes
+  }
+}
+
+/**
+ * `queue` payload, cleaned (items without a duplicate id, within the limits). Null when not an object.
+ * @param {unknown} payload
+ * @returns {Queue | null}
+ */
+export function normalizeQueue (payload) {
+  if (!payload || typeof payload !== 'object') return null
+  const raw = /** @type {any} */ (payload)
+  const seen = new Set()
+  const clean = (list, max) => (Array.isArray(list) ? list : []).map(normalizeQueueItem).filter(item => {
+    if (!item || seen.has(item.id)) return false
+    seen.add(item.id)
+    return true
+  }).slice(0, max)
+  const items = clean(raw.items, QUEUE_MAX_ITEMS)
+  const pending = clean(raw.pending, QUEUE_MAX_PENDING)
+  return { items, pending, policy: raw.policy === 'approval' ? 'approval' : 'open', rev: isFiniteNumber(raw.rev) ? raw.rev : 0 }
+}
+
+/**
+ * Same title and episode, even when two apps wrote the key differently ("21:5" / "21::5").
+ * @param {{ key?: string, media?: any, episode: unknown }} a
+ * @param {{ key?: string, media?: any, episode: unknown }} b
+ */
+export function sameQueueEntry (a, b) {
+  if (a.key && a.key === b.key) return true
+  if (cleanId(a.media?.id) === null || String(a.media.id) !== String(b.media?.id)) return false
+  const identity = value => {
+    const episode = normalizeQueueEpisode(value)
+    if (episode === null) return null
+    return typeof episode === 'number' ? `:${episode}` : `${episode.season ?? ''}:${episode.localEpisode ?? episode.number}`
+  }
+  const left = identity(a.episode)
+  return left !== null && left === identity(b.episode)
+}
+
+/**
+ * One change of the queue, applied by the host. Returns the new queue (rev + 1), or null when nothing changed.
+ * - add: `byHost` or an `open` policy adds to the items, else to the suggestions; same key or full: ignored.
+ * - vote: adds / removes `by` on an item. remove: the host, or the member who added it.
+ * - move: host only, by `delta` places. answer: host, accept (to the end of the items) or decline a suggestion.
+ * - policy: host only.
+ * @param {Queue | null | undefined} queue
+ * @param {{ type: 'add', item: QueueItem, by: string, byName?: string, byHost: boolean }
+ *   | { type: 'vote', id: string, by: string, up: boolean }
+ *   | { type: 'remove', id: string, by: string, byHost: boolean }
+ *   | { type: 'move', id: string, delta: number }
+ *   | { type: 'answer', id: string, accepted: boolean }
+ *   | { type: 'policy', policy: string }} change
+ * @returns {Queue | null}
+ */
+export function queueReduce (queue, change) {
+  const current = queue ?? emptyQueue()
+  const done = next => ({ ...current, ...next, rev: current.rev + 1 })
+  switch (change.type) {
+    case 'add': {
+      const item = normalizeQueueItem(change.item)
+      if (!item) return null
+      const all = [...current.items, ...current.pending]
+      if (all.some(entry => entry.id === item.id || sameQueueEntry(entry, item))) return null
+      const added = { ...item, addedBy: String(change.by), addedByName: cleanText(change.byName, 64) || item.addedByName, votes: [] }
+      if (change.byHost || current.policy === 'open') {
+        if (current.items.length >= QUEUE_MAX_ITEMS) return null
+        return done({ items: [...current.items, added] })
+      }
+      if (current.pending.length >= QUEUE_MAX_PENDING) return null
+      return done({ pending: [...current.pending, added] })
+    }
+    case 'vote': {
+      const by = String(change.by)
+      let changed = false
+      const items = current.items.map(item => {
+        if (item.id !== change.id) return item
+        const has = item.votes.includes(by)
+        if (has === !!change.up) return item
+        changed = true
+        return { ...item, votes: change.up ? [...item.votes, by] : item.votes.filter(id => id !== by) }
+      })
+      return changed ? done({ items }) : null
+    }
+    case 'remove': {
+      const allowed = item => item.id === change.id && (change.byHost || sameId(item.addedBy, change.by))
+      const items = current.items.filter(item => !allowed(item))
+      const pending = current.pending.filter(item => !allowed(item))
+      if (items.length === current.items.length && pending.length === current.pending.length) return null
+      return done({ items, pending })
+    }
+    case 'move': {
+      const index = current.items.findIndex(item => item.id === change.id)
+      if (index < 0 || !isFiniteNumber(change.delta)) return null
+      const target = Math.max(0, Math.min(current.items.length - 1, index + Math.trunc(change.delta)))
+      if (target === index) return null
+      const items = [...current.items]
+      const [item] = items.splice(index, 1)
+      items.splice(target, 0, item)
+      return done({ items })
+    }
+    case 'answer': {
+      const item = current.pending.find(entry => entry.id === change.id)
+      if (!item) return null
+      const pending = current.pending.filter(entry => entry.id !== change.id)
+      if (!change.accepted || current.items.length >= QUEUE_MAX_ITEMS) return done({ pending })
+      return done({ pending, items: [...current.items, item] })
+    }
+    case 'policy': {
+      const policy = change.policy === 'approval' ? 'approval' : 'open'
+      return policy === current.policy ? null : done({ policy })
+    }
+    default:
+      return null
+  }
+}
+
+/**
+ * What a new `queue` adds to the chat, compared with the previous one (none for the first one).
+ * @param {Queue | null | undefined} previous
+ * @param {Queue} next
+ * @param {{ selfId: string, cancelled?: Set<string> | string[] }} options cancelled: ids of our own suggestions we removed
+ * @returns {Array<{ kind: 'added' | 'suggested' | 'declined', item: QueueItem }>}
+ */
+export function queueChanges (previous, next, { selfId, cancelled = [] }) {
+  if (!previous) return []
+  const ignored = new Set(cancelled)
+  const before = new Set(previous.items.map(item => item.id))
+  const beforePending = new Set(previous.pending.map(item => item.id))
+  const nowIds = new Set([...next.items, ...next.pending].map(item => item.id))
+  /** @type {Array<{ kind: 'added' | 'suggested' | 'declined', item: QueueItem }>} */
+  const changes = []
+  for (const item of next.items) if (!before.has(item.id)) changes.push({ kind: 'added', item })
+  for (const item of next.pending) if (!beforePending.has(item.id) && !before.has(item.id)) changes.push({ kind: 'suggested', item })
+  for (const item of previous.pending) {
+    if (!nowIds.has(item.id) && sameId(item.addedBy, selfId) && !ignored.has(item.id)) changes.push({ kind: 'declined', item })
+  }
+  return changes
+}
+
+/**
+ * "Title · Episode 5" of a queue item ("Title · Movie" for a movie).
+ * @param {{ title?: string, episode: unknown, media?: any }} item
+ */
+export function queueItemLabel (item) {
+  const episode = episodeLabelFor({ episode: item.episode, format: item.media?.format, episodes: item.media?.episodes })
+  return [item.title || 'a title', episode].filter(Boolean).join(' · ')
+}
+
+/**
+ * Chat line of a queue change.
+ * @param {{ kind: 'added' | 'suggested' | 'declined', item: QueueItem }} change
+ * @param {string} selfId
+ */
+export function describeQueueChange ({ kind, item }, selfId) {
+  const label = queueItemLabel(item)
+  const name = sameId(item.addedBy, selfId) ? 'You' : (item.addedByName || 'Someone')
+  if (kind === 'added') return `${name} added ${label} to Up next`
+  if (kind === 'suggested') return `${name} suggested ${label}`
+  return `The host declined your suggestion: ${label}`
+}
+
+/**
+ * The episode after `episode`; null past the known episode count (a movie has none).
+ * @param {unknown} episode a number or { number, season?, localEpisode? }
+ * @param {unknown} [episodes] episode count of the title, when known
+ */
+export function nextEpisodeOf (episode, episodes) {
+  const value = normalizeQueueEpisode(episode)
+  if (value === null) return null
+  if (typeof value === 'number') {
+    const next = value + 1
+    return isFiniteNumber(episodes) && episodes > 0 && next > episodes ? null : next
+  }
+  /** @type {{ number: number, season?: number, localEpisode?: number }} */
+  const next = { ...value, number: value.number + 1 }
+  if (isFiniteNumber(value.localEpisode)) next.localEpisode = value.localEpisode + 1
+  return next
+}
+
+/**
+ * "Add next episode": the episode after the last queued (or suggested) episode of the lobby title, else after the
+ * lobby media. Null without a lobby media or past the last episode.
+ * @param {{ lobby: { media: any, episode: unknown } | null | undefined, queue: Queue | null | undefined }} input
+ * @returns {{ media: any, episode: number | { number: number, season?: number, localEpisode?: number } } | null}
+ */
+export function nextEpisodeTarget ({ lobby, queue }) {
+  if (!lobby?.media || cleanId(lobby.media.id) === null) return null
+  const mediaId = String(lobby.media.id)
+  const numberOf = episode => {
+    const value = normalizeQueueEpisode(episode)
+    return value === null ? -Infinity : typeof value === 'number' ? value : value.number
+  }
+  let base = lobby.episode
+  for (const item of [...(queue?.items ?? []), ...(queue?.pending ?? [])]) {
+    if (String(item.media?.id) === mediaId && numberOf(item.episode) > numberOf(base)) base = item.episode
+  }
+  const episodes = lobby.media.format === 'MOVIE' && !(lobby.media.episodes > 1) ? 1 : lobby.media.episodes
+  const episode = nextEpisodeOf(base, episodes)
+  return episode === null ? null : { media: lobby.media, episode }
+}
+
+/**
+ * Whether a `queue` is taken from this sender: the current host, or anyone while no host is known or it is provisional.
+ * @param {{ senderId: string, hostId: string | null, tentative: boolean }} input
+ */
+export function acceptsQueue ({ senderId, hostId, tentative }) {
+  return hostId == null || tentative || sameId(senderId, hostId)
+}
+
+/**
  * Turns the burst of media events of one local change (pause + seek + play while dragging
  * the seekbar...) into one action.
  * @param {{ time: number, paused: boolean } | null} from settled state before the burst

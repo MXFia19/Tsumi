@@ -91,12 +91,32 @@ struct W2GPlayerLayer: View {
       .padding(.bottom, controlsVisible ? 112 : 20)
       .padding(.horizontal, 18)
 
+      // v2.4: who is speaking, while the panel is closed.
+      if !panelOpen && !client.speakingNames.isEmpty {
+        VStack(spacing: 0) {
+          HStack(spacing: 0) {
+            W2GSpeakersOverlay(speakers: client.speakingNames)
+            Spacer(minLength: 0)
+          }
+          Spacer(minLength: 0)
+        }
+        .padding(.top, controlsVisible ? 64 : 14)
+        .padding(.leading, 18)
+        .allowsHitTesting(false)
+      }
+
       VStack(spacing: 0) {
         HStack(alignment: .top, spacing: 0) {
           Spacer(minLength: 0)
           VStack(alignment: .trailing, spacing: 8) {
-            if !controlsVisible && !panelOpen && client.unreadCount > 0 {
-              W2GPlayerButton(unread: client.unreadCount, floating: true) { panelOpen = true }
+            HStack(spacing: 8) {
+              // v2.4: the microphone while in voice (mute, or hold to talk).
+              if !panelOpen && client.voice.joined && client.voice.hasMic {
+                W2GPlayerMicButton(client: client)
+              }
+              if !controlsVisible && !panelOpen && client.unreadCount > 0 {
+                W2GPlayerButton(unread: client.unreadCount, floating: true) { panelOpen = true }
+              }
             }
             // With the panel open they move to its top, so they are never under it.
             if !panelOpen {
@@ -296,6 +316,7 @@ struct W2GPlayerPanel: View {
   private enum PanelTab: Hashable {
     case chat
     case people
+    case queue
   }
 
   @State private var section: PanelTab = .chat
@@ -315,28 +336,42 @@ struct W2GPlayerPanel: View {
           .padding(.horizontal, 12)
           .padding(.vertical, 6)
       }
-      if !client.pendingRequests.isEmpty || !client.invites.isEmpty {
-        // Host requests and invites stay visible and tappable while the panel is open.
+      if !client.pendingRequests.isEmpty || !client.invites.isEmpty || client.advance != nil {
+        // Host requests, invites and "Up next" stay visible and tappable while the panel is open.
         W2GPromptStack(client: client, alignment: .leading)
           .padding(.horizontal, 12)
           .padding(.vertical, 6)
       }
       quickActions
       independentToggle
+      // v2.4 voice chat.
+      W2GVoiceControls(client: client)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 4)
       Picker("Section", selection: $section) {
         Text("Chat").tag(PanelTab.chat)
         Text("People (\(client.memberViews().count))").tag(PanelTab.people)
+        if client.queueAvailable {
+          Text("Up next (\(client.queue.items.count))").tag(PanelTab.queue)
+        }
       }
       .pickerStyle(.segmented)
       .padding(.horizontal, 12)
       .padding(.vertical, 6)
       Divider()
-      if section == .chat {
+      switch section {
+      case .chat:
         chat
         reactionRow
         composer
-      } else {
+      case .people:
         people
+      case .queue:
+        ScrollView {
+          W2GQueueList(client: client)
+            .padding(12)
+        }
+        .frame(maxHeight: .infinity)
       }
     }
     .foregroundStyle(.white)
@@ -559,7 +594,8 @@ struct W2GPlayerPanel: View {
                 compact: true,
                 onKick: { _ = client.kick(member.userId) },
                 onTransfer: { _ = client.transferHost(to: member.userId) },
-                onInvite: { _ = client.invite(member.userId) }
+                onInvite: { _ = client.invite(member.userId) },
+                client: client
               )
             }
           }
@@ -687,6 +723,11 @@ struct W2GPromptStack: View {
 
   var body: some View {
     VStack(alignment: alignment, spacing: 8) {
+      // v2.4 host: "Up next" at the end of an episode.
+      if let advance = client.advance {
+        W2GAdvancePrompt(advance: advance, client: client)
+          .transition(.move(edge: .trailing).combined(with: .opacity))
+      }
       if showsJoin, let offer = client.floatingJoinOffer {
         W2GJoinCard(offer: offer, client: client, dismissible: true)
           .frame(width: 280)

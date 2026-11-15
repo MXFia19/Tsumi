@@ -11,6 +11,7 @@
     w2gEmitter as sessionEmitter,
     state as sessionState
   } from '@/routes/w2g/components/session.js'
+  import { installPushToTalk } from '@/routes/w2g/components/voice.js'
   import 'browser-event-target-emitter'
   import Debug from 'debug'
   const debug = Debug('ui:w2g')
@@ -78,6 +79,8 @@
 
   w2gEmitter.on('player', (data) => state.value?.playerStateChanged(data))
   w2gEmitter.on('index', (index) => state.value?.mediaIndexChanged(index))
+  // v2.4: push-to-talk key, anywhere in the app while in voice.
+  installPushToTalk(() => state.value)
 
   IPC.on('w2glink', (link) => {
     joinLobby(link)

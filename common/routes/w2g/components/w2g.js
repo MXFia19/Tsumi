@@ -9,8 +9,12 @@ import {
   memberName, expectedTime, syncBadge, selfBadge, autoSyncStep, hostReference, inferAction,
   describeAction, describeRequest, presenceOnStatus, presenceOnTick, describePresence, canInvite, acceptsInvite,
   inviteTarget, formatSource, normalizeNowPlaying, episodeLabelFor, pickFollowingHost, electFollowingHost,
-  followBackAction, episodeLabelOf, lobbyReference, canJoinPlayback, offeredMedia, invitePosition, autoStartsMedia
+  followBackAction, episodeLabelOf, lobbyReference, canJoinPlayback, offeredMedia, invitePosition, autoStartsMedia,
+  appliesCountdown, FEATURES, normalizeFeatures, normalizeVoice, voiceOffers, voiceLinkAction, acceptsVoiceOffer, duckLevel,
+  emptyQueue, normalizeQueue, queueReduce, queueChanges, sameQueueEntry, describeQueueChange, queueItemLabel, nextEpisodeTarget, acceptsQueue,
+  QUEUE_ADVANCE_S, QUEUE_COUNTDOWN_S
 } from '@/routes/w2g/components/sync.js'
+import { VoiceEngine, voiceDuck } from '@/routes/w2g/components/voice.js'
 import Helper from '@/modules/helper.js'
 import { settings } from '@/modules/settings.js'
 import { SUPPORTS } from '@/modules/support.js'
@@ -21,14 +25,19 @@ const debug = Debug('ui:w2g')
 
 /**
  * @typedef {import('@/modules/al.d.ts').Viewer | { id: string, displayName?: string }} W2GUser
- * @typedef {Record<string, { user: W2GUser, peer?: import('p2pt').Peer<any>, userId?: string, protocol?: number, client?: string }>} PeerList
+ * @typedef {Record<string, { user: W2GUser, peer?: import('p2pt').Peer<any>, userId?: string, protocol?: number, client?: string, features?: string[] }>} PeerList
  * @typedef {{ media: object, episode: number | { number: number, season?: number, localEpisode?: number }, key: string }} SharedMedia
  * @typedef {{ message: string, user: W2GUser | null, type: 'incoming' | 'outgoing' | 'system', date: Date, emoji?: string }} ChatEntry
  * @typedef {{ status?: import('./sync.js').Status & { sentAt?: number, source?: string }, receivedAt?: number, rtt?: number, pongAt?: number, joinedAt?: number }} Signal
  * @typedef {{ id: string, kind: 'pause' | 'play' | 'seek', time?: number, userId: string, name: string, expiresAt: number }} HostRequest
  * @typedef {{ from: string, name: string, media: any, episode: SharedMedia['episode'], key: string, time: number, paused: boolean, receivedAt: number }} Invite
- * @typedef {{ userId: string, user: W2GUser, name: string, isSelf: boolean, isHost: boolean, badge: import('./sync.js').Badge, protocol?: number, client?: string, rtt?: number, source?: string, canInvite?: boolean }} MemberView
+ * @typedef {{ joined: boolean, muted: boolean, speaking: boolean, link?: 'connecting' | 'connected' | null, localMuted?: boolean, volume?: number }} MemberVoice
+ * @typedef {{ userId: string, user: W2GUser, name: string, isSelf: boolean, isHost: boolean, badge: import('./sync.js').Badge, protocol?: number, client?: string, rtt?: number, source?: string, canInvite?: boolean, voice?: MemberVoice, hasVoice?: boolean }} MemberView
+ * @typedef {{ joined: boolean, starting: boolean, hasMic: boolean, muted: boolean, pushToTalk: boolean, held: boolean, transmitting: boolean, speaking: boolean, error: string | null }} VoiceView
  */
+
+/** v2.4 `voice` payload while not in voice. */
+const VOICE_OFF = { joined: false, muted: true, speaking: false }
 
 /** A joined invite seeks once its episode is loaded, if that happens within 2 minutes. */
 const JOIN_TTL_MS = 120_000
@@ -118,6 +127,28 @@ export class W2GClient extends EventEmitter {
   rejoinOffer = writable(null)
   /** @type {import('simple-store-svelte').Writable<{ time: number, seconds: number, endsAt: number, by: string } | null>} */
   countdown = writable(null)
+  /** @type {import('simple-store-svelte').Writable<VoiceView>} v2.4 our voice state */
+  voice = writable({ joined: false, starting: false, hasMic: false, muted: false, pushToTalk: false, held: false, transmitting: false, speaking: false, error: null })
+  /** @type {import('simple-store-svelte').Writable<Record<string, { joined: boolean, muted: boolean, speaking: boolean }>>} last `voice` per userId */
+  voiceStates = writable({})
+  /** @type {import('simple-store-svelte').Writable<Record<string, 'connecting' | 'connected'>>} audio link per userId */
+  voiceLinks = writable({})
+  /** @type {import('simple-store-svelte').Writable<import('./sync.js').Queue>} v2.4 "Up next", owned by the host */
+  queue = writable(emptyQueue())
+  /** @type {import('simple-store-svelte').Writable<{ item: import('./sync.js').QueueItem, endsAt: number } | null>} host: auto-advance countdown */
+  advance = writable(null)
+
+  /** @type {VoiceEngine} */
+  #voice
+  #lastVoicePayload = VOICE_OFF
+  /** A `queue` was received (or we created the lobby): changes are announced from then on. */
+  #queueKnown = false
+  /** @type {Set<string>} our own suggestions we removed (not "declined") */
+  #queueCancelled = new Set()
+  #advanceTimer = null
+  /** @type {{ key: string, at: number } | null} host: a queued item was started, count down once it is loaded */
+  #pendingQueueStart = null
+  #unsubscribeSettings = null
 
   /** @type {Map<string, import('p2pt').Peer<any>>} open data channels by transport id */
   #channels = new Map()
@@ -218,6 +249,22 @@ export class W2GClient extends EventEmitter {
     // The lobby creator is the first host.
     if (!code) this.lobby.value = { hostId: this.selfId, mode: 'everyone', tentative: false }
     this.#joinPrompted = !code
+    this.#queueKnown = !code
+
+    // v2.4 voice chat: the engine does the audio, the lobby decides who to link with.
+    this.#voice = new VoiceEngine({ wantsOffer: userId => this.#voice.joined && voiceOffers(this.selfId, userId) && this.#memberInVoice(userId) })
+    this.#voice.on('state', () => this.#onVoiceEngineState())
+    this.#voice.on('signal', ({ userId, payload }) => this.#sendToUser(userId, new Event(EventTypes.VoiceSignalEvent, payload)))
+    this.#voice.on('links', () => {
+      this.voiceLinks.value = this.#voice.linkStates()
+      this.#updateDuck()
+    })
+    // Push-to-talk and ducking settings apply at once.
+    this.#unsubscribeSettings = settings.subscribe(() => {
+      if (this.#destroyed) return
+      this.#voice.refresh()
+      this.#updateDuck()
+    })
 
     debug(`W2GClient: ${this.code}, ${this.isHost}`)
 
@@ -354,6 +401,19 @@ export class W2GClient extends EventEmitter {
    */
   playerReady () {
     const now = Date.now()
+    // v2.4: a queued item the host started is loaded: the existing countdown starts everyone together.
+    const queued = this.#pendingQueueStart
+    if (queued && now - queued.at > JOIN_TTL_MS) this.#pendingQueueStart = null
+    else if (queued && queued.key === this.local.mediaKey) {
+      this.#pendingQueueStart = null
+      // Once the player reported its loaded state (position, play / pause).
+      const timer = setTimeout(() => {
+        this.#inviteTimers.delete(timer)
+        if (!this.#destroyed && this.isHost && this.local.mediaKey === queued.key) this.startTogether(QUEUE_COUNTDOWN_S)
+      }, 300)
+      this.#inviteTimers.add(timer)
+      return
+    }
     const join = this.#pendingJoin
     if (join && now - join.joinedAt > JOIN_TTL_MS) this.#pendingJoin = null
     else if (join && join.key === this.local.mediaKey) {
@@ -685,8 +745,12 @@ export class W2GClient extends EventEmitter {
       protocol: PROTOCOL_VERSION,
       source: this.local.source,
       nowPlaying: this.local.nowPlaying ?? null,
-      following: this.isFollowing
+      following: this.isFollowing,
+      hasVoice: true,
+      voice: { ...this.#voice.payload, link: null }
     }]
+    const voiceStates = this.voiceStates.value
+    const links = this.voiceLinks.value
     const seen = new Set([this.selfId])
     const invite = {
       offeredKey: this.#offered().offered?.key ?? null,
@@ -713,10 +777,180 @@ export class W2GClient extends EventEmitter {
         source: signal.status?.source || '',
         nowPlaying: signal.status?.nowPlaying ?? null,
         following: signal.status?.following !== false,
-        canInvite: canInvite({ ...invite, member: { isSelf: false, protocol: entry.protocol, badge, status: signal.status, joinedAt: signal.joinedAt } })
+        canInvite: canInvite({ ...invite, member: { isSelf: false, protocol: entry.protocol, badge, status: signal.status, joinedAt: signal.joinedAt } }),
+        hasVoice: !!entry.features?.includes('voice'),
+        voice: { ...(voiceStates[userId] ?? VOICE_OFF), link: links[userId] ?? null, localMuted: this.#voice.mixOf(userId).muted, volume: this.#voice.mixOf(userId).volume }
       })
     }
     return list.sort((a, b) => (Number(b.isHost) - Number(a.isHost)) || (Number(b.isSelf) - Number(a.isSelf)) || a.name.localeCompare(b.name))
+  }
+
+  // ---------------------------------------------------------------- v2.4 voice chat
+
+  /** We are in voice. */
+  get voiceJoined () {
+    return this.#voice.joined
+  }
+
+  /** "Join voice": opens the microphone (or listens only without one), then links with the members in voice. */
+  async joinVoice () {
+    if (this.#destroyed) return false
+    await this.#voice.join()
+    if (!this.#voice.joined) return false
+    this.#system(this.#voice.hasMic ? 'You joined voice' : 'You joined voice (listening only)')
+    return true
+  }
+
+  leaveVoice () {
+    if (!this.#voice.joined && !this.voice.value.starting) return false
+    this.#voice.leave()
+    this.#system('You left voice')
+    return true
+  }
+
+  setVoiceMuted (muted) {
+    this.#voice.setMuted(muted)
+  }
+
+  /** Push-to-talk key held (true) or released. */
+  setPushToTalkHeld (held) {
+    this.#voice.setHeld(held)
+  }
+
+  /**
+   * Local mute / volume (0-1) of a member's voice, only for us.
+   * @param {string} userId
+   * @param {{ muted?: boolean, volume?: number }} mix
+   */
+  setMemberVoice (userId, mix) {
+    this.#voice.setMix(String(userId), mix)
+  }
+
+  // ---------------------------------------------------------------- v2.4 shared queue
+
+  /** The queue exists: we are the host, or the host's app supports it. */
+  get queueAvailable () {
+    return this.isHost || (this.hostId != null && this.#hasFeature(this.hostId, 'queue'))
+  }
+
+  /**
+   * "Add to Watch Together queue": the host adds it at once, a member sends it to the host (a suggestion when the host
+   * asks for approval).
+   * @param {{ media: any, episode: SharedMedia['episode'], title?: string, cover?: string }} entry media: the shared media shape (session.js pickMedia)
+   * @returns {'added' | 'suggested' | 'duplicate' | null} null when there is no queue
+   */
+  addToQueue ({ media, episode, title, cover }) {
+    if (!media?.id || episode == null || !this.queueAvailable) return null
+    const key = mediaKey({ media, episode })
+    if ([...this.queue.value.items, ...this.queue.value.pending].some(item => sameQueueEntry(item, { key, media, episode }))) return 'duplicate'
+    const item = {
+      id: generateRandomHexCode(12),
+      media,
+      episode,
+      key,
+      title: (title || media.title?.userPreferred || media.title?.english || media.title?.romaji || '').slice(0, 120),
+      cover: (cover || media.coverImage?.medium || media.coverImage?.extraLarge || '').slice(0, 500),
+      addedBy: this.selfId,
+      addedByName: memberName(this.self)
+    }
+    if (this.isHost) return this.#hostQueueChange({ type: 'add', item, by: this.selfId, byName: memberName(this.self), byHost: true }) ? 'added' : 'duplicate'
+    if (!this.#sendToUser(this.hostId, new Event(EventTypes.QueueAddEvent, { item }))) return null
+    return this.queue.value.policy === 'approval' ? 'suggested' : 'added'
+  }
+
+  /** "Add next episode": the episode after the lobby media (or after the last queued one of that title). */
+  nextEpisodeOffer () {
+    return nextEpisodeTarget({ lobby: this.media, queue: this.queue.value })
+  }
+
+  /** @param {string} [title] display title of the lobby media */
+  addNextEpisode (title) {
+    const target = this.nextEpisodeOffer()
+    if (!target) return null
+    return this.addToQueue({ media: target.media, episode: target.episode, title })
+  }
+
+  /** Up-vote toggle on an item. */
+  voteQueueItem (id) {
+    const item = this.queue.value.items.find(entry => entry.id === id)
+    if (!item || !this.queueAvailable) return false
+    const up = !item.votes.includes(this.selfId)
+    if (this.isHost) return this.#hostQueueChange({ type: 'vote', id, by: this.selfId, up })
+    this.#sendToUser(this.hostId, new Event(EventTypes.QueueVoteEvent, { id, up }))
+    return true
+  }
+
+  /** The host removes any item; a member removes its own item or suggestion. */
+  removeQueueItem (id) {
+    if (this.isHost) return this.#hostQueueChange({ type: 'remove', id, by: this.selfId, byHost: true })
+    const item = [...this.queue.value.items, ...this.queue.value.pending].find(entry => entry.id === id)
+    if (!item || !sameId(item.addedBy, this.selfId)) return false
+    this.#queueCancelled.add(id)
+    this.#sendToUser(this.hostId, new Event(EventTypes.QueueRemoveEvent, { id }))
+    return true
+  }
+
+  /** Host: move an item up (-1) or down (+1). */
+  moveQueueItem (id, delta) {
+    return this.isHost && this.#hostQueueChange({ type: 'move', id, delta })
+  }
+
+  /** Host: accept or decline a suggestion. */
+  answerSuggestion (id, accepted) {
+    return this.isHost && this.#hostQueueChange({ type: 'answer', id, accepted: !!accepted })
+  }
+
+  /** Host: "Members need approval". @param {'open' | 'approval'} policy */
+  setQueuePolicy (policy) {
+    return this.isHost && this.#hostQueueChange({ type: 'policy', policy })
+  }
+
+  /** Host "Play now": the item becomes the lobby media and starts here; a countdown follows once it is loaded. */
+  playQueueItem (id) {
+    if (!this.isHost || !this.isFollowing) return false
+    const item = this.queue.value.items.find(entry => entry.id === id)
+    if (!item) return false
+    this.cancelAdvance()
+    this.#hostQueueChange({ type: 'remove', id, by: this.selfId, byHost: true })
+    const shared = { media: item.media, episode: item.episode, key: item.key }
+    this.media = { ...shared, localKey: mediaKey(item) }
+    this.#launched = { ...shared }
+    this.rejoinOffer.value = null
+    this.#pendingRejoin = null
+    this.#pendingJoin = null
+    this.#pendingQueueStart = { key: item.key, at: Date.now() }
+    this.#sendToPeers(new Event(EventTypes.MediaEvent, shared))
+    this.#system(`You started ${queueItemLabel(item)} from Up next`)
+    this.emit('media', this.media)
+    return true
+  }
+
+  /**
+   * The player reached the end of the episode. Host with a queued item: "Up next" counts down 5 s, then plays it.
+   * @returns {boolean} true when an auto-advance started
+   */
+  episodeEnded () {
+    const item = this.isHost && this.isFollowing ? this.queue.value.items[0] : null
+    if (!item || this.advance.value) return false
+    this.advance.value = { item, endsAt: Date.now() + QUEUE_ADVANCE_S * 1000 }
+    this.#advanceTimer = setTimeout(() => {
+      this.#advanceTimer = null
+      this.advanceNow()
+    }, QUEUE_ADVANCE_S * 1000)
+    return true
+  }
+
+  /** "Play now" of the auto-advance prompt (also when its countdown ends). */
+  advanceNow () {
+    const advance = this.advance.value
+    this.cancelAdvance()
+    if (advance) this.playQueueItem(advance.item.id)
+  }
+
+  cancelAdvance () {
+    clearTimeout(this.#advanceTimer)
+    this.#advanceTimer = null
+    if (this.advance.value) this.advance.value = null
   }
 
   destroy () {
@@ -729,6 +963,10 @@ export class W2GClient extends EventEmitter {
     for (const timer of this.#inviteTimers) clearTimeout(timer)
     this.#inviteTimers.clear()
     this.#presence.clear()
+    clearTimeout(this.#advanceTimer)
+    this.#unsubscribeSettings?.()
+    this.#voice.destroy()
+    voiceDuck.value = 1
     clearTimeout(this.#countdownTimer)
     for (const timer of this.#requestTimers.values()) clearTimeout(timer)
     this.#requestTimers.clear()
@@ -748,7 +986,7 @@ export class W2GClient extends EventEmitter {
   }
 
   #initPayload () {
-    return { ...this.self, client: SUPPORTS.isAndroid ? 'tsumi-android' : 'tsumi-desktop', protocol: PROTOCOL_VERSION }
+    return { ...this.self, client: SUPPORTS.isAndroid ? 'tsumi-android' : 'tsumi-desktop', protocol: PROTOCOL_VERSION, features: [...FEATURES] }
   }
 
   /**
@@ -806,8 +1044,11 @@ export class W2GClient extends EventEmitter {
     if (this.isHost) {
       this.#sendEvent(peer, new Event(EventTypes.HostEvent, { hostId: this.selfId, mode: this.mode }))
       this.#sendInitialSessionState(peer)
+      // v2.4: late joiners get the current queue.
+      this.#sendEvent(peer, new Event(EventTypes.QueueEvent, this.queue.value))
     }
     this.#sendStatus(peer)
+    this.#sendEvent(peer, new Event(EventTypes.VoiceEvent, this.#voice.payload))
     this.#ping(peer)
   }
 
@@ -829,6 +1070,7 @@ export class W2GClient extends EventEmitter {
     })
     this.#lastSeen.delete(userId)
     this.#presence.delete(userId)
+    this.#forgetVoice(userId)
     if (!this.#banned.has(userId)) this.#system(`${memberName(entry.user)} left`)
     if (sameId(userId, this.hostId)) this.#migrateHost()
   }
@@ -921,6 +1163,24 @@ export class W2GClient extends EventEmitter {
       case EventTypes.InviteEvent:
         this.#onInvite(userId, payload)
         break
+      case EventTypes.VoiceEvent:
+        this.#onVoice(userId, payload)
+        break
+      case EventTypes.VoiceSignalEvent:
+        this.#onVoiceSignal(userId, payload)
+        break
+      case EventTypes.QueueEvent:
+        this.#onQueue(userId, payload)
+        break
+      case EventTypes.QueueAddEvent:
+        if (this.isHost) this.#hostQueueChange({ type: 'add', item: payload?.item, by: userId, byName: this.nameOf(userId), byHost: false })
+        break
+      case EventTypes.QueueVoteEvent:
+        if (this.isHost && payload?.id != null) this.#hostQueueChange({ type: 'vote', id: String(payload.id), by: userId, up: payload.up === true })
+        break
+      case EventTypes.QueueRemoveEvent:
+        if (this.isHost && payload?.id != null) this.#hostQueueChange({ type: 'remove', id: String(payload.id), by: userId, byHost: false })
+        break
       default:
         debug('Ignoring unknown message type', data)
     }
@@ -944,7 +1204,9 @@ export class W2GClient extends EventEmitter {
         userId,
         // A v1 client sends no `protocol`.
         protocol: isFiniteNumber(payload.protocol) ? payload.protocol : 1,
-        client: typeof payload.client === 'string' ? payload.client : undefined
+        client: typeof payload.client === 'string' ? payload.client : undefined,
+        // v2.4: what the client can do ("voice", "queue").
+        features: normalizeFeatures(payload.features)
       }
       return peers
     })
@@ -1128,8 +1390,8 @@ export class W2GClient extends EventEmitter {
     // startAt is on the sender's clock: count from the reception, minus half the trip.
     const rtt = this.signals.value[senderId]?.rtt
     const endsAt = Date.now() + seconds * 1000 - (isFiniteNumber(rtt) ? rtt / 2 : 0)
-    // Watching on our own: not applied.
-    if (this.isFollowing) this.#runCountdown({ time: payload.time, seconds, endsAt, by: senderId })
+    // Watching on our own: not applied. v2.4: nor on another episode than the lobby's.
+    if (this.isFollowing && appliesCountdown({ localKey: this.local.mediaKey, lobbyKey: this.media?.key })) this.#runCountdown({ time: payload.time, seconds, endsAt, by: senderId })
     this.#system(`${this.nameOf(senderId)} started a countdown`)
   }
 
@@ -1149,6 +1411,13 @@ export class W2GClient extends EventEmitter {
         for (const timer of this.#requestTimers.values()) clearTimeout(timer)
         this.#requestTimers.clear()
         this.requests.value = []
+        this.cancelAdvance()
+        this.#pendingQueueStart = null
+      }
+      // v2.4: a new host takes over its copy of the queue and shares it at once.
+      if (sameId(next.hostId, this.selfId) && !next.tentative) {
+        this.#queueKnown = true
+        this.#sendToPeers(new Event(EventTypes.QueueEvent, this.queue.value))
       }
     }
     if (previous.mode !== next.mode) this.#system(next.mode === 'host' ? 'Only the host controls playback now' : 'Everyone can control playback now')
@@ -1264,6 +1533,7 @@ export class W2GClient extends EventEmitter {
       return signals
     })
     this.#presence.delete(userId)
+    this.#forgetVoice(userId)
     this.#system(`${memberName(user ?? { id: userId })} was removed from the lobby`)
   }
 
@@ -1412,6 +1682,146 @@ export class W2GClient extends EventEmitter {
     this.invites.update(list => list.filter(item => item.from !== from))
     this.emit('inviteRemoved', from)
     return true
+  }
+
+  // ---------------------------------------------------------------- v2.4 voice and queue internals
+
+  #hasFeature (userId, feature) {
+    return Object.values(this.peers.value).some(entry => entry.peer && sameId(entry.userId, userId) && entry.features?.includes(feature))
+  }
+
+  /** Sends an event to one member (its first open channel). */
+  #sendToUser (userId, event) {
+    if (userId == null) return false
+    for (const [peerId, entry] of Object.entries(this.peers.value)) {
+      const channel = this.#channels.get(peerId)
+      if (!entry.peer || !channel || !sameId(entry.userId, userId) || this.#bannedPeers.has(peerId)) continue
+      this.#sendEvent(channel, event)
+      return true
+    }
+    return false
+  }
+
+  #memberInVoice (userId) {
+    return !!this.voiceStates.value[userId]?.joined && this.#hasFeature(userId, 'voice') && this.#hasUser(userId)
+  }
+
+  /** Our voice state changed: stores, `voice` to everyone when it differs, links, ducking. */
+  #onVoiceEngineState () {
+    const engine = this.#voice
+    const payload = engine.payload
+    this.voice.value = {
+      joined: engine.joined,
+      starting: engine.starting,
+      hasMic: engine.hasMic,
+      muted: engine.muted,
+      pushToTalk: engine.pushToTalk,
+      held: engine.held,
+      transmitting: engine.transmitting,
+      speaking: payload.speaking,
+      error: engine.error
+    }
+    const previous = this.#lastVoicePayload
+    if (previous.joined !== payload.joined || previous.muted !== payload.muted || previous.speaking !== payload.speaking) {
+      this.#lastVoicePayload = payload
+      this.#sendToPeers(new Event(EventTypes.VoiceEvent, payload))
+    }
+    this.peers.update(peers => peers)
+    this.#syncVoiceLinks()
+    this.#updateDuck()
+  }
+
+  #onVoice (userId, payload) {
+    if (sameId(userId, this.selfId)) return
+    const state = normalizeVoice(payload)
+    const previous = this.voiceStates.value[userId]
+    this.voiceStates.update(states => {
+      states[userId] = state
+      return states
+    })
+    if (state.joined !== !!previous?.joined && (previous || state.joined)) {
+      this.#system(`${this.nameOf(userId)} ${state.joined ? 'joined' : 'left'} voice`)
+    }
+    this.#syncVoiceLinks()
+    this.#updateDuck()
+  }
+
+  #onVoiceSignal (userId, payload) {
+    if (payload?.sdp?.type === 'offer' && !acceptsVoiceOffer({ selfJoined: this.#voice.joined, memberJoined: this.#memberInVoice(userId), selfId: this.selfId, senderId: userId })) return
+    this.#voice.signal(userId, payload)
+  }
+
+  /** Creates the links we offer and closes the ones nobody needs anymore. */
+  #syncVoiceLinks () {
+    const members = new Set(this.#peerSummaries().map(peer => peer.userId))
+    for (const userId of members) {
+      const action = voiceLinkAction({
+        selfJoined: this.#voice.joined,
+        memberJoined: !!this.voiceStates.value[userId]?.joined,
+        memberHasVoice: this.#hasFeature(userId, 'voice'),
+        hasLink: this.#voice.hasLink(userId),
+        selfOffers: voiceOffers(this.selfId, userId)
+      })
+      if (action === 'offer') this.#voice.connect(userId)
+      else if (action === 'close') this.#voice.close(userId)
+    }
+    for (const userId of Object.keys(this.#voice.linkStates())) if (!members.has(userId)) this.#voice.close(userId)
+  }
+
+  /** Lowers the video while a member we hear speaks (setting `w2gVoiceDucking`). */
+  #updateDuck () {
+    if (this.#destroyed) return
+    const states = this.voiceStates.value
+    const members = this.#peerSummaries().map(({ userId }) => {
+      const mix = this.#voice.mixOf(userId)
+      return { ...(states[userId] ?? VOICE_OFF), localMuted: mix.muted, volume: mix.volume }
+    })
+    voiceDuck.value = duckLevel({ enabled: settings.value.w2gVoiceDucking !== false, selfJoined: this.#voice.joined, members })
+  }
+
+  /** A member left the lobby or was kicked: no more voice with it. */
+  #forgetVoice (userId) {
+    this.#voice.forget(userId)
+    if (this.voiceStates.value[userId]) {
+      this.voiceStates.update(states => {
+        delete states[userId]
+        return states
+      })
+    }
+    this.#updateDuck()
+  }
+
+  #onQueue (senderId, payload) {
+    if (this.isHost || !acceptsQueue({ senderId, hostId: this.hostId, tentative: this.lobby.value.tentative })) return
+    const next = normalizeQueue(payload)
+    if (next) this.#applyQueue(next)
+  }
+
+  /**
+   * Host: one change of the queue, then `queue` to everyone.
+   * @param {Parameters<typeof queueReduce>[1]} change
+   */
+  #hostQueueChange (change) {
+    if (!this.isHost) return false
+    const next = queueReduce(this.queue.value, change)
+    if (!next) return false
+    this.#applyQueue(next)
+    this.#sendToPeers(new Event(EventTypes.QueueEvent, next))
+    return true
+  }
+
+  /** New queue (ours as host, or the host's): chat lines for what changed, host prompt for suggestions. */
+  #applyQueue (next) {
+    const previous = this.#queueKnown ? this.queue.value : null
+    this.#queueKnown = true
+    this.queue.value = next
+    for (const change of queueChanges(previous, next, { selfId: this.selfId, cancelled: this.#queueCancelled })) {
+      const text = describeQueueChange(change, this.selfId)
+      this.#system(text)
+      if (change.kind === 'suggested' && this.isHost) this.emit('notice', { text, by: change.item.addedBy })
+    }
+    const advance = this.advance.value
+    if (advance && !next.items.some(item => item.id === advance.item.id)) this.cancelAdvance()
   }
 
   /** @param {ChatEntry} entry */

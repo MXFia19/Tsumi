@@ -26,7 +26,14 @@ export const EventTypes = {
   ReactionEvent: 'reaction',
   CountdownEvent: 'countdown',
   // v2.1
-  InviteEvent: 'invite'
+  InviteEvent: 'invite',
+  // v2.4
+  VoiceEvent: 'voice',
+  VoiceSignalEvent: 'voiceSignal',
+  QueueEvent: 'queue',
+  QueueAddEvent: 'queueAdd',
+  QueueVoteEvent: 'queueVote',
+  QueueRemoveEvent: 'queueRemove'
 }
 
 /** Type of the chat lines created locally (joins, leaves, actions, requests). Never sent. */

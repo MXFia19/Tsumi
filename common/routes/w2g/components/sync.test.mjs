@@ -8,7 +8,11 @@ import {
   formatSource, parseMediaKey, formatEpisode, episodeLabelOf, switchLabel, createPresence, presenceOnStatus, presenceOnTick,
   describePresence, canInvite, acceptsInvite, inviteTarget, PRESENCE_DEBOUNCE_MS, LOST_ANNOUNCE_MS,
   normalizeNowPlaying, nowPlayingLabel, episodeLabelFor, pickFollowingHost, electFollowingHost, followBackAction,
-  lobbyReference, canJoinPlayback, offeredMedia, invitePosition, autoStartsMedia
+  lobbyReference, canJoinPlayback, offeredMedia, invitePosition, autoStartsMedia,
+  appliesCountdown, normalizeFeatures, normalizeVoice, voiceOffers, voiceLinkAction, acceptsVoiceOffer, voiceRetryDelay,
+  voiceTransmitting, speakingStep, duckLevel, VOICE_DUCK_LEVEL, VOICE_SPEAKING_HOLD_MS, VOICE_MAX_RETRIES,
+  emptyQueue, normalizeQueueEpisode, normalizeQueueItem, normalizeQueue, queueReduce, queueChanges, queueItemLabel,
+  describeQueueChange, nextEpisodeOf, nextEpisodeTarget, acceptsQueue, QUEUE_MAX_ITEMS, QUEUE_MAX_PENDING, sameQueueEntry
 } from './sync.js'
 
 let passed = 0
@@ -582,6 +586,227 @@ test('autoStartsMedia: never for newcomers or idle members, only for followers a
   assert.equal(autoStartsMedia({ following: true, localState: 'playing', senderJoinedAt: 58_000, now: 60_000 }), false)
   assert.equal(autoStartsMedia({ following: true, localState: 'idle', senderJoinedAt: 0, now: 60_000 }), false)
   assert.equal(autoStartsMedia({ following: false, localState: 'playing', senderJoinedAt: 0, now: 60_000 }), false)
+})
+
+// ---------------------------------------------------------------- v2.4
+
+test('appliesCountdown: only on the lobby media, or while playing nothing', () => {
+  assert.equal(appliesCountdown({ localKey: '1:5', lobbyKey: '1:5' }), true)
+  assert.equal(appliesCountdown({ localKey: '', lobbyKey: '1:5' }), true)
+  assert.equal(appliesCountdown({ localKey: '1:4', lobbyKey: null }), true)
+  assert.equal(appliesCountdown({ localKey: '1:4', lobbyKey: '1:5' }), false)
+})
+
+test('normalizeFeatures keeps distinct short strings', () => {
+  assert.deepEqual(normalizeFeatures(['voice', 'queue', 'voice', 3, '', 'x'.repeat(40)]), ['voice', 'queue'])
+  assert.deepEqual(normalizeFeatures(undefined), [])
+  assert.deepEqual(normalizeFeatures('voice'), [])
+})
+
+test('normalizeVoice: speaking only when joined and not muted', () => {
+  assert.deepEqual(normalizeVoice({ joined: true, muted: false, speaking: true }), { joined: true, muted: false, speaking: true })
+  assert.deepEqual(normalizeVoice({ joined: true, muted: true, speaking: true }), { joined: true, muted: true, speaking: false })
+  assert.deepEqual(normalizeVoice({ joined: false, speaking: true }), { joined: false, muted: false, speaking: false })
+  assert.deepEqual(normalizeVoice(null), { joined: false, muted: false, speaking: false })
+  assert.deepEqual(normalizeVoice({ joined: 'yes' }), { joined: false, muted: false, speaking: false })
+})
+
+test('voiceOffers: the smaller userId offers (string comparison)', () => {
+  assert.equal(voiceOffers('123', '45'), true)
+  assert.equal(voiceOffers('45', '123'), false)
+  assert.equal(voiceOffers(7, 'a1'), true)
+})
+
+test('voiceLinkAction', () => {
+  const base = { selfJoined: true, memberJoined: true, memberHasVoice: true, hasLink: false, selfOffers: true }
+  assert.equal(voiceLinkAction(base), 'offer')
+  assert.equal(voiceLinkAction({ ...base, selfOffers: false }), 'wait')
+  assert.equal(voiceLinkAction({ ...base, hasLink: true }), 'none')
+  assert.equal(voiceLinkAction({ ...base, memberJoined: false, hasLink: true }), 'close')
+  assert.equal(voiceLinkAction({ ...base, selfJoined: false, hasLink: true }), 'close')
+  assert.equal(voiceLinkAction({ ...base, memberHasVoice: false }), 'none')
+})
+
+test('acceptsVoiceOffer: both in voice and the sender is the offerer', () => {
+  assert.equal(acceptsVoiceOffer({ selfJoined: true, memberJoined: true, selfId: 'b', senderId: 'a' }), true)
+  assert.equal(acceptsVoiceOffer({ selfJoined: true, memberJoined: true, selfId: 'a', senderId: 'b' }), false)
+  assert.equal(acceptsVoiceOffer({ selfJoined: false, memberJoined: true, selfId: 'b', senderId: 'a' }), false)
+  assert.equal(acceptsVoiceOffer({ selfJoined: true, memberJoined: false, selfId: 'b', senderId: 'a' }), false)
+})
+
+test('voiceRetryDelay: five retries in a row, then gives up', () => {
+  assert.equal(voiceRetryDelay(1), 3_000)
+  assert.equal(voiceRetryDelay(VOICE_MAX_RETRIES), 3_000)
+  assert.equal(voiceRetryDelay(VOICE_MAX_RETRIES + 1), null)
+})
+
+test('voiceTransmitting: push-to-talk needs the key held', () => {
+  const base = { joined: true, hasMic: true, muted: false, pushToTalk: false, held: false }
+  assert.equal(voiceTransmitting(base), true)
+  assert.equal(voiceTransmitting({ ...base, muted: true }), false)
+  assert.equal(voiceTransmitting({ ...base, hasMic: false }), false)
+  assert.equal(voiceTransmitting({ ...base, joined: false }), false)
+  assert.equal(voiceTransmitting({ ...base, pushToTalk: true }), false)
+  assert.equal(voiceTransmitting({ ...base, pushToTalk: true, held: true }), true)
+})
+
+test('speakingStep: on at once, off after 600 ms of silence, never while not transmitting', () => {
+  let step = speakingStep(null, { level: 0.2, transmitting: true, now: 1_000 })
+  assert.equal(step.speaking, true)
+  step = speakingStep(step, { level: 0.01, transmitting: true, now: 1_000 + VOICE_SPEAKING_HOLD_MS - 1 })
+  assert.equal(step.speaking, true)
+  step = speakingStep(step, { level: 0.01, transmitting: true, now: 1_000 + VOICE_SPEAKING_HOLD_MS })
+  assert.equal(step.speaking, false)
+  step = speakingStep({ lastLoudAt: 900 }, { level: 0.5, transmitting: false, now: 1_000 })
+  assert.equal(step.speaking, false)
+  assert.equal(speakingStep(null, { level: null, transmitting: true, now: 0 }).speaking, false)
+})
+
+test('duckLevel: only in voice, for a member we hear speaking', () => {
+  const speaker = { joined: true, speaking: true }
+  assert.equal(duckLevel({ enabled: true, selfJoined: true, members: [speaker] }), VOICE_DUCK_LEVEL)
+  assert.equal(duckLevel({ enabled: false, selfJoined: true, members: [speaker] }), 1)
+  assert.equal(duckLevel({ enabled: true, selfJoined: false, members: [speaker] }), 1)
+  assert.equal(duckLevel({ enabled: true, selfJoined: true, members: [{ ...speaker, localMuted: true }] }), 1)
+  assert.equal(duckLevel({ enabled: true, selfJoined: true, members: [{ ...speaker, volume: 0 }] }), 1)
+  assert.equal(duckLevel({ enabled: true, selfJoined: true, members: [{ joined: true, speaking: false }] }), 1)
+})
+
+const qMedia = (id = 21, over = {}) => ({ id, title: { userPreferred: 'One Piece' }, format: 'TV', episodes: 1100, ...over })
+const qItem = (id, over = {}) => ({ id, media: qMedia(), episode: 5, key: `21:${id}`, title: 'One Piece', cover: '', addedBy: 'a', addedByName: 'Alice', votes: [], ...over })
+
+test('normalizeQueueEpisode / normalizeQueueItem', () => {
+  assert.equal(normalizeQueueEpisode(5), 5)
+  assert.equal(normalizeQueueEpisode('7'), 7)
+  assert.deepEqual(normalizeQueueEpisode({ number: 13, season: 2, localEpisode: 1, extra: true }), { number: 13, season: 2, localEpisode: 1 })
+  assert.equal(normalizeQueueEpisode({ season: 2 }), null)
+  assert.equal(normalizeQueueEpisode('x'), null)
+  const item = normalizeQueueItem({ ...qItem('q1'), votes: ['b', 'b', 3], title: '  T  ' })
+  assert.deepEqual(item.votes, ['b', '3'])
+  assert.equal(item.title, 'T')
+  assert.equal(normalizeQueueItem({ ...qItem('q1'), media: { title: 'no id' } }), null)
+  assert.equal(normalizeQueueItem({ ...qItem('q1'), key: '' }), null)
+  assert.equal(normalizeQueueItem({ ...qItem(''), id: '' }), null)
+  assert.equal(normalizeQueueItem({ ...qItem('q1'), episode: null }), null)
+})
+
+test('normalizeQueue drops duplicate ids and bad items, defaults the policy', () => {
+  const queue = normalizeQueue({ items: [qItem('a'), qItem('a'), { id: 'x' }], pending: [qItem('b')], policy: 'weird', rev: 4 })
+  assert.deepEqual(queue.items.map(item => item.id), ['a'])
+  assert.deepEqual(queue.pending.map(item => item.id), ['b'])
+  assert.equal(queue.policy, 'open')
+  assert.equal(queue.rev, 4)
+  assert.equal(normalizeQueue('nope'), null)
+  const many = normalizeQueue({ items: Array.from({ length: QUEUE_MAX_ITEMS + 5 }, (_, index) => qItem(`i${index}`)), policy: 'approval' })
+  assert.equal(many.items.length, QUEUE_MAX_ITEMS)
+  assert.equal(many.policy, 'approval')
+})
+
+test('queueReduce add: open policy, approval policy, host bypass, duplicates', () => {
+  let queue = queueReduce(emptyQueue(), { type: 'add', item: qItem('a', { addedBy: 'spoofed' }), by: 'b', byName: 'Bob', byHost: false })
+  assert.equal(queue.items.length, 1)
+  assert.equal(queue.items[0].addedBy, 'b')
+  assert.equal(queue.items[0].addedByName, 'Bob')
+  assert.equal(queue.rev, 1)
+  // Same key again: ignored.
+  assert.equal(queueReduce(queue, { type: 'add', item: qItem('z', { key: '21:a' }), by: 'c', byHost: false }), null)
+  queue = queueReduce(queue, { type: 'policy', policy: 'approval' })
+  assert.equal(queue.policy, 'approval')
+  queue = queueReduce(queue, { type: 'add', item: qItem('b', { episode: 6 }), by: 'c', byHost: false })
+  assert.deepEqual(queue.pending.map(item => item.id), ['b'])
+  // A suggestion with the same key is a duplicate too.
+  assert.equal(queueReduce(queue, { type: 'add', item: qItem('y', { key: '21:b' }), by: 'd', byHost: false }), null)
+  queue = queueReduce(queue, { type: 'add', item: qItem('c', { episode: 7 }), by: 'host', byHost: true })
+  assert.deepEqual(queue.items.map(item => item.id), ['a', 'c'])
+  assert.equal(queueReduce(queue, { type: 'policy', policy: 'approval' }), null)
+})
+
+test('queueReduce add respects the limits', () => {
+  const full = { ...emptyQueue(), items: Array.from({ length: QUEUE_MAX_ITEMS }, (_, index) => qItem(`i${index}`)) }
+  assert.equal(queueReduce(full, { type: 'add', item: qItem('new', { episode: 99 }), by: 'b', byHost: true }), null)
+  const fullPending = { ...emptyQueue(), policy: 'approval', pending: Array.from({ length: QUEUE_MAX_PENDING }, (_, index) => qItem(`p${index}`)) }
+  assert.equal(queueReduce(fullPending, { type: 'add', item: qItem('new', { episode: 99 }), by: 'b', byHost: false }), null)
+})
+
+test('queueReduce vote toggles one vote per member', () => {
+  let queue = { ...emptyQueue(), items: [qItem('a')] }
+  queue = queueReduce(queue, { type: 'vote', id: 'a', by: 'b', up: true })
+  assert.deepEqual(queue.items[0].votes, ['b'])
+  assert.equal(queueReduce(queue, { type: 'vote', id: 'a', by: 'b', up: true }), null)
+  queue = queueReduce(queue, { type: 'vote', id: 'a', by: 'b', up: false })
+  assert.deepEqual(queue.items[0].votes, [])
+  assert.equal(queueReduce(queue, { type: 'vote', id: 'missing', by: 'b', up: true }), null)
+})
+
+test('queueReduce remove: host or the member who added it', () => {
+  const queue = { ...emptyQueue(), items: [qItem('a', { addedBy: 'b' })], pending: [qItem('p', { addedBy: 'c' })] }
+  assert.equal(queueReduce(queue, { type: 'remove', id: 'a', by: 'c', byHost: false }), null)
+  assert.equal(queueReduce(queue, { type: 'remove', id: 'a', by: 'b', byHost: false }).items.length, 0)
+  assert.equal(queueReduce(queue, { type: 'remove', id: 'a', by: 'host', byHost: true }).items.length, 0)
+  assert.equal(queueReduce(queue, { type: 'remove', id: 'p', by: 'c', byHost: false }).pending.length, 0)
+})
+
+test('queueReduce move clamps, answer accepts to the end or declines', () => {
+  let queue = { ...emptyQueue(), items: [qItem('a'), qItem('b'), qItem('c')], pending: [qItem('p'), qItem('q')] }
+  assert.deepEqual(queueReduce(queue, { type: 'move', id: 'c', delta: -1 }).items.map(item => item.id), ['a', 'c', 'b'])
+  assert.deepEqual(queueReduce(queue, { type: 'move', id: 'a', delta: 10 }).items.map(item => item.id), ['b', 'c', 'a'])
+  assert.equal(queueReduce(queue, { type: 'move', id: 'a', delta: -1 }), null)
+  queue = queueReduce(queue, { type: 'answer', id: 'p', accepted: true })
+  assert.deepEqual(queue.items.map(item => item.id), ['a', 'b', 'c', 'p'])
+  assert.deepEqual(queue.pending.map(item => item.id), ['q'])
+  queue = queueReduce(queue, { type: 'answer', id: 'q', accepted: false })
+  assert.equal(queue.pending.length, 0)
+  assert.equal(queue.items.length, 4)
+  assert.equal(queueReduce(queue, { type: 'answer', id: 'q', accepted: true }), null)
+})
+
+test('queueChanges: added, suggested, declined (not our own cancellations), nothing for the first queue', () => {
+  const previous = { ...emptyQueue(), items: [qItem('a')], pending: [qItem('mine', { addedBy: 'me' }), qItem('cancel', { addedBy: 'me' }), qItem('acc', { addedBy: 'me' })] }
+  const next = { ...emptyQueue(), items: [qItem('a'), qItem('b'), qItem('acc', { addedBy: 'me' })], pending: [qItem('s')] }
+  const changes = queueChanges(previous, next, { selfId: 'me', cancelled: ['cancel'] })
+  assert.deepEqual(changes.map(change => `${change.kind}:${change.item.id}`), ['added:b', 'added:acc', 'suggested:s', 'declined:mine'])
+  assert.deepEqual(queueChanges(null, next, { selfId: 'me' }), [])
+})
+
+test('queue labels and chat lines', () => {
+  assert.equal(queueItemLabel(qItem('a')), 'One Piece · Episode 5')
+  assert.equal(queueItemLabel(qItem('m', { media: qMedia(5, { format: 'MOVIE', episodes: 1 }), episode: 1, title: 'Your Name' })), 'Your Name · Movie')
+  assert.equal(queueItemLabel(qItem('s', { episode: { number: 14, season: 2, localEpisode: 2 } })), 'One Piece · S2 E2')
+  assert.equal(describeQueueChange({ kind: 'added', item: qItem('a') }, 'me'), 'Alice added One Piece · Episode 5 to Up next')
+  assert.equal(describeQueueChange({ kind: 'added', item: qItem('a', { addedBy: 'me' }) }, 'me'), 'You added One Piece · Episode 5 to Up next')
+  assert.equal(describeQueueChange({ kind: 'suggested', item: qItem('a') }, 'me'), 'Alice suggested One Piece · Episode 5')
+  assert.equal(describeQueueChange({ kind: 'declined', item: qItem('a') }, 'me'), 'The host declined your suggestion: One Piece · Episode 5')
+})
+
+test('nextEpisodeOf / nextEpisodeTarget', () => {
+  assert.equal(nextEpisodeOf(5, 12), 6)
+  assert.equal(nextEpisodeOf(12, 12), null)
+  assert.equal(nextEpisodeOf(12, null), 13)
+  assert.deepEqual(nextEpisodeOf({ number: 14, season: 2, localEpisode: 2 }), { number: 15, season: 2, localEpisode: 3 })
+  const lobby = { media: qMedia(), episode: 5 }
+  assert.deepEqual(nextEpisodeTarget({ lobby, queue: emptyQueue() }).episode, 6)
+  const queue = { ...emptyQueue(), items: [qItem('a', { episode: 8 }), qItem('b', { media: qMedia(99), episode: 20 })], pending: [qItem('p', { episode: 7 })] }
+  assert.deepEqual(nextEpisodeTarget({ lobby, queue }).episode, 9)
+  assert.equal(nextEpisodeTarget({ lobby: { media: qMedia(5, { format: 'MOVIE', episodes: 1 }), episode: 1 }, queue: emptyQueue() }), null)
+  assert.equal(nextEpisodeTarget({ lobby: null, queue: emptyQueue() }), null)
+})
+
+test('sameQueueEntry: same key, or same media id and episode written differently by each app', () => {
+  assert.equal(sameQueueEntry(qItem('a', { key: '21:5' }), qItem('b', { key: '21::5', episode: { number: 5 } })), true)
+  assert.equal(sameQueueEntry(qItem('a', { key: 'x' }), qItem('b', { key: 'y', episode: 6 })), false)
+  assert.equal(sameQueueEntry(qItem('a', { key: 'x', episode: { number: 14, season: 2, localEpisode: 2 } }), qItem('b', { key: 'y', episode: { number: 14, season: 2, localEpisode: 2 } })), true)
+  assert.equal(sameQueueEntry(qItem('a', { key: 'x', episode: { number: 2, season: 1, localEpisode: 2 } }), qItem('b', { key: 'y', episode: { number: 14, season: 2, localEpisode: 2 } })), false)
+  assert.equal(sameQueueEntry(qItem('a', { key: 'x' }), qItem('b', { key: 'y', media: qMedia(99) })), false)
+  // The host ignores a duplicate added from another app.
+  const queue = queueReduce(emptyQueue(), { type: 'add', item: qItem('a', { key: '21:5' }), by: 'b', byHost: false })
+  assert.equal(queueReduce(queue, { type: 'add', item: qItem('b', { key: '21::5', episode: { number: 5 } }), by: 'c', byHost: false }), null)
+})
+
+test('acceptsQueue: from the host, or anyone without a confirmed host', () => {
+  assert.equal(acceptsQueue({ senderId: 'h', hostId: 'h', tentative: false }), true)
+  assert.equal(acceptsQueue({ senderId: 'x', hostId: 'h', tentative: false }), false)
+  assert.equal(acceptsQueue({ senderId: 'x', hostId: 'h', tentative: true }), true)
+  assert.equal(acceptsQueue({ senderId: 'x', hostId: null, tentative: false }), true)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

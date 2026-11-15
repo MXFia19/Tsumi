@@ -239,6 +239,12 @@ struct BrowseEpisodeRow: View {
           .font(.caption)
           .foregroundStyle(BrowsePalette.muted)
       }
+      // Watch Together "Add to Watch Together queue".
+      if !unreleased {
+        W2GQueueAddButton {
+          WatchTogetherClient.shared.addToQueue(media: media, episode: episode.ref)
+        }
+      }
     }
   }
 
