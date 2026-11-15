@@ -3,6 +3,7 @@
   import FontSelect from 'simple-font-select'
   import ClampedNumber from '@/components/inputs/ClampedNumber.svelte'
   import SettingCard from '@/routes/settings/components/SettingCard.svelte'
+  import SyncSettings from '@/routes/settings/components/SyncSettings.svelte'
   import { SUPPORTS } from '@/modules/support.js'
   import { click } from '@/modules/click.js'
   import { IPC } from '@/modules/bridge.js'
@@ -163,6 +164,8 @@
     <label for='player-w2g-autosync'>{settings.w2gAutoSync ? 'On' : 'Off'}</label>
   </div>
 </SettingCard>
+
+<SyncSettings bind:settings />
 
 <h4 class='mb-10 font-weight-bold'>External Player Settings</h4>
 <SettingCard title='Enable External Player' description='Tells Tsumi to open a custom user-picked external video player to play video, instead of using the built-in one.'>

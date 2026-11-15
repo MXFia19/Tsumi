@@ -16,6 +16,7 @@ try {
 
 import { development, getWindowState, saveWindowState, getDefaultBounds } from './util.js'
 import Discord from './discord.js'
+import Trakt from './trakt.js'
 import Protocol from './protocol.js'
 import Updater from './updater.js'
 import Dialog from './dialog.js'
@@ -62,6 +63,7 @@ export default class App {
   })
 
   discord = new Discord(this.mainWindow)
+  trakt = new Trakt(this.mainWindow)
   protocol = new Protocol(this.mainWindow)
   updater = new Updater(this.mainWindow)
   dialog = new Dialog()
@@ -281,6 +283,7 @@ export default class App {
     this.updater.destroyed = true
     this.close = true
     this.mainWindow.hide()
+    await this.trakt.beforeQuit() // last playback position (AniList note, Trakt stop)
     this.mainWindow.webContents?.closeDevTools?.()
     this.tray?.destroy()
     this.discord.destroy()

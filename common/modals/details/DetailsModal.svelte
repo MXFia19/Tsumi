@@ -17,6 +17,7 @@
   import SmartImage from '@/components/visual/SmartImage.svelte'
   import AudioLabel from '@/components/AudioLabel.svelte'
   import Following from '@/modals/details/components/Following.svelte'
+  import RemoteResume from '@/modals/details/components/RemoteResume.svelte'
   import { IPC } from '@/modules/bridge.js'
   import SmallCard from '@/components/cards/SmallCard.svelte'
   import SmallCardSk from '@/components/skeletons/SmallCardSk.svelte'
@@ -590,6 +591,7 @@
                     </button>
                   </div>
                 </div>
+                <RemoteResume media={staticMedia} />
                 <Following media={staticMedia} />
               </div>
             </div>

@@ -99,6 +99,7 @@ mediaListEntry {
   progress,
   repeat,
   status,
+  notes,
   customLists(asArray: true),
   score(format: POINT_10),
   updatedAt,
