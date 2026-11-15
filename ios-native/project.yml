@@ -22,6 +22,8 @@ targets:
     platform: iOS
     sources:
       - path: Tsumi
+      # Snapshot model / App Group lookup / Live Activity attributes, also compiled into TsumiWidgets.
+      - path: Shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.tsumi.app
@@ -37,6 +39,8 @@ targets:
         # header also includes discordpp.h, which is C++.
         SWIFT_INCLUDE_PATHS: "$(inherited) $(PROJECT_DIR)/Vendor/CDiscord"
     dependencies:
+      # Home screen / lock screen widgets and the countdown Live Activity, embedded in PlugIns/.
+      - target: TsumiWidgets
       - package: WebRTC
         product: WebRTC
       # Discord Social SDK (rich presence), linked and embedded for its symbols only. Proprietary: not in the
@@ -44,3 +48,23 @@ targets:
       - framework: Vendor/discord_partner_sdk.xcframework
         embed: true
         codeSign: true
+  # WidgetKit extension: Continue Watching, Next Episode (home + lock screen) and the episode countdown Live
+  # Activity. Reads the snapshot the app writes into the App Group container (resolved at runtime, see
+  # Shared/TsumiSharedContainer.swift), or a user's public AniList list when there is no shared container.
+  TsumiWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: TsumiWidgets
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.tsumi.app.widgets
+        PRODUCT_NAME: TsumiWidgets
+        INFOPLIST_FILE: TsumiWidgets/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        ENABLE_PREVIEWS: NO
+        CODE_SIGNING_ALLOWED: NO

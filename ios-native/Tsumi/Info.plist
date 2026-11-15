@@ -46,6 +46,8 @@
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Watch Together connects directly to the other people in your lobby, including devices on the same network.</string>
 	<key>NSAppTransportSecurity</key>

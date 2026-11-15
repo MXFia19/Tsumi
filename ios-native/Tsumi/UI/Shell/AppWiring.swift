@@ -184,6 +184,8 @@ enum ShellLaunch {
     started = true
     AppWiring.configure()
     Services.shared.start()
+    // Home screen widgets and lock screen countdowns (Widgets/TsumiWidgetBridge.swift).
+    TsumiWidgetBridge.start()
     _ = ExtensionManager.shared
     ShellConnectionMonitor.shared.start()
   }
@@ -205,7 +207,9 @@ enum ShellLifecycle {
       WatchTogetherClient.shared.appBecameActive()
       // Same for the Discord connection (rich presence).
       DiscordPresence.shared.appBecameActive()
+      TsumiWidgetBridge.appBecameActive()
     case .background:
+      TsumiWidgetBridge.appEnteredBackground()
       // Delivers the queued notifications before the app is suspended (15 s debounce otherwise).
       AppNotificationsService.shared.flush()
       // Notification checks while the app is closed (the desktop tray keeps polling).
@@ -276,6 +280,8 @@ enum ShellBackgroundRefresh {
       // Let the notifications dispatched by the checks reach the queue, then deliver them now.
       try? await Task.sleep(nanoseconds: 500_000_000)
       await AppNotificationsService.shared.flushAndWait()
+      // Widget snapshot + timelines, and the end of aired lock screen countdowns.
+      await TsumiWidgetBridge.backgroundRefresh()
       complete(!Task.isCancelled)
     }
     task.expirationHandler = {

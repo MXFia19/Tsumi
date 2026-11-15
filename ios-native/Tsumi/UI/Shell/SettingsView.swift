@@ -47,6 +47,11 @@ struct SettingsView: View {
         NavigationLink(value: ShellSettingsRoute.app) {
           Label("App", systemImage: "square.grid.2x2")
         }
+        NavigationLink {
+          ShellWidgetsSettingsView()
+        } label: {
+          Label("Widgets", systemImage: "square.text.square")
+        }
       }
       Section {
         Text("Restart may be required for some settings to take effect.")
