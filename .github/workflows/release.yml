@@ -1,0 +1,183 @@
+name: Release
+# Builds the Windows installer and the iOS IPA (main.yml and ios-native.yml, called as reusable workflows) and
+# publishes them as the GitHub Release of a tag, marked as the latest release:
+# - Windows: the NSIS installer + latest.yml + .blockmap. electron-updater (electron/src/main/updater.js) reads
+#   latest.yml from the latest release of this repository.
+# - iOS: Tsumi.ipa (stable name: https://github.com/MXFia19/Tsumi/releases/latest/download/Tsumi.ipa), then
+#   docs/source.json (Feather / AltStore source on GitHub Pages) gets the new version, committed to main.
+#
+# Release: bump the version (electron/package.json, ios-native/project.yml), push it, then push a tag "vX.Y.Z" with
+# the same version: git tag v1.2.3 && git push perso v1.2.3
+# Test: Actions > Release > Run workflow with "draft" checked creates a draft release (no tag is created until a
+# draft is published, and docs/source.json is not committed). Delete the draft afterwards.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag of the release (vX.Y.Z). For a draft, the tag is only created if the draft is published.'
+        type: string
+        required: true
+        default: 'v0.0.0-test'
+      draft:
+        description: 'Draft (test run): build and upload to a draft release, without updating docs/source.json'
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    name: Check the version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      draft: ${{ steps.version.outputs.draft }}
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v6
+      # A published release must have the version of the app: electron-updater compares the version written in
+      # latest.yml (electron/package.json) with the installed one, and the iOS app compares the tag with its
+      # CFBundleShortVersionString (the IPA is built with MARKETING_VERSION = this version).
+      - name: Check the tag against the app version
+        id: version
+        env:
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          DRAFT: ${{ github.event_name == 'workflow_dispatch' && inputs.draft }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::Invalid tag: $TAG"
+            exit 1
+          fi
+          app_version=$(node -p "require('./electron/package.json').version")
+          ios_version=$(sed -n 's/^ *MARKETING_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' ios-native/project.yml | head -n 1)
+          draft=false
+          if [ "$DRAFT" = true ]; then draft=true; fi
+          version="${TAG#v}"
+          if [ "$version" != "$app_version" ]; then
+            if [ "$draft" = true ]; then
+              echo "::warning::Draft $TAG: the apps are built as version $app_version (electron/package.json)"
+              version="$app_version"
+            else
+              echo "::error::Tag $TAG does not match the version of electron/package.json ($app_version). Bump the version first."
+              exit 1
+            fi
+          fi
+          if [ "$ios_version" != "$version" ]; then
+            echo "::warning::ios-native/project.yml has MARKETING_VERSION $ios_version: the IPA is built as $version"
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "draft=$draft"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release $TAG, version $version, draft: $draft"
+
+  windows:
+    name: Windows
+    needs: prepare
+    uses: ./.github/workflows/main.yml
+    secrets: inherit
+
+  ios:
+    name: iOS
+    needs: prepare
+    uses: ./.github/workflows/ios-native.yml
+    with:
+      marketing-version: ${{ needs.prepare.outputs.version }}
+    secrets: inherit
+
+  release:
+    name: Publish the release
+    needs: [prepare, windows, ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      DRAFT: ${{ needs.prepare.outputs.draft }}
+    steps:
+      - name: Download the Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: tsumi-windows-installer
+          path: artifacts/windows
+      - name: Download the IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: tsumi-ios-native-ipa
+          path: artifacts/ios
+      - name: Collect the release files
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          mv artifacts/windows/* release/
+          ipas=(artifacts/ios/*.ipa)
+          if [ "${#ipas[@]}" -ne 1 ]; then echo "::error::Expected one IPA, got: ${ipas[*]}"; exit 1; fi
+          mv "${ipas[0]}" release/Tsumi.ipa
+          # electron-updater downloads the file named in latest.yml, next to it in the release.
+          installer=$(sed -n 's/^path: *//p' release/latest.yml)
+          test -f "release/$installer"
+          ls -l release
+      # Generated release notes, marked as the latest release (unless it's a draft). A draft for a tag that does not
+      # exist yet points at this commit: the tag is only created if the draft is published.
+      - name: Create the GitHub release
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY")
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $TAG already exists (re-run): uploading the files again"
+            gh release upload "$TAG" release/* --clobber "${args[@]}"
+            if [ "$DRAFT" != true ]; then gh release edit "$TAG" --draft=false --latest "${args[@]}"; fi
+          elif [ "$DRAFT" = true ]; then
+            gh release create "$TAG" release/* "${args[@]}" --draft --target "$GITHUB_SHA" --title "Tsumi $TAG" --generate-notes
+          else
+            gh release create "$TAG" release/* "${args[@]}" --latest --target "$GITHUB_SHA" --title "Tsumi $TAG" --generate-notes
+          fi
+          gh release view "$TAG" "${args[@]}" --json url,isDraft,assets --jq '"\(.url) draft=\(.isDraft)", (.assets[] | "  \(.name) \(.size)")'
+
+  source:
+    name: Update the iOS source
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      DRAFT: ${{ needs.prepare.outputs.draft }}
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Add the release to docs/source.json
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,publishedAt,body,assets > "$RUNNER_TEMP/release.json"
+          node .github/scripts/update-source.mjs docs/source.json "$RUNNER_TEMP/release.json" "$GITHUB_REPOSITORY" "$VERSION"
+          git diff --stat
+      # Commits made with the workflow token start no workflow (and docs/ is ignored by the build workflows anyway).
+      - name: Commit docs/source.json
+        if: needs.prepare.outputs.draft != 'true'
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- docs/source.json; then echo 'docs/source.json is up to date'; exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/source.json
+          git commit -m "Update the iOS source to $TAG [skip ci]"
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${{ github.event.repository.default_branch }}"; then exit 0; fi
+            git pull --rebase origin "${{ github.event.repository.default_branch }}"
+          done
+          echo "::error::Could not push docs/source.json"
+          exit 1
