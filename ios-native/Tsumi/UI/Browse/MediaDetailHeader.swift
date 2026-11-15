@@ -161,6 +161,7 @@ struct BrowseDetailActions: View {
         if let trailerId = model.trailerId {
           trailerButton(trailerId, media: media)
         }
+        LiveCountdownDetailButton(media: media)
         ForEach(BrowseMediaInfo.links(media)) { link in
           BrowseShareLinkButton(link: link)
         }
