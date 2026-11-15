@@ -60,8 +60,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "50n50",
-        "repo": "tsumi"
+        "owner": "MXFia19",
+        "repo": "Tsumi"
       }
     ],
     "appId": "com.github.50n50.tsumi",

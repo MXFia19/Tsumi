@@ -15,7 +15,9 @@ export default class Updater {
   constructor (window) {
     this.window = window
     autoUpdater.autoInstallOnAppQuit = false
-    ipcMain.on('update', () => autoUpdater.checkForUpdates())
+    // Releases of github.com/MXFia19/Tsumi ("publish" in electron/package.json): latest.yml of the latest release.
+    // Failures (offline, rate limit...) are reported through the 'error' event.
+    ipcMain.on('update', () => autoUpdater.checkForUpdates()?.catch(() => {}))
     autoUpdater.on('error', () => this.window.webContents.send('update-aborted'))
     autoUpdater.on('update-available', (info) => {
       if (!this.downloading) {
@@ -47,7 +49,7 @@ export default class Updater {
         clearInterval(this.downloadedInterval)
         autoUpdater.quitAndInstall(true, true)
       })
-      if (process.platform === 'darwin') shell.openExternal('https://github.com/50n50/Tsumi/releases/latest')
+      if (process.platform === 'darwin') shell.openExternal('https://github.com/MXFia19/Tsumi/releases/latest')
       this.hasUpdate = false
       return true
     }

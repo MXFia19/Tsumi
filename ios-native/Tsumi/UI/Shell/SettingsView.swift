@@ -24,6 +24,7 @@ enum ShellSettingsRoute: Hashable {
 struct SettingsView: View {
   var body: some View {
     List {
+      ShellUpdateSection()
       Section {
         NavigationLink(value: ShellSettingsRoute.player) {
           Label("Player", systemImage: "play.fill")

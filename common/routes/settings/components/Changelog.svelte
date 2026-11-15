@@ -18,8 +18,9 @@
 
   async function getChanges () {
     try {
-      const json = await (await fetch('https://api.github.com/repos/50n50/Tsumi/releases')).json()
-      return json.map(({ body, tag_name: version, published_at: date, assets, html_url: url }) => ({
+      const json = await (await fetch('https://api.github.com/repos/MXFia19/Tsumi/releases')).json()
+      // App releases only (vX.Y.Z tags): the repository also has releases holding build dependencies.
+      return json.filter(({ tag_name: tag }) => /^v\d/.test(tag || '')).map(({ body, tag_name: version, published_at: date, assets, html_url: url }) => ({
         body,
         version,
         date,
