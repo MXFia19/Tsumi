@@ -158,6 +158,7 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | 6.4 | Fast Subtitle Rendering | PT 56-61 | — | n.a. (same) |
 | 6.5 | Subtitle Render Resolution Limit | PT 62-70 | — | n.a. (same) |
 | 6.6 | Preferred Subtitle Language (None + 24 languages, same codes) | PT 73-101 | `ShellSettingPicker` → `subtitleLanguage` | done |
+| 6.6b | Automatic Online Subtitles | PT Language Settings | toggle → `onlineSubtitlesAuto` | done |
 | 6.7 | Autoplay Next Episode | PT 104-109 | toggle → `playerAutoplay` | done |
 | 6.8 | Pause On Lost Focus | PT 110-115 | toggle → `playerPause` | done |
 | 6.9 | Auto-Complete Episodes | PT 116-121 | toggle → `playerAutocomplete` | done |

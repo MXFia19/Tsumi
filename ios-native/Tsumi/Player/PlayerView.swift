@@ -17,6 +17,8 @@ struct PlayerView: View {
   @State private var feedbackTask: Task<Void, Never>?
   /// Watch Together side panel (W2GPlayerPanel).
   @State private var showWatchTogether = false
+  /// "Search Online Subtitles…" sheet (PlayerOnlineSubtitles.swift).
+  @State private var showOnlineSubtitles = false
   @FocusState private var keyboardFocused: Bool
 
   init(controller: PlayerController) {
@@ -38,6 +40,9 @@ struct PlayerView: View {
     .preferredColorScheme(.dark)
     .sheet(isPresented: $showEpisodes) {
       PlayerEpisodeListSheet(controller: controller)
+    }
+    .sheet(isPresented: $showOnlineSubtitles) {
+      PlayerOnlineSubtitlesSheet(controller: controller)
     }
     .fileImporter(isPresented: $showImporter, allowedContentTypes: PlayerSubtitleParser.importTypes) { result in
       if case .success(let url) = result {
@@ -96,7 +101,7 @@ struct PlayerView: View {
   /// A sheet, dialog or panel is shown over the player: the hardware keyboard focus is given back to the
   /// player when the last one closes (episode list, Files importer, details, extension dialogs, panels).
   private var isCovered: Bool {
-    showEpisodes || showImporter || showSubtitleOffset || showKeybinds || showWatchTogether
+    showEpisodes || showImporter || showSubtitleOffset || showKeybinds || showWatchTogether || showOnlineSubtitles
       || controller.isExternalOverlayPresented || PlaybackRequestCoordinator.shared.presentation != nil
   }
 
@@ -144,7 +149,8 @@ struct PlayerView: View {
       onImportSubtitles: { showImporter = true },
       onShowSubtitleOffset: { showSubtitleOffset = true },
       onShowKeybinds: { showKeybinds = true },
-      onShowWatchTogether: { showWatchTogether = true }
+      onShowWatchTogether: { showWatchTogether = true },
+      onSearchOnlineSubtitles: { showOnlineSubtitles = true }
     )
     .opacity(controlsVisible ? 1 : 0)
     .allowsHitTesting(controlsVisible)

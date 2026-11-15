@@ -152,6 +152,8 @@ final class PlayerController {
   @ObservationIgnored private var noticeTask: Task<Void, Never>?
   @ObservationIgnored private var previewTask: Task<Void, Never>?
   @ObservationIgnored private var statsTask: Task<Void, Never>?
+  /// "Automatic Online Subtitles" of the current episode (PlayerOnlineSubtitles.swift).
+  @ObservationIgnored var onlineSubtitlesTask: Task<Void, Never>?
   @ObservationIgnored private var lastProgressSave = Date.distantPast
   @ObservationIgnored private var lastSyncedState: (paused: Bool, time: Double)?
   @ObservationIgnored private var suppressSyncUntil = Date.distantPast
@@ -443,6 +445,7 @@ final class PlayerController {
     previewTask?.cancel()
     statsTask?.cancel()
     flagsTask?.cancel()
+    onlineSubtitlesTask?.cancel()
     statsTask = nil
     player.replaceCurrentItem(with: nil)
     layerView.playerLayer.player = nil
@@ -528,6 +531,7 @@ final class PlayerController {
       let headers = newSession.subtitleHeaders ?? newSession.currentServer?.headers ?? [:]
       loadExternalSubtitle(from: subtitleURL, headers: headers, name: "Subtitles")
     }
+    scheduleAutomaticOnlineSubtitles()
     updateNowPlayingMetadata()
     onEpisodeStarted?(newSession)
   }
@@ -1434,7 +1438,8 @@ final class PlayerController {
     }
   }
 
-  private func addExternalTrack(name: String, cues: [PlayerSubtitleCue], select: Bool) {
+  /// Also used by the online subtitles (PlayerOnlineSubtitles.swift).
+  func addExternalTrack(name: String, cues: [PlayerSubtitleCue], select: Bool) {
     nextExternalTrackID += 1
     var uniqueName = name
     var suffix = 2
