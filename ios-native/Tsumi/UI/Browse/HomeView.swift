@@ -42,6 +42,7 @@ struct HomeView: View {
       // heterogeneous sections mis-estimated the content height.
       VStack(alignment: .leading, spacing: 26) {
         BrowseHeroBanner(model: model.banner)
+        YearReviewHomeBanner()
         ForEach(service.sections) { section in
           BrowseHomeSectionRow(row: model.row(for: section), reloadKey: reloadKey + "-\(service.feedRevision(forSection: section.title))")
         }

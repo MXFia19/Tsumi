@@ -17,6 +17,7 @@ try {
 import { development, getWindowState, saveWindowState, getDefaultBounds } from './util.js'
 import Discord from './discord.js'
 import Protocol from './protocol.js'
+import './yearReview.js'
 import Updater from './updater.js'
 import Dialog from './dialog.js'
 import Debug from './debugger.js'

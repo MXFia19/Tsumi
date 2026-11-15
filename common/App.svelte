@@ -31,6 +31,7 @@
   import Profiles from '@/components/Profiles.svelte'
   import NotificationsModal from '@/modals/NotificationsModal.svelte'
   import MinimizeModal from '@/modals/MinimizeModal.svelte'
+  import YearReview from '@/routes/yearreview/YearReview.svelte'
   import Navbar from '@/components/navigation/Navbar.svelte'
   import Status from '@/components/Status.svelte'
   import { status } from '@/modules/networking.js'
@@ -89,6 +90,7 @@
 </script>
 
 <MinimizeModal />
+<YearReview />
 <div
   class='page-wrapper with-transitions bg-dark position-relative pl-safe-area'
   data-sidebar-type='overlayed-all'

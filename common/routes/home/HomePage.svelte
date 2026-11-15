@@ -231,6 +231,7 @@
 <script>
   import HomeSection from '@/routes/home/components/HomeSection.svelte'
   import Banner from '@/components/banner/Banner.svelte'
+  import YearReviewBanner from '@/routes/yearreview/YearReviewBanner.svelte'
   import { bannerImages, hideBanner } from '@/modules/bannerStore.js'
 
   let scrollContainer
@@ -267,6 +268,7 @@
 >
   <Banner data={$bannerData} />
   <div class='d-flex flex-column h-full w-full mt-15 pl-sm-30 pl-md-80'>
+    <YearReviewBanner />
     {#each manager.sections as section, i (i)}
       {#if !section.hide}
         <HomeSection bind:opts={section} lastEpisode={isPreviousRSS(i)} />
