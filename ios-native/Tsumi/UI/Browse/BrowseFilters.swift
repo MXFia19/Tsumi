@@ -28,6 +28,10 @@ struct BrowseSearchFilters: Codable, Equatable {
   var dubOnly = false
   /// Schedule "Release" filter (nil = Any), optional so older saved filters still decode.
   var release: ScheduleRelease?
+  /// Source of the Search page: key of the Sora module the title is searched in (SoraSearchSource.swift), nil for
+  /// AniList / TMDB. Session only: it is not in CodingKeys, so it is never saved and a saved search always reopens on
+  /// AniList / TMDB.
+  var soraModule: String?
 
   /// Statuses hidden / shown by the "Hide My Anime" button.
   static let myAnimeStatuses: [ListStatus] = [.current, .completed, .dropped, .paused, .repeating]
@@ -108,6 +112,7 @@ struct BrowseSearchFilters: Codable, Equatable {
 
   // MARK: Lossy decoding
 
+  /// `soraModule` is left out on purpose (session only, see above).
   private enum CodingKeys: String, CodingKey {
     case text, western, genres, genresNot, tags, tagsNot, season, year, formats, formatsNot, status, statusNot, sort
     case hideMyAnime, showMyAnime, dubOnly, release
