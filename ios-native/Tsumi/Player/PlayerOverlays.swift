@@ -90,6 +90,83 @@ struct PlayerFillerPrompt: View {
   }
 }
 
+/// "Up next" during the end credits / preview while autoplay is on: the next episode starts when the countdown
+/// (playback time) runs out; Play Now starts it at once, Cancel lets the credits play.
+@MainActor
+struct PlayerUpNextCard: View {
+  let controller: PlayerController
+  let upNext: PlayerUpNext
+
+  /// Seconds left: the countdown, or the end of the episode when it comes first (autoplay takes over there).
+  private var remaining: Double {
+    let end = controller.duration > 0 ? min(upNext.startsAt, controller.duration) : upNext.startsAt
+    return max(end - controller.currentTime, 0)
+  }
+
+  private var episodeLabel: String {
+    if let season = upNext.episode.season, let local = upNext.episode.localEpisode {
+      return "Season \(season) · Episode \(local)"
+    }
+    return "Episode \(upNext.episode.number)"
+  }
+
+  var body: some View {
+    let left = remaining
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Up Next")
+        .font(.caption.weight(.bold))
+        .foregroundStyle(.white.opacity(0.7))
+      Text(episodeLabel)
+        .font(.subheadline.weight(.semibold))
+        .lineLimit(1)
+      if let title = upNext.title {
+        Text(title)
+          .font(.caption)
+          .foregroundStyle(.white.opacity(0.75))
+          .lineLimit(2)
+      }
+      HStack(spacing: 8) {
+        Button {
+          controller.playUpNext()
+        } label: {
+          Label("Play Now", systemImage: "play.fill")
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(.black)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 36)
+            .background(Capsule().fill(Color.white))
+        }
+        .buttonStyle(.plain)
+        Button {
+          controller.dismissUpNext()
+        } label: {
+          Text("Cancel")
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 12)
+            .frame(minHeight: 36)
+            .background(Capsule().fill(Color.white.opacity(0.16)))
+        }
+        .buttonStyle(.plain)
+      }
+      GeometryReader { proxy in
+        Capsule()
+          .fill(Color.white.opacity(0.55))
+          .frame(width: proxy.size.width * CGFloat(min(left / PlayerController.upNextCountdown, 1)), height: 3)
+      }
+      .frame(height: 3)
+      Text(controller.isPlaying ? "Playing in \(Int(left.rounded(.up))) s" : "Paused")
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(.white.opacity(0.6))
+    }
+    .foregroundStyle(.white)
+    .padding(12)
+    .frame(width: 270, alignment: .leading)
+    .background(Color(white: 0.1).opacity(0.94), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Up next: \(episodeLabel)")
+  }
+}
+
 /// Playback error with reload / next server (checkError toasts).
 @MainActor
 struct PlayerErrorView: View {
@@ -294,7 +371,7 @@ struct PlayerSubtitleOffsetPanel: View {
         Button("Done", action: onClose)
           .buttonStyle(.borderedProminent)
       }
-      Text("Positive values show subtitles earlier. Applies to external subtitles.")
+      Text("Positive values show subtitles earlier. Applies to external subtitles and is remembered for this show.")
         .font(.caption)
         .foregroundStyle(.white.opacity(0.6))
         .multilineTextAlignment(.center)

@@ -219,7 +219,10 @@ struct DownloadPendingRow: View {
     case .downloading:
       var parts = ["\(Int(item.progress * 100))%"]
       if item.bytes > 0 {
-        parts.append(item.totalBytes > 0 ? "\(DownloadNaming.bytes(item.bytes)) of \(item.kind == .hlsFiles ? "~" : "")\(DownloadNaming.bytes(item.totalBytes))" : DownloadNaming.bytes(item.bytes))
+        // hlsFiles: total extrapolated from the segments saved; hlsAsset: both estimated from the bitrate.
+        let done = (item.kind == .hlsAsset ? "~" : "") + DownloadNaming.bytes(item.bytes)
+        let total = (item.kind == .hlsFiles || item.kind == .hlsAsset ? "~" : "") + DownloadNaming.bytes(item.totalBytes)
+        parts.append(item.totalBytes > 0 ? "\(done) of \(total)" : done)
       }
       if let quality = item.quality { parts.append("\(quality)p") }
       return parts.joined(separator: " · ")

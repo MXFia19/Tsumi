@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 // Discord rich presence (PlayerPage.svelte setDiscordRPC / presenceButtons + electron/src/main/discord.js).
 // The desktop app talks to the local Discord client over IPC; on iOS the presence goes through the user's
@@ -41,6 +42,8 @@ final class DiscordPresence {
   private static let minimumUpdateInterval: TimeInterval = 5
   /// Timestamp drift taken as a seek.
   private static let timestampTolerance: TimeInterval = 3
+  /// The callback timer keeps running this long after the last pending work (clear, disconnect, revoke).
+  private static let idleGrace: TimeInterval = 5
 
   enum Account: Equatable {
     case notLinked
@@ -77,6 +80,11 @@ final class DiscordPresence {
   @ObservationIgnored private var browsingSince: Date?
   /// Start of the generic "Watching something" status shown for adult content (rpcHideAdult "title").
   @ObservationIgnored private var adultSince: Date?
+  /// Since when the callback timer has had nothing to do (stopped after `idleGrace`).
+  @ObservationIgnored private var idleSince: Date?
+  /// The app went to the background since it was last active: the presence is sent again when it comes back.
+  @ObservationIgnored private var leftForeground = false
+  @ObservationIgnored private var backgroundObserver: NSObjectProtocol?
   private let launchDate = Date()
   /// Party id outside Watch Together (the SDK wants one with the party size).
   private let partyId = "tsumi-" + UUID().uuidString.prefix(12).lowercased()
@@ -99,9 +107,17 @@ final class DiscordPresence {
     reconnect()
   }
 
-  /// Back in the foreground: the connection may have dropped while the app was suspended.
+  /// Back in the foreground: the connection may have dropped while the app was suspended, and the presence was
+  /// cleared in the background (it is sent again at once).
   func appBecameActive() {
-    guard started, !busy else { return }
+    guard started else { return }
+    if leftForeground {
+      leftForeground = false
+      presenceSynced = false
+      lastSentAt = .distantPast
+      if sdk != nil { startTimer() }
+    }
+    guard !busy else { return }
     switch account {
     case .disconnected:
       reconnect()
@@ -187,6 +203,8 @@ final class DiscordPresence {
   }
 
   private func ensureSDK() -> DiscordSDKClient {
+    // The callback timer may have stopped (unlinked, presence disabled): every flow starts it again.
+    startTimer()
     if let sdk { return sdk }
     let client = DiscordSDKClient(applicationId: Self.applicationId)
     client.addLogHandler()
@@ -197,8 +215,47 @@ final class DiscordPresence {
       self?.tokenExpiring()
     }
     sdk = client
-    startTimer()
+    observeSettings()
+    backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+      MainActor.assumeIsolated {
+        DiscordPresence.shared.appEnteredBackground()
+      }
+    }
     return client
+  }
+
+  /// The presence setting changed: the timer runs again (it stops by itself when there is nothing to do).
+  private func observeSettings() {
+    withObservationTracking {
+      _ = AppSettings.shared.values.enableRPC
+    } onChange: {
+      Task { @MainActor in
+        let presence = DiscordPresence.shared
+        presence.observeSettings()
+        if presence.sdk != nil { presence.startTimer() }
+      }
+    }
+  }
+
+  /// Background: cleared like the desktop app clears it when its window is hidden, unless the video goes on
+  /// (audio, Picture in Picture, AirPlay; see `desiredActivity`). The player applies "Pause On Lost Focus" on the
+  /// same notification, so the decision waits a moment; a short background task lets the update go out.
+  private func appEnteredBackground() {
+    leftForeground = true
+    guard sdk != nil, case .connected = account else { return }
+    let background = DownloadBackgroundTask()
+    background.begin("Tsumi Discord presence")
+    startTimer()
+    Task { @MainActor in
+      defer { background.end() }
+      try? await Task.sleep(nanoseconds: 800_000_000)
+      let presence = DiscordPresence.shared
+      if UIApplication.shared.applicationState == .background {
+        presence.updatePresence(now: Date(), force: true)
+      }
+      // RunCallbacks (timer) delivers the answer meanwhile.
+      try? await Task.sleep(nanoseconds: 2_500_000_000)
+    }
   }
 
   private func refreshAndConnect(_ refreshToken: String) {
@@ -293,6 +350,7 @@ final class DiscordPresence {
   // MARK: - Presence
 
   private func startTimer() {
+    idleSince = nil
     guard timer == nil else { return }
     let timer = Timer(timeInterval: Self.callbackInterval, repeats: true) { _ in
       MainActor.assumeIsolated {
@@ -303,9 +361,43 @@ final class DiscordPresence {
     self.timer = timer
   }
 
+  private func stopTimer() {
+    timer?.invalidate()
+    timer = nil
+    idleSince = nil
+  }
+
+  /// RunCallbacks is needed: an account flow or connection runs, or a presence is kept up. Unlinked, or with
+  /// the presence disabled once its clear went out, the 10 Hz timer stops after `idleGrace` (link, reconnect,
+  /// the setting and the return to the foreground start it again).
+  private var needsCallbacks: Bool {
+    if busy { return true }
+    let enabled = AppSettings.shared.values.enableRPC != "disabled"
+    switch account {
+    case .notLinked:
+      return false
+    case .linking, .connecting:
+      return true
+    case .connected:
+      return enabled || !(presenceSynced && lastSent == nil)
+    case .disconnected:
+      return enabled
+    }
+  }
+
   private func tick() {
     DiscordSDKClient.runCallbacks()
     let now = Date()
+    if needsCallbacks {
+      idleSince = nil
+    } else if let since = idleSince {
+      if now.timeIntervalSince(since) >= Self.idleGrace {
+        stopTimer()
+        return
+      }
+    } else {
+      idleSince = now
+    }
     guard now.timeIntervalSince(lastCheck) >= Self.checkInterval else { return }
     lastCheck = now
     if case .connected(.none) = account, let username = sdk?.currentUsername {
@@ -314,12 +406,13 @@ final class DiscordPresence {
     updatePresence(now: now)
   }
 
-  /// Sends the presence when it differs from what Discord shows, at most every `minimumUpdateInterval`.
-  private func updatePresence(now: Date) {
+  /// Sends the presence when it differs from what Discord shows, at most every `minimumUpdateInterval` (`force`:
+  /// right away, the app is about to be suspended).
+  private func updatePresence(now: Date, force: Bool = false) {
     guard let sdk, case .connected = account else { return }
     let desired = desiredActivity(now: now)
     if presenceSynced && Self.same(desired, lastSent) { return }
-    guard now.timeIntervalSince(lastSentAt) >= Self.minimumUpdateInterval else { return }
+    guard force || now.timeIntervalSince(lastSentAt) >= Self.minimumUpdateInterval else { return }
     lastSentAt = now
     lastSent = desired
     presenceSynced = true
@@ -340,6 +433,11 @@ final class DiscordPresence {
   /// full → the media while playing (or paused in the full screen player), else "Browsing the library".
   private func desiredActivity(now: Date) -> DiscordActivityContent? {
     let settings = AppSettings.shared.values
+    // In the background nothing is shown (the desktop app clears it when hidden), unless the video goes on there.
+    if UIApplication.shared.applicationState == .background && !(PlayerPresentation.shared.controller?.continuesInBackground ?? false) {
+      browsingSince = nil
+      return nil
+    }
     switch settings.enableRPC {
     case "disabled":
       return nil

@@ -190,11 +190,27 @@ enum DownloadHLS {
     return segmentExtensions.contains(ext) ? ext : "ts"
   }
 
+  /// "length[@offset]". A malformed one (length <= 0, negative offset, past Int64) is ignored: building its
+  /// ClosedRange would trap.
   private static func byteRange(_ text: String?) -> (length: Int64, offset: Int64?)? {
     guard let text else { return nil }
     let parts = text.trimmingCharacters(in: .whitespaces).split(separator: "@")
-    guard let length = parts.first.flatMap({ Int64($0) }) else { return nil }
-    return (length, parts.count > 1 ? Int64(parts[1]) : nil)
+    guard let length = parts.first.flatMap({ Int64($0) }), length > 0 else { return nil }
+    let offset = parts.count > 1 ? Int64(parts[1]) : nil
+    if let offset, offset < 0 || offset > Int64.max - length { return nil }
+    return (length, offset)
+  }
+
+  /// Inclusive range of `length` bytes from `start`, nil when it would overflow.
+  private static func closedRange(start: Int64, length: Int64) -> ClosedRange<Int64>? {
+    guard start >= 0, length > 0, start <= Int64.max - length else { return nil }
+    return start...(start + length - 1)
+  }
+
+  /// EXTINF duration in seconds; a malformed one (nan, inf, negative, absurd) counts as 0 (Int(nan) traps).
+  static func segmentDuration(_ value: String) -> Double {
+    guard let seconds = Double(value.trimmingCharacters(in: .whitespaces)), seconds.isFinite, seconds >= 0, seconds <= 86_400 else { return 0 }
+    return seconds
   }
 
   private static func replacingURI(_ line: String, with uri: String) -> String {
@@ -236,7 +252,7 @@ enum DownloadHLS {
         }
         if droppedTags.contains(where: { upper.hasPrefix($0) }) { continue }
         if upper.hasPrefix("#EXTINF:") {
-          duration += Double(tagValue(line).split(separator: ",").first.map(String.init) ?? "") ?? 0
+          duration += segmentDuration(tagValue(line).split(separator: ",").first.map(String.init) ?? "")
         }
         if upper.hasPrefix("#EXT-X-KEY:") {
           let values = attributes(tagValue(line))
@@ -266,8 +282,7 @@ enum DownloadHLS {
           }
           var range: ClosedRange<Int64>?
           if let parsed = byteRange(values["BYTERANGE"]) {
-            let start = parsed.offset ?? 0
-            range = start...(start + parsed.length - 1)
+            range = closedRange(start: parsed.offset ?? 0, length: parsed.length)
           }
           let mapKey = url.absoluteString + (range.map { "#\($0.lowerBound)-\($0.upperBound)" } ?? "")
           if mapFiles[mapKey] == nil {
@@ -286,8 +301,8 @@ enum DownloadHLS {
       var range: ClosedRange<Int64>?
       if let pending = pendingRange {
         let start = pending.offset ?? rangeEnds[url] ?? 0
-        range = start...(start + pending.length - 1)
-        rangeEnds[url] = start + pending.length
+        range = closedRange(start: start, length: pending.length)
+        if let range { rangeEnds[url] = range.upperBound + 1 }
         pendingRange = nil
       }
       let file = "\(prefix)-\(String(format: "%05ld", segmentCount)).\(segmentExtension(url))"

@@ -327,17 +327,26 @@ final class PlayerNowPlaying {
 @MainActor
 enum PlayerOrientation {
   static var supportedMask: UIInterfaceOrientationMask = defaultMask
+  /// Player views holding the lock. Counted: a player replaced in place shows the new view (onAppear) before
+  /// the old one leaves (onDisappear), whose unlock must not release the new one's lock.
+  private static var locks = 0
 
   static var defaultMask: UIInterfaceOrientationMask {
     UIDevice.current.userInterfaceIdiom == .pad ? .all : .allButUpsideDown
   }
 
   static func lockLandscape() {
+    locks += 1
     supportedMask = .landscape
     apply(.landscape)
   }
 
   static func unlock() {
+    locks = max(locks - 1, 0)
+    // No full screen player any more (closed or minimized): released whatever the count says, so an unbalanced
+    // appear / disappear can never leave the app stuck in landscape.
+    if !PlayerPresentation.shared.isPresented { locks = 0 }
+    guard locks == 0 else { return }
     supportedMask = defaultMask
     apply(defaultMask)
   }

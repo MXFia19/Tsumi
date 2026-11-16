@@ -10,6 +10,11 @@ final class DownloadLocalServer: @unchecked Sendable {
   private let queue = DispatchQueue(label: "org.tsumi.downloads.server")
   private var listener: NWListener?
   private var port: UInt16?
+  /// Port of the last listener that ran. iOS can reclaim the listening socket while the app is suspended; the
+  /// listener then starts again on this port, because a player item keeps the loopback URL it was given.
+  private var lastPort: UInt16?
+  /// The current listener reached `.ready` (a failure after that is a reclaimed socket, not a bind error).
+  private var listenerWasReady = false
   private var waiters: [CheckedContinuation<UInt16?, Never>] = []
 
   private init() {}
@@ -23,8 +28,26 @@ final class DownloadLocalServer: @unchecked Sendable {
           return
         }
         self.waiters.append(continuation)
-        if self.listener == nil { self.startListener() }
+        if self.listener == nil { self.startListener(port: self.lastPort) }
       }
+    }
+  }
+
+  /// Back in the foreground (DownloadCenter): a server that ran is listening again, on the same port.
+  func restartIfNeeded() {
+    queue.async {
+      guard let lastPort = self.lastPort else { return }
+      if let listener = self.listener {
+        switch listener.state {
+        case .ready, .setup:
+          return
+        default:
+          listener.cancel()
+          self.listener = nil
+          self.port = nil
+        }
+      }
+      self.startListener(port: lastPort)
     }
   }
 
@@ -36,22 +59,47 @@ final class DownloadLocalServer: @unchecked Sendable {
     return URL(string: "http://127.0.0.1:\(port)/\(encodedID)/\(encodedFile)")
   }
 
-  private func startListener() {
+  /// Starts a listener on `port` (any free port when nil). Runs on `queue`.
+  private func startListener(port requested: UInt16? = nil) {
     do {
       let parameters = NWParameters.tcp
-      parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+      let endpointPort = requested.flatMap { NWEndpoint.Port(rawValue: $0) } ?? .any
+      parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: endpointPort)
       parameters.allowLocalEndpointReuse = true
       let listener = try NWListener(using: parameters)
-      listener.stateUpdateHandler = { [weak self] state in
-        guard let self else { return }
+      listener.stateUpdateHandler = { [weak self, weak listener] state in
+        guard let self, let listener else { return }
+        // A replaced listener (restarted meanwhile) must not touch the current one.
+        guard self.listener === listener else {
+          switch state {
+          case .ready, .failed: listener.cancel()
+          default: break
+          }
+          return
+        }
         switch state {
         case .ready:
+          self.listenerWasReady = true
           self.port = listener.port?.rawValue
+          if let port = self.port { self.lastPort = port }
           self.finishWaiters(self.port)
         case .failed, .cancelled:
+          let wasReady = self.listenerWasReady
           listener.cancel()
           self.listener = nil
           self.port = nil
+          if case .failed = state {
+            // Socket reclaimed while it ran (app suspended): the same port again. A port that can't be bound
+            // any more: any free port (an item still playing the old URL then has to be reloaded).
+            if wasReady, let lastPort = self.lastPort {
+              self.startListener(port: lastPort)
+              return
+            }
+            if requested != nil {
+              self.startListener()
+              return
+            }
+          }
           self.finishWaiters(nil)
         default:
           break
@@ -61,9 +109,14 @@ final class DownloadLocalServer: @unchecked Sendable {
         self?.serve(connection)
       }
       self.listener = listener
+      listenerWasReady = false
       listener.start(queue: queue)
     } catch {
       listener = nil
+      if requested != nil {
+        startListener()
+        return
+      }
       finishWaiters(nil)
     }
   }

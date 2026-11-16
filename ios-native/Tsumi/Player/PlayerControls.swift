@@ -379,6 +379,9 @@ struct PlayerScrubber: View {
   let controller: PlayerController
   let onInteraction: () -> Void
   @State private var dragFraction: CGFloat?
+  /// True while the finger is down. Reset by SwiftUI also when the drag is cancelled (system gesture, a sheet
+  /// or alert taking the touch), where `onEnded` never runs: the scrub is then ended where it was.
+  @GestureState private var dragging = false
 
   init(controller: PlayerController, onInteraction: @escaping () -> Void) {
     self.controller = controller
@@ -431,9 +434,13 @@ struct PlayerScrubber: View {
       .contentShape(Rectangle())
       .gesture(
         DragGesture(minimumDistance: 0)
+          .updating($dragging) { _, state, _ in
+            state = true
+          }
           .onChanged { value in
             let newFraction = min(max(value.location.x / width, 0), 1)
-            if dragFraction == nil { controller.beginScrubbing() }
+            // Also after the controller ended a scrub itself (app resigned active) while the finger stayed down.
+            if dragFraction == nil || !controller.isScrubbing { controller.beginScrubbing() }
             dragFraction = newFraction
             onInteraction()
             controller.scrub(to: Double(newFraction) * total)
@@ -445,6 +452,16 @@ struct PlayerScrubber: View {
             onInteraction()
           }
       )
+      .onChange(of: dragging) { _, active in
+        // Cancelled drag (no onEnded): ends at the last scrubbed position.
+        guard !active, dragFraction != nil else { return }
+        dragFraction = nil
+        controller.finishScrubbing()
+      }
+      .onDisappear {
+        dragFraction = nil
+        controller.finishScrubbing()
+      }
       .overlay(alignment: .topLeading) {
         if let dragFraction {
           let bubbleWidth: CGFloat = 168

@@ -154,6 +154,22 @@ struct PlayerFailure: Equatable {
 /// the extension picker because the remembered source failed): the player shows no error and stays paused.
 struct PlayerEpisodeHandedOff: Error {}
 
+/// "Up next" card shown during the end credits / preview while autoplay is on (`PlayerController.upNext`).
+struct PlayerUpNext: Equatable {
+  var episode: EpisodeRef
+  /// Title of the next episode (nil when unknown or hidden by spoiler protection).
+  var title: String?
+  /// Video time at which the next episode starts: the countdown follows playback (it waits while paused).
+  var startsAt: Double
+}
+
+/// A saved position was restored when the episode loaded (`PlayerController.resumeChoice`): "Resume" keeps it,
+/// "Start Over" goes back to the beginning.
+struct PlayerResumeChoice: Identifiable, Equatable {
+  let id = UUID()
+  var time: Double
+}
+
 /// Short message shown at the top of the player (replaces svelte-sonner toasts).
 struct PlayerNotice: Identifiable, Equatable {
   let id = UUID()
@@ -292,14 +308,44 @@ enum PlayerPreferences {
   private static let lastSubtitleKey = "tsumi.player.lastSubtitle"
   private static let playbackRateKey = "tsumi.player.playbackRate"
   private static let miniPlayerCornerKey = "tsumi.player.miniPlayerCorner"
+  private static let subtitleOffsetKey = "tsumi.player.subtitleOffset"
+  /// Shows whose subtitle offset is kept (the oldest are forgotten past it).
+  private static let subtitleOffsetLimit = 200
 
-  /// Settings reset: removes the auto Picture in Picture, last subtitle per media and playback rate keys, so every
-  /// value falls back to its default (and the chapter source key of older versions). The miniplayer position is a
-  /// cache, not a setting.
+  /// Settings reset: removes the auto Picture in Picture, last subtitle per media, subtitle offset per show and
+  /// playback rate keys, so every value falls back to its default (and the chapter source key of older versions).
+  /// The miniplayer position is a cache, not a setting.
   static func resetAll() {
     let defaults = UserDefaults.standard
-    for key in ["tsumi.player.chapterSource", autoPictureInPictureKey, lastSubtitleKey, playbackRateKey] {
+    for key in ["tsumi.player.chapterSource", autoPictureInPictureKey, lastSubtitleKey, playbackRateKey, subtitleOffsetKey] {
       defaults.removeObject(forKey: key)
+    }
+  }
+
+  /// "Subtitle Offset" remembered per show (seconds, 0 when none).
+  static func subtitleOffset(for mediaKey: String) -> Double {
+    let stored = UserDefaults.standard.dictionary(forKey: subtitleOffsetKey) as? [String: [Double]]
+    guard let value = stored?[mediaKey]?.first, value.isFinite else { return 0 }
+    return min(max(value, -600), 600)
+  }
+
+  /// Stores [offset, time saved]; 0 forgets the show.
+  static func setSubtitleOffset(_ value: Double, for mediaKey: String) {
+    guard value.isFinite else { return }
+    var stored = (UserDefaults.standard.dictionary(forKey: subtitleOffsetKey) as? [String: [Double]]) ?? [:]
+    if value == 0 {
+      stored.removeValue(forKey: mediaKey)
+    } else {
+      stored[mediaKey] = [value, Date().timeIntervalSince1970]
+      if stored.count > subtitleOffsetLimit {
+        let oldest = stored.sorted { ($0.value.last ?? 0) < ($1.value.last ?? 0) }.prefix(stored.count - subtitleOffsetLimit)
+        for (key, _) in oldest { stored.removeValue(forKey: key) }
+      }
+    }
+    if stored.isEmpty {
+      UserDefaults.standard.removeObject(forKey: subtitleOffsetKey)
+    } else {
+      UserDefaults.standard.set(stored, forKey: subtitleOffsetKey)
     }
   }
 
