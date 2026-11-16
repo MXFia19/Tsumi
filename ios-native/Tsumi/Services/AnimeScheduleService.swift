@@ -248,6 +248,8 @@ struct ScheduleFilter: Hashable {
   var hideMyAnime: Bool = false
   var showMyAnime: Bool = false
   var listStatuses: [ListStatus] = []
+  /// "Release" filter: episodes, movies in theaters, movies on digital (MovieReleases).
+  var release: ScheduleRelease = .any
 }
 
 /// Persists the stored manifest (lastUpdated store + _lastUpdatedLock).
@@ -802,27 +804,42 @@ final class AnimeScheduleService: @unchecked Sendable {
 
   // MARK: - Schedule page (fetchAllScheduleEntries)
 
-  /// Airing schedule of the week (anime on page 1) mixed with western shows (TMDB on the air), sorted by air time.
+  /// Airing schedule of the week (anime on page 1) mixed with western shows (TMDB on the air) and upcoming movies
+  /// (theatrical and digital releases), sorted by air time. The "Release" filter picks episodes and / or movies;
+  /// asking for movies lists them even with the Anime source, which has no movie releases of its own.
   func scheduleEntries(_ filter: ScheduleFilter, page: Int = 1) async throws -> (items: [AiringEpisode], hasNextPage: Bool) {
+    async let movieLookup = movieEntries(filter, page: page)
     var anime: [AiringEpisode] = []
     var western: [AiringEpisode] = []
     var westernHasNext = false
-    if filter.western != true && page == 1 {
+    if filter.release.episodes && filter.western != true && page == 1 {
       anime = (try? await animeSchedule(filter)) ?? []
     }
-    if filter.western != false {
+    if filter.release.episodes && filter.western != false {
       let result = await TMDBService.shared.schedule(page: page)
       westernHasNext = result.hasNextPage
       western = result.entries.map { AiringEpisode(media: $0.media, episode: $0.airing.episode, airingAt: $0.airing.airingAt) }
     }
+    let (movies, moviesHasNext) = await movieLookup
     let now = Date()
     var seen = Set<String>()
-    let combined = (anime + western).filter { item in
+    let combined = (anime + western + movies).filter { item in
       if seen.contains(item.media.id) || item.airingAt <= now { return false }
       seen.insert(item.media.id)
       return true
     }.sorted { $0.airingAt < $1.airingAt }
-    return (combined, westernHasNext)
+    return (combined, westernHasNext || moviesHasNext)
+  }
+
+  /// Upcoming movies of the schedule (getMovieSchedule), none for the dub schedule or the episodes only filter.
+  private func movieEntries(_ filter: ScheduleFilter, page: Int) async -> ([AiringEpisode], Bool) {
+    let release = filter.release
+    guard release.theatrical || release.digital, filter.western != false || !release.episodes, !filter.dubs else { return ([], false) }
+    let result = await TMDBService.shared.movieSchedule(page: page, theatrical: release.theatrical, digital: release.digital)
+    let items = result.entries.map { entry in
+      AiringEpisode(media: entry.media, episode: 1, airingAt: entry.release.date, releaseLabel: entry.release.label)
+    }
+    return (items, result.hasNextPage)
   }
 
   private func animeSchedule(_ filter: ScheduleFilter) async throws -> [AiringEpisode] {

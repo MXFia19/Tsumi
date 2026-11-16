@@ -267,9 +267,12 @@ struct AiringEpisode: Identifiable, Hashable {
   var lastEpisode: Int? = nil
   /// Dub production suspended (delayedIndefinitely): shown as "Suspended" instead of a countdown.
   var delayedIndefinitely: Bool = false
+  /// Movie release of the schedule ("In theaters", "On digital", MovieReleases), shown instead of the episode.
+  var releaseLabel: String? = nil
 
-  /// "Episode 5" / "Episode 5 ~ 7" (episode() of anime.js).
+  /// "Episode 5" / "Episode 5 ~ 7" (episode() of anime.js), or the movie release.
   var episodeText: String {
+    if let releaseLabel { return releaseLabel }
     if let lastEpisode, lastEpisode > episode { return "Episode \(episode) ~ \(lastEpisode)" }
     return "Episode \(episode)"
   }

@@ -19,7 +19,8 @@ A feature marked *Windows* or *iPhone* exists on that app only.
 
 ### Watching
 
-- **Extensions as sources**: Sora modules and Stremio addons; Stremio addon catalogs get their own page
+- **Extensions as sources**: Sora modules and Stremio addons; Stremio addon catalogs get their own page, and an
+  open catalog can be switched for another one (Source menu of the search on Windows, catalog menu on iPhone)
 - **Anime, shows and movies**: anime from AniList, Western shows and movies from TMDB
 - **Server choice** during playback, with dub / sub preference (prefer dubs, preferred audio language)
 - **Offline downloads**: download an episode from the episode list, the details page ("Download next episodes") or
@@ -55,7 +56,9 @@ A feature marked *Windows* or *iPhone* exists on that app only.
 ### Discover
 
 - **Home** with customizable sections (anime and Western TMDB sections, order, hero banner), **search**
-- **Airing schedule** and **notifications** for new episodes, AniList notifications, sub / dub release announcements
+- **Airing schedule** of anime and shows, with **upcoming movies** at their theatrical release and again at their
+  digital release (Release filter: episodes, movies, in theaters, digital)
+- **Notifications** for new episodes, AniList notifications, sub / dub release announcements
 
 ### Watch Together
 

@@ -1,18 +1,17 @@
 <script>
   import HomeSection from '@/routes/home/components/HomeSection.svelte'
-  import SectionsManager from '@/modules/sections.js'
-  import { manager, extensionManager } from '@/modules/extension.js'
-  import { listCatalogs, loadCatalogPage } from '@/modules/stremio.js'
+  import { manager } from '@/modules/extension.js'
+  import { listCatalogs } from '@/modules/stremio.js'
+  import { catalogAddons, catalogSections } from '@/routes/catalogs/sections.js'
   import { page } from '@/modules/navigation.js'
   import { click } from '@/modules/click.js'
-  import { writable } from 'simple-store-svelte'
   import { onDestroy } from 'svelte'
   import { Clapperboard, Search, X, TriangleAlert } from 'lucide-svelte'
 
   // Enabled Stremio addons (Sora modules have no catalogs).
   let addons = []
   const unsubscribe = manager.subscribe(() => {
-    addons = extensionManager.getEnabled().filter(ext => ext.type === 'stremio')
+    addons = catalogAddons()
   })
   onDestroy(unsubscribe)
 
@@ -30,42 +29,7 @@
   }
   onDestroy(() => clearTimeout(debounceTimer))
 
-  const typeLabel = (type) => type === 'movie' ? 'Movies' : type === 'series' ? 'Series' : type
-
-  function makeSection (ext, catalog, extra, title) {
-    return {
-      key: `${ext.key}|${catalog.type}|${catalog.id}|${extra.search || ''}`,
-      title,
-      load: (pageNumber = 1, perPage = 50) => SectionsManager.wrapResponse(loadCatalogPage(ext, catalog, pageNumber, perPage, extra), perPage),
-      preview: writable(),
-      variables: { stremioCatalog: true }
-    }
-  }
-
-  function buildSections (addons, search) {
-    const sections = []
-    const several = addons.length > 1
-    for (const ext of addons) {
-      const addonName = ext.manifest?.sourceName || ext.key
-      if (search) {
-        // One searchable catalog per type is enough (they search the same library).
-        const seenTypes = new Set()
-        for (const catalog of listCatalogs(ext, { search: true })) {
-          if (seenTypes.has(catalog.type)) continue
-          seenTypes.add(catalog.type)
-          sections.push(makeSection(ext, catalog, { search }, `${typeLabel(catalog.type)} · ${addonName}`))
-        }
-      } else {
-        for (const catalog of listCatalogs(ext)) {
-          const name = catalog.name || typeLabel(catalog.type)
-          sections.push(makeSection(ext, catalog, {}, several ? `${name} · ${addonName}` : name))
-        }
-      }
-    }
-    return sections
-  }
-
-  $: sections = buildSections(addons, activeQuery)
+  $: sections = catalogSections(addons, activeQuery)
   $: canSearch = addons.some(ext => listCatalogs(ext, { search: true }).length > 0)
 </script>
 

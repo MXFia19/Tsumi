@@ -256,7 +256,7 @@ struct CatalogsView: View {
     // Pushed rather than presented: the details, playback dialogs and toasts are hosted by the root
     // layer, which a sheet would cover.
     .navigationDestination(item: $gridSection) { section in
-      StremioCatalogGridView(section: section, onSelect: onSelect)
+      StremioCatalogGridView(section: section, onSelect: onSelect, catalogs: StremioCatalogSections.build(self.addons, search: ""))
     }
     .onDisappear { debounceTask?.cancel() }
   }
@@ -491,8 +491,12 @@ struct StremioCatalogGridView: View {
   let section: StremioCatalogSection
   /// Kept for the callers; the cards use the standard card actions.
   var onSelect: (Media) -> Void
+  /// Catalogs of the switcher menu (the Source menu of the search page on Windows lists them the same way).
+  var catalogs: [StremioCatalogSection] = []
 
   @State private var model: StremioCatalogPageModel? = nil
+  /// Catalog picked in the switcher, nil = `section`.
+  @State private var selected: StremioCatalogSection? = nil
   @AppStorage(BrowseCardMode.storageKey) private var cardMode = BrowseCardMode.small.rawValue
 
   private var style: BrowseCardStyle {
@@ -506,21 +510,48 @@ struct StremioCatalogGridView: View {
     }
   }
 
+  private var shown: StremioCatalogSection { selected ?? section }
+
   var body: some View {
     ScrollView {
       content
         .padding(16)
     }
     .background(Color.black)
-    .navigationTitle(section.title)
+    .navigationTitle(shown.title)
     .navigationBarTitleDisplayMode(.inline)
-    .task {
-      if model == nil {
-        let created = StremioCatalogPageModel(section: section)
+    .toolbar {
+      if catalogs.count > 1 {
+        ToolbarItem(placement: .topBarTrailing) {
+          Menu {
+            Picker("Catalog", selection: catalogSelection) {
+              ForEach(catalogs) { catalog in
+                Text(catalog.title).tag(catalog.id)
+              }
+            }
+          } label: {
+            Image(systemName: "rectangle.stack")
+          }
+          .accessibilityLabel("Catalog")
+        }
+      }
+    }
+    .task(id: shown.id) {
+      if model?.section.id != shown.id {
+        let created = StremioCatalogPageModel(section: shown)
         model = created
         await created.loadIfNeeded()
       }
     }
+  }
+
+  private var catalogSelection: Binding<String> {
+    Binding(
+      get: { shown.id },
+      set: { id in
+        if let catalog = catalogs.first(where: { $0.id == id }) { selected = catalog }
+      }
+    )
   }
 
   @ViewBuilder

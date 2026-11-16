@@ -654,6 +654,101 @@ final class TMDBService: @unchecked Sendable {
     return TMDBScheduleEntry(media: enriched.media, airing: AiringNode(episode: episode.episodeNumber ?? 1, airingAt: airingAt), nextEpisode: details.nextEpisodeToAir, lastEpisode: details.lastEpisodeToAir)
   }
 
+  /// Release dates of a movie (/movie/{id}/release_dates), kept 12 hours: digital dates are often added late.
+  func releaseDates(movieId: Int) async -> [TMDBReleaseCountry] {
+    let cacheKey = "tmdb.releaseDates.\(movieId)"
+    if let cached = await DiskCache.shared.get(cacheKey, as: [TMDBReleaseCountry].self, allowExpired: !ServiceNetworkMonitor.shared.isOnline) {
+      return cached
+    }
+    guard let data = try? await get("/movie/\(movieId)/release_dates") else {
+      return await DiskCache.shared.get(cacheKey, as: [TMDBReleaseCountry].self, allowExpired: true) ?? []
+    }
+    let countries: [TMDBReleaseCountry] = data.array("results").compactMap { entry in
+      guard let country = entry.string("iso_3166_1") else { return nil }
+      let dates: [TMDBReleaseDate] = entry.array("release_dates").compactMap { item in
+        guard let type = item.int("type"), let date = item.string("release_date") else { return nil }
+        return TMDBReleaseDate(type: type, date: date)
+      }
+      return TMDBReleaseCountry(country: country, dates: dates)
+    }
+    await DiskCache.shared.set(cacheKey, countries, ttl: 12 * 3600)
+    return countries
+  }
+
+  /// Upcoming movies of the schedule (getMovieSchedule of tmdb.js, MovieReleases): theatrical releases in the
+  /// device region and digital releases (region and US) of the next MovieReleases.windowDays days, most popular
+  /// first, each with its first release to come. Anime movies known to AniList are left out like in `schedule`.
+  func movieSchedule(page: Int = 1, theatrical: Bool, digital: Bool) async -> (entries: [(media: Media, release: MovieRelease)], hasNextPage: Bool) {
+    let region = MovieReleases.region
+    let now = Date()
+    let dayFormatter = DateFormatter()
+    dayFormatter.calendar = Calendar(identifier: .gregorian)
+    dayFormatter.locale = Locale(identifier: "en_US_POSIX")
+    dayFormatter.timeZone = TimeZone(identifier: "UTC")
+    dayFormatter.dateFormat = "yyyy-MM-dd"
+    let base = [
+      "release_date.gte": dayFormatter.string(from: now),
+      "release_date.lte": dayFormatter.string(from: now.addingTimeInterval(Double(MovieReleases.windowDays) * 86_400)),
+      "sort_by": "popularity.desc",
+      "include_adult": "false",
+      "page": String(page)
+    ]
+    var queries: [[String: String]] = []
+    if theatrical { queries.append(["region": region, "with_release_type": "2|3"]) }
+    if digital {
+      queries.append(["region": region, "with_release_type": "4"])
+      if region != "US" { queries.append(["region": "US", "with_release_type": "4"]) }
+    }
+    let pages: [[String: Any]] = await withTaskGroup(of: (Int, [String: Any]?).self) { group in
+      for (offset, query) in queries.enumerated() {
+        let params = base.merging(query) { _, new in new }
+        group.addTask {
+          (offset, try? await self.get("/discover/movie", params: params))
+        }
+      }
+      var collected: [(Int, [String: Any])] = []
+      for await (offset, response) in group {
+        if let response { collected.append((offset, response)) }
+      }
+      return collected.sorted { $0.0 < $1.0 }.map { $0.1 }
+    }
+    let index = await AnimeMappingsService.shared.animapIndex()
+    var seen = Set<Int>()
+    var movies: [Media] = []
+    for response in pages {
+      for item in response.array("results") {
+        guard let id = item.int("id"), !(item.bool("adult") ?? false), !seen.contains(id),
+              index.tmdbToAnilist["movie-\(id)"] == nil,
+              let normalized = normalize(item, index: index) else { continue }
+        seen.insert(id)
+        movies.append(normalized.media)
+      }
+    }
+    let found: [(Int, Media, MovieRelease)] = await withTaskGroup(of: (Int, Media, MovieRelease)?.self) { group in
+      for (offset, media) in movies.enumerated() {
+        group.addTask {
+          guard let id = media.tmdbId else { return nil }
+          let dates = await self.releaseDates(movieId: id)
+          let releases = MovieReleases.releases(dates, region: region, theatrical: theatrical, digital: digital, now: now)
+          guard let first = releases.first else { return nil }
+          return (offset, media, first)
+        }
+      }
+      var collected: [(Int, Media, MovieRelease)] = []
+      for await item in group {
+        if let item { collected.append(item) }
+      }
+      return collected.sorted { $0.0 < $1.0 }
+    }
+    let stored = MediaStore.shared.ingest(found.map { $0.1 })
+    var entries: [(media: Media, release: MovieRelease)] = []
+    for (offset, item) in found.enumerated() where offset < stored.count {
+      entries.append((stored[offset], item.2))
+    }
+    let hasNextPage = pages.contains { ($0.int("page") ?? 0) < ($0.int("total_pages") ?? 0) }
+    return (entries, hasNextPage)
+  }
+
   /// TVmaze lookup of the next episode by IMDb id.
   private func tvMazeNextEpisode(imdbId: String) async -> TMDBEpisodeRef? {
     guard let lookup = URL(string: "https://api.tvmaze.com/lookup/shows?imdb=\(imdbId)"),

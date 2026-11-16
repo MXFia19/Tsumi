@@ -19,7 +19,11 @@
   import { toast } from 'svelte-sonner'
   import Helper from '@/modules/helper.js'
   import CustomDropdown from '@/components/CustomDropdown.svelte'
-  import { BookUser, Type, Leaf, CalendarRange, MonitorPlay, MonitorUp, MonitorX, Tv, ArrowDownWideNarrow, Filter, FilterX, X, Tags, Hash, SlidersHorizontal, EyeOff, Hourglass, Mic, ImageUp, Search, Grid3X3, Grid2X2 } from 'lucide-svelte'
+  import { BookUser, Type, Leaf, CalendarRange, MonitorPlay, MonitorUp, MonitorX, Tv, ArrowDownWideNarrow, Filter, FilterX, X, Tags, Hash, SlidersHorizontal, EyeOff, Hourglass, Mic, ImageUp, Search, Grid3X3, Grid2X2, Clapperboard } from 'lucide-svelte'
+  import { RELEASE_FILTERS } from '@/modules/schedule/movies.js'
+  import { manager } from '@/modules/extension.js'
+  import { catalogAddons, catalogSections } from '@/routes/catalogs/sections.js'
+  import { onDestroy } from 'svelte'
 
   import { tmdbGenreList } from '@/modules/tmdb.js'
 
@@ -92,6 +96,8 @@
   function removeBadge (badge) {
     if (badge.key === 'title') {
       delete search.load
+      delete search.stremioCatalog
+      delete search.catalogKey
       delete search.disableHide
       delete search.userList
       delete search.continueWatching
@@ -161,6 +167,41 @@
     }
   }
 
+  // Source: Both / Anime / Western, or one of the Stremio addon catalogs (routes/catalogs/sections.js). A catalog
+  // opened from the Catalogs page shows up selected here; picking Both / Anime / Western leaves it.
+  let catalogAddonList = catalogAddons()
+  const unsubscribeAddons = manager.subscribe(() => { catalogAddonList = catalogAddons() })
+  onDestroy(unsubscribeAddons)
+  $: catalogOptions = listCatalogOptions(catalogAddonList, search.scheduleList, search.catalogKey, search.title)
+  $: sourceValue = search.catalogKey ? `catalog:${search.catalogKey}` : search.western === true ? 'western' : search.western === false ? 'anime' : 'both'
+
+  function listCatalogOptions (addons, scheduleList, currentKey, currentTitle) {
+    if (scheduleList) return []
+    const options = catalogSections(addons)
+    // A searched catalog (Catalogs page search) is not in the list: keep it selectable while it is open.
+    if (currentKey && !options.some(option => option.key === currentKey)) options.unshift({ key: currentKey, title: currentTitle || 'Catalog' })
+    return options
+  }
+
+  function changeSource ({ currentTarget }) {
+    const value = currentTarget.value
+    if (value.startsWith('catalog:')) {
+      const section = catalogOptions.find(option => option.key === value.slice('catalog:'.length))
+      if (!section?.load) return
+      searchTags = { ...searchTags, tags: [], tags_not: [] }
+      search = { genre: [], genre_not: [], tag: [], tag_not: [], format: [], format_not: [], status: [], status_not: [], ...section.variables, load: section.load, title: section.title, clearNext: true }
+    } else {
+      if (search.catalogKey) {
+        delete search.load
+        delete search.title
+        delete search.stremioCatalog
+        delete search.catalogKey
+      }
+      search = { ...search, western: value === 'western' ? true : value === 'anime' ? false : null }
+    }
+    form.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
   function changeCardMode (type) {
     $settings.cards = type
     form.dispatchEvent(new Event('input', { bubbles: true }))
@@ -185,13 +226,36 @@
         <div>Source</div>
       </div>
       <div class='input-group'>
-        <select class='form-control bg-dark-light rounded-1' bind:value={search.western} on:change={() => form.dispatchEvent(new Event('input', { bubbles: true }))}>
-          <option value={null}>Both</option>
-          <option value={false}>Anime</option>
-          <option value={true}>Western</option>
+        <select class='form-control bg-dark-light rounded-1' value={sourceValue} on:change={changeSource}>
+          <option value='both'>Both</option>
+          <option value='anime'>Anime</option>
+          <option value='western'>Western</option>
+          {#if catalogOptions.length}
+            <optgroup label='Catalogs'>
+              {#each catalogOptions as option (option.key)}
+                <option value={'catalog:' + option.key}>{option.title}</option>
+              {/each}
+            </optgroup>
+          {/if}
         </select>
       </div>
     </div>
+    {#if search.scheduleList}
+      <!-- Schedule only: episodes, movies in theaters, movies on digital (modules/schedule/movies.js). -->
+      <div class='col-lg-auto col-4 p-10 d-flex flex-column justify-content-end' class:d-advanced-title={advancedSearch}>
+        <div class='pb-10 font-weight-semi-bold d-flex align-items-center {advancedSearch} font-scale-24'>
+          <Clapperboard class='mr-10 block-scale-30' />
+          <div>Release</div>
+        </div>
+        <div class='input-group'>
+          <select class='form-control bg-dark-light rounded-1' title='Movies show up at their theatrical release and again at their digital release' value={search.release || ''} on:change={({ currentTarget }) => { search.release = currentTarget.value; form.dispatchEvent(new Event('input', { bubbles: true })) }}>
+            {#each Object.entries(RELEASE_FILTERS) as [value, label] (value)}
+              <option {value}>{label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+    {/if}
     <div class='col-lg col-4 p-10 d-flex flex-column justify-content-end' class:d-advanced-title={advancedSearch}>
       <div class='pb-10 font-weight-semi-bold d-flex align-items-center {advancedSearch} font-scale-24'>
         <Type class='mr-10 block-scale-30' />

@@ -140,12 +140,14 @@ struct BrowseAiringLine: View {
   var lastEpisode: Int? = nil
   /// Dub production suspended (delayedIndefinitely): "Suspended" instead of a countdown.
   var suspended = false
+  /// Movie release ("In theaters", "On digital") shown instead of the episode.
+  var label: String? = nil
 
   var body: some View {
     TimelineView(.periodic(from: .now, by: 30)) { context in
       let seconds = airingAt.timeIntervalSince(context.date)
       let aired = !suspended && seconds <= 0
-      let range = (lastEpisode ?? 0) > episode ? "Episode \(episode) ~ \(lastEpisode ?? episode)" : "Episode \(episode)"
+      let range = label ?? ((lastEpisode ?? 0) > episode ? "Episode \(episode) ~ \(lastEpisode ?? episode)" : "Episode \(episode)")
       let prefix = range + " " + (suspended ? "is" : (aired ? "out for" : "in"))
       VStack(alignment: alignment, spacing: 2) {
         HStack(spacing: 4) {
@@ -308,7 +310,7 @@ struct BrowseSmallCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       if let airing {
-        BrowseAiringLine(episode: airing.episode, airingAt: airing.airingAt, showTime: true, lastEpisode: airing.lastEpisode, suspended: airing.delayedIndefinitely)
+        BrowseAiringLine(episode: airing.episode, airingAt: airing.airingAt, showTime: true, lastEpisode: airing.lastEpisode, suspended: airing.delayedIndefinitely, label: airing.releaseLabel)
           .frame(maxWidth: .infinity)
       }
       cover
@@ -409,7 +411,7 @@ struct BrowseFullCard: View {
         titleRow
         BrowseMediaChips(media: media, showReviews: true)
         if let airing {
-          BrowseAiringLine(episode: airing.episode, airingAt: airing.airingAt, showTime: true, alignment: .leading, lastEpisode: airing.lastEpisode, suspended: airing.delayedIndefinitely)
+          BrowseAiringLine(episode: airing.episode, airingAt: airing.airingAt, showTime: true, alignment: .leading, lastEpisode: airing.lastEpisode, suspended: airing.delayedIndefinitely, label: airing.releaseLabel)
         }
         description
         Spacer(minLength: 0)

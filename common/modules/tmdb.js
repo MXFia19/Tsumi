@@ -1,6 +1,7 @@
 import Bottleneck from 'bottleneck'
 import { cache, caches } from '@/modules/cache.js'
 import { anilistClient } from '@/modules/anilist.js'
+import { localeRegion, movieReleaseNodes, MOVIE_WINDOW_DAYS } from '@/modules/schedule/movies.js'
 import Debug from 'debug'
 const debug = Debug('ui:tmdb')
 
@@ -403,6 +404,68 @@ class TMDBClient {
       return { data: { Page: { pageInfo: { hasNextPage: false }, media: [] } } }
     }
   })
+
+  /**
+   * Release dates of a movie (TMDB /movie/{id}/release_dates results), kept 12 hours: digital dates are often
+   * added late.
+   */
+  async getReleaseDates (tmdbId) {
+    const key = `tmdb-release-dates-${tmdbId}`
+    const cached = cache.getEntry(caches.GENERAL, key)
+    if (cached?.time && Date.now() - cached.time < 12 * 60 * 60 * 1000) return cached.results
+    const data = await this.handleRequest(`/movie/${tmdbId}/release_dates`).catch(() => null)
+    if (!data) return cached?.results || []
+    const results = data.results || []
+    cache.setEntry(caches.GENERAL, key, { time: Date.now(), results })
+    return results
+  }
+
+  /**
+   * Upcoming movies of the schedule (modules/schedule/movies.js): theatrical releases in the region and digital
+   * releases (region and US) of the next MOVIE_WINDOW_DAYS days, most popular first, each with its release dates
+   * as airingSchedule nodes. Anime movies known to AniList are left out like in getSchedule.
+   * @param {{ page?: number, theatrical?: boolean, digital?: boolean, region?: string }} [options]
+   */
+  async getMovieSchedule ({ page = 1, theatrical = true, digital = true, region = localeRegion(globalThis.navigator?.language) || 'US' } = {}) {
+    debug('TMDB Movie Schedule', page)
+    try {
+      const now = Date.now()
+      const day = (time) => new Date(time).toISOString().slice(0, 10)
+      const window = { 'release_date.gte': day(now), 'release_date.lte': day(now + MOVIE_WINDOW_DAYS * 86_400_000), sort_by: 'popularity.desc', include_adult: false, page }
+      const queries = []
+      if (theatrical) queries.push({ region, with_release_type: '2|3' })
+      if (digital) {
+        queries.push({ region, with_release_type: '4' })
+        if (region !== 'US') queries.push({ region: 'US', with_release_type: '4' })
+      }
+      const pages = await Promise.all(queries.map(query => this.handleRequest('/discover/movie', { ...window, ...query }).catch(() => null)))
+      const seen = new Set()
+      const items = pages.flatMap(res => res?.results || []).filter(item => {
+        if (!item?.id || item.adult || seen.has(item.id) || this.tmdbToAnilist[`movie-${item.id}`]) return false
+        seen.add(item.id)
+        return true
+      })
+      const mediaList = (await Promise.all(items.map(async (item) => {
+        const nodes = movieReleaseNodes(await this.getReleaseDates(item.id), { region, theatrical, digital, now })
+        if (!nodes.length) return null
+        const media = this.normalizeMedia({ ...item, media_type: 'movie' })
+        media.airingSchedule = { nodes }
+        return media
+      }))).filter(Boolean)
+      await cache.updateMedia(mediaList)
+      return {
+        data: {
+          Page: {
+            pageInfo: { hasNextPage: pages.some(res => res && res.page < res.total_pages) },
+            media: mediaList
+          }
+        }
+      }
+    } catch (e) {
+      debug('TMDB Movie Schedule failed', e)
+      return { data: { Page: { pageInfo: { hasNextPage: false }, media: [] } } }
+    }
+  }
 
   async injectMediaImages (mediaList) {
     if (!mediaList || !mediaList.length) return mediaList

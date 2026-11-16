@@ -857,6 +857,9 @@ export function episode (media, variables) {
 
   if (!nodes || nodes.length === 0) return 'Episode 1 {suffix}'
   if (entry?.delayedIndefinitely && nodes[0]) return `Episode ${nodes[0].episode} is`
+  // Movie releases of the schedule ("In theaters", "On digital", modules/schedule/movies.js).
+  const upcoming = nextAiring(nodes, variables)
+  if (upcoming?.label) return `${upcoming.label} {suffix}`
   if (nodes.length === 1) return `Episode ${nodes[0].episode} {suffix}`
 
   const firstEpisode = nextAiring(nodes, variables)?.episode

@@ -7,6 +7,7 @@
   import { animeSchedule } from '@/modules/anime/animeschedule.js'
   import { cache, caches } from '@/modules/cache.js'
   import { tmdbClient } from '@/modules/tmdb.js'
+  import { releaseKinds } from '@/modules/schedule/movies.js'
   import Helper from '@/modules/helper.js'
 
   const key = writable({})
@@ -79,26 +80,35 @@
 
     let animeRes = { data: { Page: { media: [], pageInfo: { hasNextPage: false } } } }
     let tmdbRes = { data: { Page: { media: [], pageInfo: { hasNextPage: false } } } }
+    let movieRes = { data: { Page: { media: [], pageInfo: { hasNextPage: false } } } }
 
+    // "Release" filter (modules/schedule/movies.js): episodes, movies in theaters, movies on digital. Asking for
+    // movies lists them even with the Anime source, which has no movie releases of its own.
+    const kinds = releaseKinds(variables.release)
+    const moviesOnly = !kinds.episodes
     const fetches = []
     // Only fetch anime on the first page as it's a static list for the week
-    if (variables.western !== true && (variables.page || 1) === 1) {
+    if (kinds.episodes && variables.western !== true && (variables.page || 1) === 1) {
       fetches.push(fetchAnime().then(res => animeRes = res).catch(() => {}))
     }
-    if (variables.western !== false) {
+    if (kinds.episodes && variables.western !== false) {
       fetches.push(tmdbClient.getSchedule(variables.page || 1).then(res => tmdbRes = res).catch(() => {}))
+    }
+    if ((kinds.theatrical || kinds.digital) && (variables.western !== false || moviesOnly) && !variables.hideSubs) {
+      fetches.push(tmdbClient.getMovieSchedule({ page: variables.page || 1, theatrical: kinds.theatrical, digital: kinds.digital }).then(res => { movieRes = res }).catch(() => {}))
     }
 
     await Promise.all(fetches)
 
-    const mixedMedia = [...(animeRes?.data?.Page?.media || []), ...(tmdbRes?.data?.Page?.media || [])]
+    const mixedMedia = [...(animeRes?.data?.Page?.media || []), ...(tmdbRes?.data?.Page?.media || []), ...(movieRes?.data?.Page?.media || [])]
 
-    // Final duplicate filter and universal sort
+    // Final duplicate filter and universal sort (TMDB shows and movies have separate id spaces)
     const seenIds = new Set()
     const sortedMedia = mixedMedia
       .filter(m => {
-        if (!m || seenIds.has(m.id)) return false
-        seenIds.add(m.id)
+        const key = `${m?.format}:${m?.id}`
+        if (!m || seenIds.has(key)) return false
+        seenIds.add(key)
         return nextAiring(m?.airingSchedule?.nodes, variables)
       })
       .sort((a, b) => getAiringTime(a) - getAiringTime(b))
@@ -106,7 +116,7 @@
     return {
       data: {
         Page: {
-          pageInfo: { hasNextPage: (animeRes?.data?.Page?.pageInfo?.hasNextPage && (variables.page || 1) === 1) || tmdbRes?.data?.Page?.pageInfo?.hasNextPage },
+          pageInfo: { hasNextPage: (animeRes?.data?.Page?.pageInfo?.hasNextPage && (variables.page || 1) === 1) || tmdbRes?.data?.Page?.pageInfo?.hasNextPage || movieRes?.data?.Page?.pageInfo?.hasNextPage },
           media: sortedMedia
         }
       }

@@ -26,6 +26,8 @@ struct BrowseSearchFilters: Codable, Equatable {
   var showMyAnime = false
   /// hideSubs: dubbed anime only.
   var dubOnly = false
+  /// Schedule "Release" filter (nil = Any), optional so older saved filters still decode.
+  var release: ScheduleRelease?
 
   /// Statuses hidden / shown by the "Hide My Anime" button.
   static let myAnimeStatuses: [ListStatus] = [.current, .completed, .dropped, .paused, .repeating]
@@ -51,6 +53,7 @@ struct BrowseSearchFilters: Codable, Equatable {
     if hideMyAnime { count += 1 }
     if showMyAnime { count += 1 }
     if dubOnly { count += 1 }
+    if let release, release != .any { count += 1 }
     return count
   }
 
@@ -144,6 +147,7 @@ struct BrowseSearchFilters: Codable, Equatable {
     filter.hideMyAnime = hideMyAnime
     filter.showMyAnime = showMyAnime
     filter.listStatuses = Self.myAnimeStatuses
+    filter.release = release ?? .any
     return filter
   }
 
@@ -522,6 +526,9 @@ struct BrowseFilterSheet: View {
     NavigationStack {
       Form {
         sourceSection
+        if context.isSchedule {
+          releaseSection
+        }
         tagsSection
         if !context.isSchedule {
           seasonSection
@@ -575,6 +582,28 @@ struct BrowseFilterSheet: View {
       }
       .pickerStyle(.segmented)
       .disabled(context.lockSource)
+    }
+  }
+
+  private var releaseBinding: Binding<ScheduleRelease> {
+    Binding(
+      get: { filters.release ?? .any },
+      set: { filters.release = $0 == .any ? nil : $0 }
+    )
+  }
+
+  /// Schedule only: episodes, movies in theaters, movies on digital (MovieReleases).
+  private var releaseSection: some View {
+    Section {
+      Picker("Release", selection: releaseBinding) {
+        ForEach(ScheduleRelease.allCases) { option in
+          Text(option.label).tag(option)
+        }
+      }
+    } header: {
+      Text("Release")
+    } footer: {
+      Text("Movies show up at their theatrical release and again at their digital release.")
     }
   }
 
