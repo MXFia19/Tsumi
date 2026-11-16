@@ -19,6 +19,10 @@ final class DownloadCenter {
   private static let seedMaxAge: TimeInterval = 15 * 60
   private static let autoRetries = 2
   private static let segmentRetries = 2
+  /// Segment tasks running at once per hlsFiles download while the app is active (hundreds of background tasks
+  /// created at once slow the session down). The rest start together when the app goes to the background, so
+  /// the system keeps downloading while the app is suspended.
+  private static let segmentWindow = 24
 
   /// Every download, oldest first.
   private(set) var items: [DownloadItem] = []
@@ -39,8 +43,19 @@ final class DownloadCenter {
   /// Request headers of the segment downloads of each item (to retry a segment).
   @ObservationIgnored private var segmentHeaders: [String: [String: String]] = [:]
   @ObservationIgnored private var segmentURLs: [String: [String: (url: URL, range: ClosedRange<Int64>?)]] = [:]
+  /// Segments of each hlsFiles download not started yet (see `segmentWindow`).
+  @ObservationIgnored private var segmentPending: [String: [HLSResource]] = [:]
+  /// Tasks cancelled by this app (pause, remove, replaced task), by task identifier of each session: their
+  /// completion is expected. Any other cancelled task was cancelled by the system (app force quit...): its
+  /// resume data is kept and the download starts again.
+  @ObservationIgnored private var ownFileCancels = Set<Int>()
+  @ObservationIgnored private var ownAssetCancels = Set<Int>()
+  /// index.json was read and every entry decoded: the startup sweep may delete what the index doesn't reference.
+  @ObservationIgnored private var indexIntact = false
   @ObservationIgnored var backgroundCompletionHandlers: [String: () -> Void] = [:]
   @ObservationIgnored private var saveTask: Task<Void, Never>?
+  @ObservationIgnored private var backgroundObserver: NSObjectProtocol?
+  @ObservationIgnored private var foregroundObserver: NSObjectProtocol?
 
   private init() {}
 
@@ -72,6 +87,16 @@ final class DownloadCenter {
     }
     DownloadProgressQueue.shared.start()
     observeConnection()
+    // The segments still waiting start before the app is suspended (the session goes on without the app).
+    backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+      MainActor.assumeIsolated {
+        DownloadCenter.shared.startAllPendingSegments()
+      }
+    }
+    // Offline AES-HLS plays through the loopback server, whose socket iOS may reclaim while the app is suspended.
+    foregroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
+      DownloadLocalServer.shared.restartIfNeeded()
+    }
   }
 
   /// Starts the queued downloads when the connection comes back.
@@ -90,6 +115,7 @@ final class DownloadCenter {
   private func reattach(fileTasks tasks: [URLSessionDownloadTask]) {
     for task in tasks {
       guard let tag = DownloadTaskTag(task.taskDescription), let item = self.item(tag.id), item.status != .completed, item.status != .paused else {
+        ownFileCancels.insert(task.taskIdentifier)
         task.cancel()
         continue
       }
@@ -109,7 +135,9 @@ final class DownloadCenter {
 
   private func reattach(assetTasks tasks: [AVAssetDownloadTask]) {
     for task in tasks {
-      guard let id = task.taskDescription, let item = self.item(id), item.status != .completed else {
+      // Unknown, finished or duplicate download: cancelled, its partial package is deleted on completion.
+      guard let id = task.taskDescription, let item = self.item(id), item.status != .completed, assetTasks[id] == nil else {
+        ownAssetCancels.insert(task.taskIdentifier)
         task.cancel()
         continue
       }
@@ -133,7 +161,21 @@ final class DownloadCenter {
         }
       }
     }
+    sweepOrphans()
     pump()
+  }
+
+  /// Startup sweep: item folders and .movpkg packages no download references (a download cancelled while its
+  /// transfer started, removed while a task was landing, a crash). Only after a clean read of the index, and the
+  /// packages only while no download runs (the package of a running HLS download is not referenced yet).
+  private func sweepOrphans() {
+    guard indexIntact else { return }
+    let ids = Set(items.map(\.id))
+    let assetPaths = Set(items.compactMap(\.assetPath))
+    let idle = assetTasks.isEmpty && !items.contains { $0.status.isRunning || $0.status == .queued || ($0.status == .paused && $0.kind == .hlsAsset) }
+    Task.detached(priority: .utility) {
+      DownloadStorage.removeOrphans(keeping: ids, assetPaths: assetPaths, packages: idle)
+    }
   }
 
   /// application(_:handleEventsForBackgroundURLSession:completionHandler:)
@@ -152,7 +194,9 @@ final class DownloadCenter {
   private func load() {
     guard let data = try? Data(contentsOf: DownloadStorage.indexURL),
           let list = try? JSONDecoder().decode([DownloadLossyItem].self, from: data) else { return }
-    items = list.compactMap { $0.value }.sorted { $0.createdAt < $1.createdAt }
+    let loaded = list.compactMap { $0.value }
+    items = loaded.sorted { $0.createdAt < $1.createdAt }
+    indexIntact = loaded.count == list.count
   }
 
   private func save(now: Bool = false) {
@@ -219,7 +263,11 @@ final class DownloadCenter {
     for episode in episodes {
       let id = DownloadNaming.id(mediaKey: media.id, episode: episode.ref)
       if let existing = item(id) {
-        if existing.status == .failed || existing.status == .paused {
+        if existing.status == .paused, assetTasks[id] != nil {
+          // A suspended HLS download goes on where it stopped (a new task would orphan its partial package).
+          resume(id)
+          added += 1
+        } else if existing.status == .failed || existing.status == .paused {
           update(id) {
             $0.status = .queued
             $0.error = nil
@@ -268,6 +316,7 @@ final class DownloadCenter {
     guard let item = self.item(id), item.status != .completed else { return }
     preparing.removeValue(forKey: id)
     if let task = fileTasks.removeValue(forKey: id) {
+      ownFileCancels.insert(task.taskIdentifier)
       task.cancel(byProducingResumeData: { data in
         Task { @MainActor in DownloadCenter.shared.storeResumeData(id, data) }
       })
@@ -299,9 +348,16 @@ final class DownloadCenter {
   func remove(_ id: String) {
     guard let item = self.item(id) else { return }
     preparing.removeValue(forKey: id)
-    fileTasks.removeValue(forKey: id)?.cancel()
+    if let task = fileTasks.removeValue(forKey: id) {
+      ownFileCancels.insert(task.taskIdentifier)
+      task.cancel()
+    }
     cancelSegments(id)
-    assetTasks.removeValue(forKey: id)?.cancel()
+    // Its partial .movpkg is deleted when the cancel completes (assetCompleted).
+    if let task = assetTasks.removeValue(forKey: id) {
+      ownAssetCancels.insert(task.taskIdentifier)
+      task.cancel()
+    }
     items.removeAll { $0.id == id }
     try? FileManager.default.removeItem(at: DownloadStorage.folder(id))
     if let path = item.assetPath {
@@ -317,8 +373,12 @@ final class DownloadCenter {
 
   private func cancelSegments(_ id: String) {
     if let tasks = segmentTasks.removeValue(forKey: id) {
-      for task in tasks.values { task.cancel() }
+      for task in tasks.values {
+        ownFileCancels.insert(task.taskIdentifier)
+        task.cancel()
+      }
     }
+    segmentPending.removeValue(forKey: id)
     segmentURLs.removeValue(forKey: id)
     segmentHeaders.removeValue(forKey: id)
   }
@@ -373,11 +433,16 @@ final class DownloadCenter {
         self.writeMetadata(id)
         await self.saveExtras(id, stream: stream)
         guard self.preparing[id] == token else { return }
-        try await self.startTransferWithFallback(id, stream: stream) { self.preparing[id] == token }
-        self.preparing.removeValue(forKey: id)
+        // Re-checked after every await of the transfer start: a pause / cancel meanwhile must not start a task.
+        try await self.startTransferWithFallback(id, stream: stream) {
+          self.preparing[id] == token && self.item(id)?.status == .downloading
+        }
+        // Only this run's token: a pause + resume meanwhile started a newer run.
+        if self.preparing[id] == token { self.preparing.removeValue(forKey: id) }
       } catch {
         guard self.preparing[id] == token else { return }
         self.preparing.removeValue(forKey: id)
+        if error is DownloadSuperseded { return }
         self.failed(id, error)
       }
     }
@@ -485,10 +550,10 @@ final class DownloadCenter {
         }
       }
       do {
-        try await startTransfer(id, stream: attempt)
+        try await startTransfer(id, stream: attempt, isCurrent: isCurrent)
         return
       } catch {
-        if ShellConnectionMonitor.shared.isOffline || !Self.isServerProblem(error) { throw error }
+        if error is DownloadSuperseded || ShellConnectionMonitor.shared.isOffline || !Self.isServerProblem(error) { throw error }
         lastError = error
       }
     }
@@ -551,7 +616,21 @@ final class DownloadCenter {
     if mime.contains("mpegurl") || DownloadHLS.isPlaylist(String(decoding: head, as: UTF8.self)) {
       return try await playlist(response.url ?? url, headers: stream.headers)
     }
+    // AVPlayer can't play Matroska / WebM: refused before downloading the whole file (another server may be MP4).
+    if Self.isMatroska(url: response.url ?? url, mimeType: mime, head: head) {
+      throw DownloadFailure("This server sends an MKV / WebM video, a format iPhone and iPad can't play. Pick another server or source.", final: true)
+    }
     return .file
+  }
+
+  /// Matroska / WebM file: the EBML header (1A 45 DF A3) both formats start with, the MIME type, or the
+  /// extension when neither the type nor the first bytes say otherwise (no "ftyp" box of an MP4).
+  private static func isMatroska(url: URL, mimeType: String, head: Data) -> Bool {
+    if head.starts(with: [0x1A, 0x45, 0xDF, 0xA3]) { return true }
+    if mimeType.contains("matroska") || mimeType.contains("webm") { return true }
+    let generic = mimeType.isEmpty || mimeType.contains("octet-stream")
+    let isMP4 = head.count >= 8 && head.subdata(in: (head.startIndex + 4)..<(head.startIndex + 8)) == Data("ftyp".utf8)
+    return generic && !isMP4 && ["mkv", "mk3d", "webm"].contains(url.pathExtension.lowercased())
   }
 
   private func playlist(_ url: URL, headers: [String: String]) async throws -> StreamKind {
@@ -566,12 +645,15 @@ final class DownloadCenter {
     return .hls(text: text, url: response.url ?? url)
   }
 
-  private func startTransfer(_ id: String, stream: ResolvedStream) async throws {
-    switch try await classify(stream) {
+  /// `isCurrent` is checked after every await: a download paused or cancelled meanwhile starts no task.
+  private func startTransfer(_ id: String, stream: ResolvedStream, isCurrent: () -> Bool) async throws {
+    let kind = try await classify(stream)
+    guard isCurrent() else { throw DownloadSuperseded() }
+    switch kind {
     case .file:
       startFile(id, stream: stream)
     case .hls(let text, let url):
-      try await startHLS(id, stream: stream, text: text, url: url)
+      try await startHLS(id, stream: stream, text: text, url: url, isCurrent: isCurrent)
     }
   }
 
@@ -598,7 +680,7 @@ final class DownloadCenter {
     task.resume()
   }
 
-  private func startHLS(_ id: String, stream: ResolvedStream, text: String, url: URL) async throws {
+  private func startHLS(_ id: String, stream: ResolvedStream, text: String, url: URL, isCurrent: () -> Bool) async throws {
     let quality = AppSettings.shared.values.downloadQuality
     var mediaText = text
     var mediaURL = url
@@ -625,19 +707,27 @@ final class DownloadCenter {
     }
     if let drm = videoPlan.drm ?? audioPlan?.drm { throw DownloadFailure(drm, final: true) }
     guard videoPlan.segmentCount > 0 else { throw DownloadFailure("The HLS playlist has no segments.", final: true) }
+    // The playlists were fetched: paused or cancelled meanwhile, no task starts.
+    guard isCurrent() else { throw DownloadSuperseded() }
     let height: Int? = (variant?.height ?? 0) > 0 ? variant?.height : nil
     update(id) { $0.quality = height }
 
     let needsFiles = videoPlan.hasAESKey || audioPlan?.hasAESKey == true || item(id)?.preferFiles == true
     if !needsFiles {
-      try startAsset(id, playlistURL: master != nil ? url : mediaURL, headers: stream.headers, variant: variant)
+      try startAsset(id, playlistURL: master != nil ? url : mediaURL, headers: stream.headers, variant: variant, duration: videoPlan.duration)
       return
     }
     try startSegments(id, video: videoPlan, audio: audioPlan, master: master, variant: variant, rendition: audio, headers: stream.headers)
   }
 
-  private func startAsset(_ id: String, playlistURL: URL, headers: [String: String], variant: HLSVariant?) throws {
+  private func startAsset(_ id: String, playlistURL: URL, headers: [String: String], variant: HLSVariant?, duration: Double) throws {
     guard let session = assetSession, let item = self.item(id) else { return }
+    // A previous task of this download (suspended, then queued again) is replaced: cancelled first, its partial
+    // package is deleted when the cancel completes.
+    if let previous = assetTasks.removeValue(forKey: id) {
+      ownAssetCancels.insert(previous.taskIdentifier)
+      previous.cancel()
+    }
     var assetOptions: [String: Any] = [:]
     if !headers.isEmpty {
       assetOptions["AVURLAssetHTTPHeaderFieldsKey"] = headers
@@ -657,7 +747,16 @@ final class DownloadCenter {
     }
     task.taskDescription = id
     assetTasks[id] = task
-    update(id) { $0.kind = .hlsAsset }
+    // AVFoundation reports a fraction only: the size is estimated from the variant bitrate and the duration, so
+    // the Downloads screen and Storage Used show bytes while it runs (replaced by the real size at the end).
+    let bandwidth = Double(variant?.bandwidth ?? 0)
+    let estimate = bandwidth > 0 && duration.isFinite && duration > 0 ? bandwidth / 8 * duration : 0
+    update(id) {
+      $0.kind = .hlsAsset
+      $0.bytes = 0
+      $0.progress = 0
+      $0.totalBytes = estimate.isFinite && estimate < Double(Int64.max) ? Int64(estimate) : 0
+    }
     task.resume()
   }
 
@@ -665,7 +764,8 @@ final class DownloadCenter {
     guard let session = fileSession else { return }
     let folder = try DownloadStorage.ensureFolder(id)
     let resources = video.resources + (audio?.resources ?? [])
-    let signature = "\(video.segmentCount):\(audio?.segmentCount ?? 0):\(Int(video.duration))"
+    let seconds = video.duration.isFinite ? Int(min(max(video.duration, 0), 1_000_000_000)) : 0
+    let signature = "\(video.segmentCount):\(audio?.segmentCount ?? 0):\(seconds)"
     if let item = self.item(id), item.kind == .hlsFiles, let previous = item.hlsSignature, previous != signature {
       // The fresh link lists other segments (another encode / server): the saved ones don't match.
       let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
@@ -711,10 +811,32 @@ final class DownloadCenter {
       finishFiles(id)
       return
     }
-    for resource in remaining {
+    segmentPending[id] = remaining
+    startPendingSegments(id, session: session, all: UIApplication.shared.applicationState == .background)
+  }
+
+  /// Starts waiting segments of a download: up to `segmentWindow` running tasks, or all of them (`all`, app in
+  /// the background).
+  private func startPendingSegments(_ id: String, session: URLSession, all: Bool) {
+    guard var pending = segmentPending[id], !pending.isEmpty else { return }
+    let headers = segmentHeaders[id] ?? [:]
+    let running = segmentTasks[id]?.count ?? 0
+    let count = all ? pending.count : min(max(Self.segmentWindow - running, 0), pending.count)
+    guard count > 0 else { return }
+    for resource in pending.prefix(count) {
       let task = segmentTask(session, id: id, file: resource.file, url: resource.url, range: resource.range, headers: headers)
       segmentTasks[id, default: [:]][task.taskIdentifier] = task
       task.resume()
+    }
+    pending.removeFirst(count)
+    segmentPending[id] = pending.isEmpty ? nil : pending
+  }
+
+  /// The app goes to the background: every waiting segment starts (the session goes on while it is suspended).
+  private func startAllPendingSegments() {
+    guard let session = fileSession else { return }
+    for id in Array(segmentPending.keys) {
+      startPendingSegments(id, session: session, all: true)
     }
   }
 
@@ -740,10 +862,20 @@ final class DownloadCenter {
 
   func fileTaskCompleted(_ result: DownloadTaskResult) {
     let id = result.tag.id
-    guard item(id) != nil else { return }
+    // Cancelled by this app (pause keeps its resume data itself, remove, replaced task): nothing to report.
+    if ownFileCancels.remove(result.taskIdentifier) != nil { return }
+    guard let item = self.item(id), item.status != .completed else { return }
     if result.tag.file == DownloadTaskTag.videoFile {
-      fileTasks.removeValue(forKey: id)
-      if result.cancelled { return }
+      // Only the task the download runs now changes it (not a late answer of a replaced one). Without a known
+      // task (relaunch: the answer can come before the tasks are reattached) the download must be running.
+      if let current = fileTasks[id] {
+        guard current.taskIdentifier == result.taskIdentifier else { return }
+        fileTasks.removeValue(forKey: id)
+      } else if item.status != .downloading && result.savedFile == nil {
+        // A new run already prepares: only its resume data is worth keeping.
+        if let data = result.resumeData { storeResumeData(id, data) }
+        return
+      }
       if let file = result.savedFile, result.error == nil {
         update(id) {
           $0.mediaFile = file
@@ -752,12 +884,18 @@ final class DownloadCenter {
         complete(id)
         return
       }
-      if let data = result.resumeData, let folder = try? DownloadStorage.ensureFolder(id) {
+      if let data = result.resumeData, let folder = DownloadStorage.existingFolder(id) {
         try? data.write(to: folder.appendingPathComponent("resume.data"), options: .atomic)
         update(id) { $0.hasResumeData = true }
-      } else if item(id)?.hasResumeData == true {
+      } else if !result.cancelled && item.hasResumeData {
         // Resume data from an expired link: start over with a fresh one.
         update(id) { $0.hasResumeData = false }
+      }
+      if result.cancelled {
+        // Cancelled by the system (app force quit...): queued again, it continues from its resume data.
+        update(id) { $0.status = .queued }
+        pump()
+        return
       }
       let status = result.status ?? 0
       if !(200..<300).contains(status) && status > 0 {
@@ -768,10 +906,15 @@ final class DownloadCenter {
       return
     }
     // HLS segment / key / init segment.
-    var tasks = segmentTasks[id] ?? [:]
-    tasks.removeValue(forKey: result.taskIdentifier)
-    segmentTasks[id] = tasks
-    if result.cancelled { return }
+    let known = segmentTasks[id]?.removeValue(forKey: result.taskIdentifier) != nil
+    // A late answer of an older run while a new run prepares: the new run lists the segments again.
+    if !known && preparing[id] != nil { return }
+    if result.cancelled {
+      // Cancelled by the system (app force quit...): the segment is fetched again with a fresh link once the
+      // other tasks are done (below).
+      finishSegmentsIfDone(id)
+      return
+    }
     let failureKey = "\(id)|\(result.tag.file)"
     if let file = result.savedFile, result.error == nil {
       let path = DownloadStorage.folder(id).appendingPathComponent(file)
@@ -791,6 +934,10 @@ final class DownloadCenter {
         items[index].totalBytes = Int64(Double(items[index].bytes) / Double(done) * Double(total))
         save()
       }
+      // The next waiting segments take the place of this one.
+      if let session = fileSession {
+        startPendingSegments(id, session: session, all: UIApplication.shared.applicationState == .background)
+      }
     } else {
       let failures = (segmentFailures[failureKey] ?? 0) + 1
       segmentFailures[failureKey] = failures
@@ -807,25 +954,53 @@ final class DownloadCenter {
       failed(id, status >= 400 ? DownloadFailure(DownloadNaming.httpMessage(status)) : (result.error ?? DownloadFailure("A segment could not be downloaded.")))
       return
     }
-    if tasks.isEmpty, item(id)?.status == .downloading {
-      if isComplete(id) {
-        finishFiles(id)
-      } else {
-        // Tasks lost (relaunch): continue with a fresh link.
-        update(id) { $0.status = .queued }
-        pump()
-      }
+    finishSegmentsIfDone(id)
+  }
+
+  /// No segment task left and none waiting: done, or tasks lost (relaunch, system cancel) → a fresh link.
+  private func finishSegmentsIfDone(_ id: String) {
+    let running = !(segmentTasks[id]?.isEmpty ?? true) || !(segmentPending[id]?.isEmpty ?? true)
+    guard !running, item(id)?.status == .downloading else { return }
+    if isComplete(id) {
+      finishFiles(id)
+    } else {
+      update(id) { $0.status = .queued }
+      pump()
     }
   }
 
   func assetProgress(id: String, progress: Double) {
     guard let index = items.firstIndex(where: { $0.id == id }), items[index].status == .downloading else { return }
-    items[index].progress = min(progress, 0.999)
+    let fraction = min(progress, 0.999)
+    items[index].progress = fraction
+    // Estimated bytes (startAsset), for the row and Storage Used.
+    if items[index].totalBytes > 0 {
+      items[index].bytes = Int64(Double(items[index].totalBytes) * fraction)
+    }
   }
 
-  func assetCompleted(id: String, relativePath: String?, error: Error?, cancelled: Bool) {
-    assetTasks.removeValue(forKey: id)
-    guard item(id) != nil, !cancelled else { return }
+  func assetCompleted(id: String, taskIdentifier: Int, relativePath: String?, error: Error?, cancelled: Bool) {
+    let own = ownAssetCancels.remove(taskIdentifier) != nil
+    // Only the task the download runs now may change it. Without a known task (relaunch: the answer can come
+    // before the tasks are reattached) the answer is taken as the current one.
+    var isCurrent = true
+    if let current = assetTasks[id] {
+      isCurrent = current.taskIdentifier == taskIdentifier
+      if isCurrent { assetTasks.removeValue(forKey: id) }
+    }
+    let live = self.item(id).map { $0.status != .completed } ?? false
+    guard live, isCurrent, !own, !cancelled else {
+      // Cancelled, replaced or removed download: its package is partial and nothing references it.
+      if let relativePath, relativePath != self.item(id)?.assetPath {
+        try? FileManager.default.removeItem(at: DownloadStorage.homeURL(relativePath))
+      }
+      // Cancelled by the system (app force quit...): starts again with a fresh link.
+      if cancelled, !own, isCurrent, self.item(id)?.status.isRunning == true {
+        update(id) { $0.status = .queued }
+        pump()
+      }
+      return
+    }
     if let relativePath, error == nil {
       let url = DownloadStorage.homeURL(relativePath)
       DownloadStorage.excludeFromBackup(url)
@@ -855,6 +1030,7 @@ final class DownloadCenter {
 
   private func finishFiles(_ id: String) {
     segmentTasks.removeValue(forKey: id)
+    segmentPending.removeValue(forKey: id)
     segmentURLs.removeValue(forKey: id)
     segmentHeaders.removeValue(forKey: id)
     update(id) { $0.mediaFile = "index.m3u8" }
@@ -862,6 +1038,8 @@ final class DownloadCenter {
   }
 
   private func complete(_ id: String) {
+    // A run still preparing (relaunch race) must not start another transfer.
+    preparing.removeValue(forKey: id)
     var size = DownloadStorage.size(of: DownloadStorage.folder(id))
     if let path = item(id)?.assetPath { size += DownloadStorage.size(of: DownloadStorage.homeURL(path)) }
     update(id) {
@@ -1024,6 +1202,10 @@ final class DownloadBackgroundTask {
     identifier = .invalid
   }
 }
+
+/// The download was paused or cancelled (or a newer run took over) while its transfer was starting: no task is
+/// created and nothing is reported.
+private struct DownloadSuperseded: Error {}
 
 /// Index entry that can't be read is dropped instead of losing the whole list.
 private struct DownloadLossyItem: Decodable {

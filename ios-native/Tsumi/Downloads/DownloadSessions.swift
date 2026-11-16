@@ -27,6 +27,15 @@ enum DownloadStorage {
     return url
   }
 
+  /// Folder of a download that still exists. The folder is created before any transfer starts and deleted when
+  /// the download is removed, so a transfer landing after a cancel must not create it again (orphan folder).
+  static func existingFolder(_ id: String) -> URL? {
+    let url = folder(id)
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+    return url
+  }
+
   /// File of a download, nil for a path outside its folder or a missing file.
   static func fileURL(id: String, file: String) -> URL? {
     let invalid: (String) -> Bool = { $0.isEmpty || $0.contains("/") || $0.contains("\\") || $0 == "." || $0 == ".." }
@@ -44,6 +53,32 @@ enum DownloadStorage {
     let path = url.standardizedFileURL.path
     guard path.hasPrefix(home) else { return nil }
     return String(path.dropFirst(home.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+  }
+
+  /// Startup sweep of DownloadCenter: deletes the item folders whose id is not in `ids` and, with `packages`, the
+  /// .movpkg packages of AVAssetDownloadURLSession (Library/com.apple.UserManagedAssets.*) no download references.
+  static func removeOrphans(keeping ids: Set<String>, assetPaths: Set<String>, packages: Bool) {
+    let fileManager = FileManager.default
+    let rootURL = root
+    for name in (try? fileManager.contentsOfDirectory(atPath: rootURL.path)) ?? [] where !ids.contains(name) {
+      let url = rootURL.appendingPathComponent(name, isDirectory: true)
+      var isDirectory: ObjCBool = false
+      guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
+      try? fileManager.removeItem(at: url)
+    }
+    guard packages else { return }
+    // Matched by relative path and by package name (the container path may be written differently).
+    let referencedNames = Set(assetPaths.map { URL(fileURLWithPath: $0).lastPathComponent })
+    let library = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library", isDirectory: true)
+    for container in (try? fileManager.contentsOfDirectory(atPath: library.path)) ?? [] where container.hasPrefix("com.apple.UserManagedAssets") {
+      let folder = library.appendingPathComponent(container, isDirectory: true)
+      for entry in (try? fileManager.contentsOfDirectory(atPath: folder.path)) ?? [] where entry.lowercased().hasSuffix(".movpkg") {
+        let url = folder.appendingPathComponent(entry)
+        if referencedNames.contains(entry) { continue }
+        if let relative = relativeToHome(url), assetPaths.contains(relative) { continue }
+        try? fileManager.removeItem(at: url)
+      }
+    }
   }
 
   static func excludeFromBackup(_ url: URL) {
@@ -133,8 +168,9 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, AVAss
     if file == DownloadTaskTag.videoFile {
       file = "video." + DownloadNaming.videoExtension(url: response?.url ?? downloadTask.originalRequest?.url, mimeType: response?.mimeType)
     }
+    // Removed (cancelled) download: the file is dropped instead of recreating the folder.
+    guard let folder = DownloadStorage.existingFolder(tag.id) else { return }
     do {
-      let folder = try DownloadStorage.ensureFolder(tag.id)
       let destination = folder.appendingPathComponent(file)
       if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
       if let range = tag.range, status == 200 {
@@ -164,10 +200,11 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, AVAss
     if let assetTask = task as? AVAssetDownloadTask {
       let location = assetLocations.update { $0.removeValue(forKey: assetTask.taskIdentifier) }
       let id = assetTask.taskDescription ?? ""
+      let taskIdentifier = assetTask.taskIdentifier
       let relative = location.flatMap { DownloadStorage.relativeToHome($0) }
       let cancelled = (error as? URLError)?.code == .cancelled
       Task { @MainActor in
-        DownloadCenter.shared.assetCompleted(id: id, relativePath: relative, error: error, cancelled: cancelled)
+        DownloadCenter.shared.assetCompleted(id: id, taskIdentifier: taskIdentifier, relativePath: relative, error: error, cancelled: cancelled)
       }
       return
     }
