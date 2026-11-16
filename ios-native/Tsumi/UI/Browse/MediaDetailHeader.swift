@@ -158,7 +158,8 @@ struct BrowseDetailActions: View {
       }
       // "Resume Episode 5 at 12:34 (from PC)": cross-device resume (BrowseRemoteResume.swift).
       .modifier(BrowseRemoteResume(media: media))
-      HStack(spacing: 10) {
+      // Wrapping row: up to seven 44 pt buttons plus the share links do not fit the width of an iPhone.
+      BrowseFlowLayout(spacing: 10, lineSpacing: 10) {
         if BrowseMediaInfo.canEditList(media) {
           BrowseListEditorButton(media: media)
         }
@@ -182,7 +183,6 @@ struct BrowseDetailActions: View {
             }
           }
         }
-        Spacer(minLength: 0)
       }
     }
   }

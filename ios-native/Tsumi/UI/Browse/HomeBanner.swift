@@ -280,13 +280,25 @@ struct BrowseBannerButtons: View {
   let media: Media
 
   var body: some View {
+    // With the list editor and favourite buttons, the labelled row is wider than an iPhone (the labels were
+    // truncated): View Details then falls back to an icon button.
+    ViewThatFits(in: .horizontal) {
+      row(compactDetails: false)
+      row(compactDetails: true)
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func row(compactDetails: Bool) -> some View {
     let entry = media.listEntry
-    HStack(spacing: 10) {
+    return HStack(spacing: 10) {
       Button {
         BrowseActions.playMedia(media)
       } label: {
         Label(BrowseMediaInfo.playButtonText(entry), systemImage: "play.fill")
           .font(.subheadline.weight(.semibold))
+          .lineLimit(1)
+          .minimumScaleFactor(0.8)
           .foregroundStyle(.white)
           .padding(.horizontal, 16)
           .frame(height: 44)
@@ -295,13 +307,23 @@ struct BrowseBannerButtons: View {
       Button {
         BrowseActions.open(media)
       } label: {
-        Text("View Details")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(.white)
-          .padding(.horizontal, 16)
-          .frame(height: 44)
-          .background(BrowsePalette.cardStrong, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        Group {
+          if compactDetails {
+            Image(systemName: "info.circle")
+              .font(.system(size: 18, weight: .semibold))
+              .frame(width: 44, height: 44)
+          } else {
+            Text("View Details")
+              .font(.subheadline.weight(.semibold))
+              .lineLimit(1)
+              .padding(.horizontal, 16)
+              .frame(height: 44)
+          }
+        }
+        .foregroundStyle(.white)
+        .background(BrowsePalette.cardStrong, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
       }
+      .accessibilityLabel("View Details")
       if BrowseMediaInfo.canEditList(media) {
         BrowseListEditorButton(media: media)
       }
@@ -309,7 +331,6 @@ struct BrowseBannerButtons: View {
         BrowseFavouriteButton(media: media)
       }
     }
-    .buttonStyle(.plain)
   }
 }
 
