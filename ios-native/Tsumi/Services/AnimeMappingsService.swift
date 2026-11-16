@@ -296,7 +296,8 @@ final class AnimeMappingsService: @unchecked Sendable {
     let longTTL = TimeInterval(Int.random(in: 14...21) * 24 * 3600)
     guard let media = MediaStore.shared.anilist(anilistId), media.status == .finished else { return shortTTL }
     let extras = MediaStore.shared.extras(for: media)
-    let calendar = Calendar.current
+    // Fuzzy dates are Gregorian (Calendar.current can be Buddhist or Japanese).
+    let calendar = ServiceDates.gregorian
     let now = Date()
     let year = calendar.component(.year, from: now)
     let month = calendar.component(.month, from: now)

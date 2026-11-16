@@ -195,6 +195,12 @@ struct FuzzyDate: Codable, Hashable {
 // MARK: - Dates
 
 enum ServiceDates {
+  /// Gregorian calendar in the device time zone. API years and months (AniList seasonYear, TMDB dates, fuzzy dates)
+  /// are Gregorian: `Calendar.current` can be Buddhist (year 2569) or Japanese (year 8) on some devices.
+  static var gregorian: Calendar {
+    Calendar(identifier: .gregorian)
+  }
+
   private static let isoPlain: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
@@ -269,13 +275,13 @@ enum AnimeSeasonClock {
   static let ordered: [MediaSeason] = [.winter, .spring, .summer, .fall]
 
   static var currentSeason: MediaSeason {
-    let month = Calendar.current.component(.month, from: Date()) - 1
+    let month = ServiceDates.gregorian.component(.month, from: Date()) - 1
     let index = Int((Double(month) / 12.0 * 4.0).rounded(.down)) % 4
     return ordered[index]
   }
 
   static var currentYear: Int {
-    Calendar.current.component(.year, from: Date())
+    ServiceDates.gregorian.component(.year, from: Date())
   }
 
   /// Season after the current one (Anime - Upcoming Next Season).
@@ -531,7 +537,7 @@ enum ServiceText {
       return formatter.string(from: date)
     }
     formatter.dateFormat = "MMMM"
-    let day = Calendar.current.component(.day, from: date)
+    let day = ServiceDates.gregorian.component(.day, from: date)
     let suffix: String
     switch day {
     case 1, 21, 31: suffix = "st"

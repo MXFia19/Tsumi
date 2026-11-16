@@ -1002,7 +1002,7 @@ final class AnimeScheduleService: @unchecked Sendable {
     if incomplete && aired.contains(where: { $0.episode?.aired == 1 }) {
       return DubEpisodeAiring(airdate: nil, text: "Not Planned", delayed: true, notPlanned: true)
     }
-    if entry == nil && (media.seasonYear ?? 0) >= Calendar.current.component(.year, from: now) && dubMedia {
+    if entry == nil && (media.seasonYear ?? 0) >= ServiceDates.gregorian.component(.year, from: now) && dubMedia {
       return DubEpisodeAiring(airdate: nil, text: "In Production", delayed: false)
     }
     return nil

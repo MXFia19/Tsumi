@@ -105,7 +105,8 @@ enum MovieReleases {
   static func releaseDay(_ day: String) -> Date? {
     let parts = day.prefix(10).split(separator: "-").compactMap { Int($0) }
     guard parts.count == 3 else { return nil }
-    return Calendar.current.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+    // TMDB days are Gregorian, whatever the device calendar.
+    return ServiceDates.gregorian.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
   }
 
   /// movieReleaseNodes: the theatrical and digital releases still to come within `days`, earliest first.
