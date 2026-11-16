@@ -70,7 +70,8 @@ async function candidates (titles, targets) {
   const lists = []
   for (const title of titles.slice(0, 3)) {
     if (targets.anime) {
-      lists.push(Promise.resolve(anilistClient.search({ search: title, page: 1, perPage: 10 })).then(res => res?.data?.Page?.media || []).catch(() => []))
+      // Best matches first (like iOS): with 10 results per title, trending order could leave the right one out.
+      lists.push(Promise.resolve(anilistClient.search({ search: title, page: 1, perPage: 10, sort: 'SEARCH_MATCH' })).then(res => res?.data?.Page?.media || []).catch(() => []))
     }
     if (targets.western) {
       lists.push(tmdbClient.textSearch(title).then(res => res?.data?.Page?.media || []).catch(() => []))
