@@ -1,6 +1,6 @@
 import { getAniMappings } from '@/modules/anime/anime.js'
 import { tmdbClient } from '@/modules/tmdb.js'
-import { tmdbSeasonEpisode } from '@/modules/onlinesubs/core.js'
+import { tmdbSeasonEpisode, episodeNumber } from '@/modules/onlinesubs/core.js'
 import Debug from 'debug'
 import { introDbUrl, introDbChapters, animeQuery } from './core.js'
 
@@ -16,7 +16,7 @@ const answers = new Map()
  */
 export async function introDbQuery (media, episode) {
   if (!media) return null
-  const number = Number(episode) || 1
+  const number = episodeNumber(episode) // episode 0 (prologue) stays 0: no skip times rather than episode 1's
   const isTmdb = media.isTmdb || (typeof media.id === 'string' && media.id.startsWith('tmdb-'))
   if (isTmdb) {
     const tmdb = Number(media.idTmdb || String(media.id).replace(/^tmdb-(tv-|movie-)?/, ''))

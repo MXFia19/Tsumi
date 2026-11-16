@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import {
   normalizeLanguage, preferredLanguage, languageName, subtitlesUrl, queryKey, episodeCandidates, tmdbSeasonEpisode,
-  parseSubtitleList, groupByLanguage, pickAutomatic, trackLabel
+  parseSubtitleList, groupByLanguage, pickAutomatic, trackLabel, episodeNumber
 } from './core.js'
 
 let passed = 0
@@ -112,6 +112,18 @@ test('pickAutomatic takes the first SRT of the preferred language', () => {
 test('trackLabel names the track after the language and the release', () => {
   assert.equal(trackLabel({ language: 'en', name: 'Frieren.S01E01.WEBRip.srt' }), 'English - Frieren.S01E01.WEBRip')
   assert.equal(trackLabel({ language: 'fr', name: '' }), 'French')
+})
+
+test('episodeNumber keeps episode 0, 1 when missing or invalid', () => {
+  assert.equal(episodeNumber(0), 0)
+  assert.equal(episodeNumber('0'), 0)
+  assert.equal(episodeNumber(12), 12)
+  assert.equal(episodeNumber('12'), 12)
+  assert.equal(episodeNumber(undefined), 1)
+  assert.equal(episodeNumber(null), 1)
+  assert.equal(episodeNumber(''), 1)
+  assert.equal(episodeNumber('abc'), 1)
+  assert.equal(episodeNumber(-3), 1)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)
