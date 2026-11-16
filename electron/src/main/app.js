@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
 
 import { toXmlString } from 'powertoast'
 import { youtubeServer } from './youtube.js'
@@ -14,7 +15,8 @@ try {
   console.warn('electron-shutdown-handler not available (native module not built), graceful shutdown on Windows will be limited')
 }
 
-import { development, getWindowState, saveWindowState, getDefaultBounds } from './util.js'
+import { development, getWindowState, saveWindowState, getDefaultBounds, openExternal } from './util.js'
+import { isAppUrl, isExternalUrl, isWebUrl } from './security.js'
 import Discord from './discord.js'
 import Trakt from './trakt.js'
 import Protocol from './protocol.js'
@@ -27,6 +29,47 @@ import { setupVoicePermission } from './voice.js'
 import DownloadManager from './downloads/manager.js'
 import CastManager from './cast/index.js'
 import { setupContextMenu } from './contextMenu.js'
+
+/** The page of the app: the only one the main window may show (it has the IPC bridge, see preload.js). */
+const APP_URL = development ? 'http://localhost:5000/app.html' : pathToFileURL(join(__dirname, 'app.html')).href
+
+/** Link of a notification (click or button): tsumi:// (handled by the app), http(s) or mailto. */
+function isNotificationLink (url) {
+  return typeof url === 'string' && (/^tsumi:/i.test(url) || isExternalUrl(url))
+}
+
+let lastExternal = { url: '', at: 0 }
+/** Opens a link in the browser once (will-frame-navigate and will-navigate can both report the same navigation). */
+function openExternalOnce (url) {
+  const now = Date.now()
+  if (url === lastExternal.url && now - lastExternal.at < 1000) return
+  lastExternal = { url, at: now }
+  openExternal(url)
+}
+
+/**
+ * Keeps a window on the pages `isAllowed` accepts: a link or a script of the page can't take the window to another
+ * site (for the main window that site would get the IPC bridge). http(s) links open in the browser instead, and the
+ * page never opens windows of its own. Frames inside the page (YouTube embeds...) are not concerned.
+ * @param {import('electron').WebContents} contents
+ * @param {(url: string) => boolean} isAllowed
+ * @param {{ external?: boolean }} [options] external: open blocked http(s) links and window.open links in the browser
+ */
+function guardNavigation (contents, isAllowed, { external = true } = {}) {
+  const check = (event, url) => {
+    if (isAllowed(url)) return
+    event.preventDefault()
+    if (external && isWebUrl(url)) openExternalOnce(url)
+  }
+  contents.on('will-frame-navigate', (event) => {
+    if (event.isMainFrame) check(event, event.url)
+  })
+  contents.on('will-navigate', (event, url) => check(event, event.url || url))
+  contents.setWindowOpenHandler(({ url }) => {
+    if (external && isExternalUrl(url)) openExternalOnce(url)
+    return { action: 'deny' }
+  })
+}
 
 export default class App {
   icon = nativeImage.createFromPath(join(__dirname, process.platform === 'win32' ? '/icon_filled.ico' : '/icon_filled.png'))
@@ -61,7 +104,9 @@ export default class App {
       allowRunningInsecureContent: false,
       enableBlinkFeatures: 'FontAccess, AudioVideoTracks',
       backgroundThrottling: false,
-      preload: join(__dirname, '/preload.js')
+      preload: join(__dirname, '/preload.js'),
+      // Read by preload.js (window.version.app): the renderer shows the real version instead of a hardcoded one.
+      additionalArguments: [`--tsumi-version=${app.getVersion()}`]
     },
     icon: this.icon,
     show: false
@@ -83,7 +128,8 @@ export default class App {
 
   constructor () {
     this.mainWindow.setMenuBarVisibility(false)
-    this.mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    // Only the app page in the main window; links of the page (synopses, changelogs...) open in the browser.
+    guardNavigation(this.mainWindow.webContents, url => isAppUrl(url, APP_URL))
     // Watch Together voice chat: microphone only while in voice.
     setupVoicePermission(this.mainWindow)
     // Right-click menu (contextMenu.js): only where the page has no right-click handler of its own.
@@ -166,6 +212,11 @@ export default class App {
     fs.rmSync(this.imageDir, { recursive: true, force: true })
     ipcMain.on('notification-unread', async (e, notificationCount) => this.setTrayIcon(notificationCount))
     ipcMain.on('notification', async (e, opts) => {
+      // A notification opens the app (tsumi://) or a web page, nothing else: Windows hands the link of a toast to the
+      // shell like shell.openExternal would.
+      const linkOf = activation => typeof activation === 'string' ? activation : activation?.launch
+      if (opts.activation && !isNotificationLink(linkOf(opts.activation))) delete opts.activation
+      if (Array.isArray(opts.button)) opts.button = opts.button.filter(button => isNotificationLink(linkOf(button?.activation)))
       opts.icon = opts.icon ? ((await this.getImage(opts.id, opts.icon)) || this.icon) : this.icon
       let notification
       if (process.platform === 'win32') {
@@ -176,13 +227,9 @@ export default class App {
         const simpleOpts = { title: opts.title, body: opts.message, icon: opts.icon }
         if (process.platform === 'darwin' && opts.button && opts.button.length) simpleOpts.actions = opts.button.map(button => ({ type: 'button', text: button.text }))
         notification = new Notification(simpleOpts)
-        notification.on('click', () => {
-          if (opts.activation?.launch) shell.openExternal(opts.activation.launch)
-        })
+        notification.on('click', () => this.activateNotification(opts.activation?.launch))
         if (process.platform === 'darwin') {
-          notification.on('action', (event, index) => {
-            if (opts.button && opts.button[index]) shell.openExternal(opts.button[index].activation)
-          })
+          notification.on('action', (event, index) => this.activateNotification(opts.button?.[index]?.activation))
         }
       }
       notification.show()
@@ -210,7 +257,7 @@ export default class App {
       process.on('SIGTERM', () => this.destroy())
     }
 
-    this.mainWindow.loadURL(development ? 'http://localhost:5000/app.html' : `file://${join(__dirname, '/app.html')}`)
+    this.mainWindow.loadURL(APP_URL)
 
     if (development) this.mainWindow.webContents.openDevTools({ mode: 'detach' })
 
@@ -229,6 +276,8 @@ export default class App {
 
     let authWindow
     ipcMain.on('open-auth', (event, url) => {
+      // Sign-in pages only (AniList, MyAnimeList...).
+      if (!isWebUrl(url)) return
       if (authWindow && !authWindow.isDestroyed()) authWindow.loadURL(url)
       else {
         const partitionName = 'open-auth'
@@ -248,7 +297,8 @@ export default class App {
           autoHideMenuBar: true
         })
 
-        authWindow.webContents.setWindowOpenHandler(() => { return { action: 'deny' } })
+        // The sign-in pages may move between sites (login, consent...), but only over http(s); tsumi:// ends the sign-in.
+        guardNavigation(authWindow.webContents, url => isWebUrl(url) || /^tsumi:/i.test(url), { external: false })
         setupContextMenu(authWindow)
         authWindow.webContents.on('did-finish-load', () => authWindow.show())
         authWindow.webContents.on('did-start-loading', () => authWindow.webContents.insertCSS
@@ -270,14 +320,16 @@ export default class App {
           this.mainWindow.webContents.send('auth-canceled')
           session.fromPartition(partitionName).clearStorageData()
         })
-        authWindow.webContents.on('will-redirect', (event, url) => {
-          if (url.startsWith('tsumi:')) {
-            event.preventDefault()
-            authWindow.destroy()
-            ipcMain.emit('handle-protocol', {}, url)
-            session.fromPartition(partitionName).clearStorageData()
-          }
-        })
+        // The service sends the result to tsumi://alauth or tsumi://malauth (redirect, or a navigation of the page).
+        const finishAuth = (event, url) => {
+          if (!/^tsumi:/i.test(url) || authWindow.isDestroyed()) return
+          event.preventDefault()
+          authWindow.destroy()
+          ipcMain.emit('handle-protocol', {}, url)
+          session.fromPartition(partitionName).clearStorageData()
+        }
+        authWindow.webContents.on('will-redirect', finishAuth)
+        authWindow.webContents.on('will-navigate', finishAuth)
 
         authWindow.loadURL(url)
       }
@@ -286,6 +338,21 @@ export default class App {
     ipcMain.on('quit-and-install', () => {
       if (this.updater.hasUpdate) this.destroy(true)
     })
+  }
+
+  /**
+   * Notification click or button (macOS / Linux; Windows toasts are activated by the system): tsumi:// links are handled
+   * here directly, web links open in the browser, anything else is ignored.
+   * @param {unknown} url
+   */
+  activateNotification (url) {
+    if (typeof url !== 'string' || !url) return
+    if (/^tsumi:/i.test(url)) {
+      this.showAndFocus()
+      this.protocol.handleProtocol(url)
+    } else {
+      openExternal(url)
+    }
   }
 
   destroyed = false

@@ -18,7 +18,7 @@
     sunos: 'SunOS',
     win32: 'Windows'
   }
-  export let version = '1.4.2'
+  export let version = VERSION.app || '' // app.getVersion() of the main process (preload.js)
   IPC.on('version', (data) => {
     version = data
     debug(
