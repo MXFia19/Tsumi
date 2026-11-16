@@ -1,5 +1,6 @@
 import { ipcMain } from 'electron'
 import { development } from './util.js'
+import { isYouTubeId } from './security.js'
 import http from 'http'
 
 /**
@@ -41,6 +42,13 @@ export const youtubeServer = !development
     }
     const pathParts = url.pathname.split('/').filter(Boolean)
     const videoId = pathParts[pathParts.length - 1]
+    // The id is written into the page below: anything but a real YouTube id (11 characters of [A-Za-z0-9_-]) could
+    // inject HTML or script. The query is re-encoded by URLSearchParams, so it can't break out of the attribute.
+    if (!isYouTubeId(videoId)) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' })
+      res.end('Invalid video id')
+      return
+    }
     const params = url.searchParams.toString()
     const responseId = String(Date.now() + Math.random())
     res.writeHead(200, { 'Content-Type': 'text/html', 'Referrer-Policy': 'strict-origin-when-cross-origin' })

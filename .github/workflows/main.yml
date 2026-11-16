@@ -39,8 +39,36 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
+      # The Windows app and the iOS app ship with the same version (release.yml tags both): electron/package.json and
+      # MARKETING_VERSION in ios-native/project.yml must be bumped together.
+      - name: Check the app versions match
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_version=$(node -p "require('./electron/package.json').version")
+          ios_version=$(tr -d '\r' < ios-native/project.yml | sed -n 's/^ *MARKETING_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' | head -n 1)
+          echo "electron/package.json: $app_version, ios-native/project.yml: ${ios_version:-missing}"
+          if [ "$app_version" != "$ios_version" ]; then
+            echo "::error::Version mismatch: electron/package.json is $app_version but MARKETING_VERSION in ios-native/project.yml is ${ios_version:-missing}. Bump both."
+            exit 1
+          fi
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      # Unit tests of the pure logic (plain node scripts, no framework): every tracked *.test.mjs, before the long build.
+      - name: Run unit tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          failed=0
+          for file in $(git ls-files '*.test.mjs'); do
+            echo "::group::$file"
+            if ! node "$file"; then
+              failed=1
+              echo "::error file=$file::Unit tests failed"
+            fi
+            echo "::endgroup::"
+          done
+          exit $failed
       # The native shutdown handler is prebuilt (N-API), so no Visual Studio is needed.
       - name: Add prebuilt native module
         shell: bash

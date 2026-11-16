@@ -55,11 +55,17 @@ export default class CastSession extends EventEmitter {
     this.onReceiverStatus(status?.status)
     let app = this.findApp(this.receiver)
     if (!app) {
+      // Listens before LAUNCH (the status can arrive before its answer). Canceled whatever happens, so a failed launch
+      // doesn't leave a wait that rejects 30 seconds later with nobody listening (unhandled rejection).
       const waiting = this.waitForApp(30_000)
-      const response = await this.channel.request(NS.RECEIVER, { type: 'LAUNCH', appId: DEFAULT_MEDIA_RECEIVER }, 'receiver-0', 30_000)
-      if (response?.type === 'LAUNCH_ERROR') throw new Error(`The Cast device could not start the media player${response.reason ? ` (${response.reason})` : ''}.`)
-      this.onReceiverStatus(response?.status)
-      app = this.findApp(this.receiver) || await waiting
+      try {
+        const response = await this.channel.request(NS.RECEIVER, { type: 'LAUNCH', appId: DEFAULT_MEDIA_RECEIVER }, 'receiver-0', 30_000)
+        if (response?.type === 'LAUNCH_ERROR') throw new Error(`The Cast device could not start the media player${response.reason ? ` (${response.reason})` : ''}.`)
+        this.onReceiverStatus(response?.status)
+        app = this.findApp(this.receiver) || await waiting.promise
+      } finally {
+        waiting.cancel()
+      }
     }
     this.transportId = app.transportId
     this.sessionId = app.sessionId
@@ -71,21 +77,31 @@ export default class CastSession extends EventEmitter {
     return status?.applications?.find(app => app.appId === DEFAULT_MEDIA_RECEIVER && app.transportId) || null
   }
 
+  /**
+   * Resolves with the receiver app once a status lists it, rejects after `timeout`. cancel() stops waiting.
+   * @param {number} timeout
+   */
   waitForApp (timeout) {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+    let cancel = () => {}
+    const promise = new Promise((resolve, reject) => {
+      const stop = () => {
+        clearTimeout(timer)
         this.off('receiver', check)
+      }
+      const timer = setTimeout(() => {
+        stop()
         reject(new Error('The Cast device did not start the media player.'))
       }, timeout)
       const check = (status) => {
         const app = this.findApp(status)
         if (!app) return
-        clearTimeout(timer)
-        this.off('receiver', check)
+        stop()
         resolve(app)
       }
       this.on('receiver', check)
+      cancel = stop
     })
+    return { promise, cancel }
   }
 
   onMessage ({ namespace, data, source }) {

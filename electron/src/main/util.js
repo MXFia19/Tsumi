@@ -1,5 +1,6 @@
 import { app, ipcMain, shell, screen } from 'electron'
 import Store from './store.js'
+import { isExternalUrl } from './security.js'
 
 export const store = new Store(app.getPath('userData'), 'persist.json', { angle: 'default' })
 export const development = process.env.NODE_ENV?.trim() === 'development'
@@ -27,9 +28,23 @@ const flags = [
 for (const [flag, value] of flags) app.commandLine.appendSwitch(flag, value)
 app.commandLine.appendSwitch('use-angle', store.get('angle') || 'default')
 
-ipcMain.on('open', (event, url) => shell.openExternal(url))
+/**
+ * Opens a link with the system (browser, mail app). Only http(s) and mailto: shell.openExternal would also run
+ * file:// paths, UNC shares and ms-* / search-ms handlers, which a link from a page must never reach.
+ * @param {unknown} url
+ */
+export function openExternal (url) {
+  if (!isExternalUrl(url)) {
+    console.warn('Blocked opening a link that is not http(s) or mailto')
+    return false
+  }
+  shell.openExternal(/** @type {string} */ (url)).catch(error => console.warn('Could not open the link:', error?.message || error))
+  return true
+}
+
+ipcMain.on('open', (event, url) => openExternal(url))
 ipcMain.on('set:angle', (event, data) => store.set('angle', data))
-ipcMain.on('version', ({ sender }) => sender.send('version', '1.4.2'))
+ipcMain.on('version', ({ sender }) => sender.send('version', app.getVersion()))
 ipcMain.handle('get:angle', () => store.get('angle') || 'default')
 ipcMain.on('doh', (event, dns) => {
   try {

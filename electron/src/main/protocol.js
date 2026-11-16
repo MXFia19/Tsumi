@@ -1,5 +1,6 @@
 import { app, protocol, ipcMain } from 'electron'
-import { development } from './util.js'
+import { development, openExternal } from './util.js'
+import { protocolParams } from './security.js'
 import path from 'path'
 
 if (process.defaultApp) {
@@ -9,6 +10,9 @@ if (process.defaultApp) {
 } else {
   app.setAsDefaultProtocolClient('tsumi')
 }
+
+/** "What's New" of the update notification (tsumi://changelog/). */
+const RELEASES_URL = 'https://github.com/MXFia19/Tsumi/releases'
 
 export default class Protocol {
   // schema: tsumi://key/value
@@ -23,6 +27,7 @@ export default class Protocol {
     trakt: link => this.onTrakt?.(link),
     schedule: () => this.window.webContents.send('schedule'),
     update: () => ipcMain.emit('quit-and-install'),
+    changelog: () => openExternal(RELEASES_URL),
     show: () => ipcMain.emit('window-show')
   }
 
@@ -46,17 +51,11 @@ export default class Protocol {
       this.handleProtocol(url)
     })
 
-    // Handle locally loaded extensions (test extensions)
-    protocol.registerFileProtocol('extension', (request, callback) => {
-      // Extract path after 'extension://'
-      let filePath = request.url.replace('extension://', '')
-      // Fix drive paths
-      if (/^[A-Z]\//i.test(filePath)) filePath = filePath.charAt(0) + ':' + filePath.slice(1)
-      callback({ path: filePath })
-    })
-
+    // Links the app was launched with (Windows / Linux pass them as arguments). The renderer asks for 'version' once it
+    // listens, and again after every reload (profile swap, sign-in...): the launch link is only handled the first time,
+    // otherwise a reload would rejoin an old Watch Together lobby or reopen an anime.
     if (process.argv.length >= 2 && !process.defaultApp) {
-      ipcMain.on('version', () => {
+      ipcMain.once('version', () => {
         for (const line of process.argv) {
           this.handleProtocol(line)
         }
@@ -76,29 +75,31 @@ export default class Protocol {
     })
   }
 
-  /**
-   * @param {string} line
-   */
-  sendToken (line) {
-    let token = line.split('access_token=')[1].split('&token_type')[0]
-    if (token) {
-      if (token.endsWith('/')) token = token.slice(0, -1)
-      this.window.webContents.send('altoken', token)
-    }
+  /** The sign-in was denied or the link carries no credentials: the renderer shows "Login Canceled". */
+  authCanceled () {
+    if (!this.window.isDestroyed()) this.window.webContents.send('auth-canceled')
   }
 
   /**
+   * AniList implicit grant: tsumi://alauth#access_token=...&token_type=Bearer&expires_in=...
+   * @param {string} line
+   */
+  sendToken (line) {
+    const token = protocolParams(line).get('access_token')
+    if (token) this.window.webContents.send('altoken', token)
+    else this.authCanceled()
+  }
+
+  /**
+   * MyAnimeList authorization code: tsumi://malauth?code=...&state=... (or ?error=access_denied&state=... when denied).
    * @param {string} line
    */
   sendMalToken (line) {
-    let code = line.split('code=')[1].split('&state')[0]
-    let state = line.split('&state=')[1]
-    if (code && state) {
-      if (code.endsWith('/')) code = code.slice(0, -1)
-      if (state.endsWith('/')) state = state.slice(0, -1)
-      if (state.includes('%')) state = decodeURIComponent(state)
-      this.window.webContents.send('maltoken', code, state)
-    }
+    const params = protocolParams(line)
+    const code = params.get('code')
+    const state = params.get('state')
+    if (code && state) this.window.webContents.send('maltoken', code, state)
+    else this.authCanceled()
   }
 
   /**
@@ -113,11 +114,12 @@ export default class Protocol {
    * @param {string} text
    */
   handleProtocol (text) {
-    if (!text) return
+    if (typeof text !== 'string' || !text) return
 
     // Handle tsumi:// scheme
     const match = text.match(this.protocolRx)
-    if (match) this.protocolMap[match[1]]?.(match[2])
+    const key = match?.[1].toLowerCase()
+    if (key && Object.hasOwn(this.protocolMap, key)) this.protocolMap[key](match[2])
     return match
   }
 }
