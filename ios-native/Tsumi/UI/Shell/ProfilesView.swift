@@ -112,6 +112,7 @@ struct ShellWebLoginView: UIViewRepresentable {
     configuration.websiteDataStore = WKWebsiteDataStore.default()
     let webView = WKWebView(frame: .zero, configuration: configuration)
     webView.navigationDelegate = context.coordinator
+    webView.uiDelegate = context.coordinator
     context.coordinator.attach(webView)
     webView.load(URLRequest(url: request.url))
     return webView
@@ -123,17 +124,22 @@ struct ShellWebLoginView: UIViewRepresentable {
     coordinator.detach()
     webView.stopLoading()
     webView.navigationDelegate = nil
+    webView.uiDelegate = nil
   }
 }
 
 /// Inspects every URL of the login web view: navigation requests, redirects, commits, failed loads of
 /// custom schemes (tsumi:// / shiru://) and, through KVO on `url`, fragment-only changes (the AniList pin page
 /// gets `#access_token=...`). The first URL carrying the login result ends the web login.
-final class ShellWebLoginCoordinator: NSObject, WKNavigationDelegate {
+/// Pop-up sign-ins (window.open of the "Sign in with ..." buttons) open over the page in their own web view
+/// (WKUIDelegate), whose URLs are inspected too; without it they did nothing.
+final class ShellWebLoginCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
   private let requestID: UUID
   private let malState: String?
   private var observation: NSKeyValueObservation?
   private var finished = false
+  /// Open pop-up windows, the newest last.
+  private var popups: [WKWebView] = []
 
   init(requestID: UUID, malState: String?) {
     self.requestID = requestID
@@ -153,6 +159,43 @@ final class ShellWebLoginCoordinator: NSObject, WKNavigationDelegate {
   func detach() {
     observation?.invalidate()
     observation = nil
+    for popup in popups {
+      closePopup(popup)
+    }
+    popups = []
+  }
+
+  @MainActor
+  private func closePopup(_ popup: WKWebView) {
+    popup.stopLoading()
+    popup.navigationDelegate = nil
+    popup.uiDelegate = nil
+    popup.removeFromSuperview()
+  }
+
+  /// window.open: a web view made with the configuration WebKit gives (it loads the request itself and keeps
+  /// window.opener, so the provider can hand the result back to the login page), laid over the page.
+  func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+    var created: WKWebView?
+    MainActor.assumeIsolated {
+      let popup = WKWebView(frame: webView.bounds, configuration: configuration)
+      popup.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      popup.navigationDelegate = self
+      popup.uiDelegate = self
+      webView.addSubview(popup)
+      popups.append(popup)
+      created = popup
+    }
+    return created
+  }
+
+  /// window.close of a pop-up (the provider is done).
+  func webViewDidClose(_ webView: WKWebView) {
+    MainActor.assumeIsolated {
+      guard let index = popups.firstIndex(where: { $0 === webView }) else { return }
+      popups.remove(at: index)
+      closePopup(webView)
+    }
   }
 
   /// Ends the login when `url` carries its result; returns true in that case (the navigation is cancelled).
