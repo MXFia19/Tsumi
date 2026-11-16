@@ -30,7 +30,7 @@ struct ExtensionPickerView: View {
             ExtensionNoticeBanner(
               systemImage: "exclamationmark.triangle.fill",
               tint: ExtensionPalette.warning,
-              title: "Default extension failed",
+              title: model.failTitle,
               message: "\(model.failReason ?? "Unable to auto-play from your default extension.") Showing all results instead."
             )
           }

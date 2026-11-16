@@ -26,6 +26,8 @@ final class ExtensionPickerModel {
   /// The default extension failed: banner + reason (search.defaultFailed / failReason).
   let defaultFailed: Bool
   let failReason: String?
+  /// Title of that banner ("Default extension failed", or the Sora module a title was opened from).
+  let failTitle: String
 
   /// Some extensions are still searching (the groups already found are shown meanwhile).
   var loading = true
@@ -52,11 +54,12 @@ final class ExtensionPickerModel {
   @ObservationIgnored private var selectTask: Task<Void, Never>?
   @ObservationIgnored private var started = false
 
-  init(media: Media, episode: EpisodeRef, defaultFailed: Bool = false, failReason: String? = nil) {
+  init(media: Media, episode: EpisodeRef, defaultFailed: Bool = false, failReason: String? = nil, failTitle: String = "Default extension failed") {
     self.media = media
     self.episode = episode
     self.defaultFailed = defaultFailed
     self.failReason = failReason
+    self.failTitle = failTitle
   }
 
   var title: String { ExtensionContext.shared.displayTitle(media) }
@@ -234,6 +237,14 @@ final class PlaybackRequestCoordinator {
     // A downloaded episode plays from disk (also offline); force (long press) still opens the extensions.
     if !force && DownloadCenter.shared.playIfDownloaded(media: media, episode: episode) { return }
     cancelRunningWork()
+    // Opened from a Sora module result of the Search page: that module and result first, before the default extension
+    // (SoraSearchSource.swift). Force (long press) still opens every extension.
+    if !force, let preferred = SoraPreferredSources.shared.source(for: media.id) {
+      let model = DefaultLoadingModel(media: media, episode: episode)
+      presentation = PlaybackRequestPresentation(kind: .loading(model))
+      task = Task { [weak self] in await self?.playPreferred(model, source: preferred) }
+      return
+    }
     if AppSettings.shared.values.defaultExtension != nil && !force {
       let model = DefaultLoadingModel(media: media, episode: episode)
       presentation = PlaybackRequestPresentation(kind: .loading(model))
@@ -297,8 +308,38 @@ final class PlaybackRequestCoordinator {
     }
   }
 
-  private func openPicker(media: Media, episode: EpisodeRef, defaultFailed: Bool, failReason: String?) {
-    let model = ExtensionPickerModel(media: media, episode: episode, defaultFailed: defaultFailed, failReason: failReason)
+  /// The Sora module result the title was opened from (ExtensionResults.svelte playPreferred). When it fails, every
+  /// extension is searched and listed, with the reason in the banner.
+  private func playPreferred(_ model: DefaultLoadingModel, source: PlaybackSource) async {
+    do {
+      let resolved = try await PlaybackResolver.resolvePreferredSource(source, episode: model.episode) { [weak model] status in
+        model?.statusText = status
+      }
+      guard !Task.isCancelled, isShowing(model) else { return }
+      switch PlaybackResolver.nextStep(media: model.media, episode: resolved.episode, stream: resolved.stream, extensionKey: resolved.source.extensionKey) {
+      case .ready(let playback):
+        deliver(playback, source: resolved.source)
+      case .chooseServer(let choice):
+        serverChoiceSources = [choice.id: resolved.source]
+        presentation = PlaybackRequestPresentation(kind: .server(choice))
+      }
+    } catch {
+      guard isShowing(model), !PlaybackResolver.isCancellation(error) else { return }
+      #if DEBUG
+      print("[Extensions] Sora module result failed: \(error.localizedDescription)")
+      #endif
+      openPicker(
+        media: model.media,
+        episode: model.episode,
+        defaultFailed: true,
+        failReason: PlaybackResolver.failureReason(error),
+        failTitle: "\(SoraSearchSource.moduleName(source.extensionKey)) failed"
+      )
+    }
+  }
+
+  private func openPicker(media: Media, episode: EpisodeRef, defaultFailed: Bool, failReason: String?, failTitle: String? = nil) {
+    let model = ExtensionPickerModel(media: media, episode: episode, defaultFailed: defaultFailed, failReason: failReason, failTitle: failTitle ?? "Default extension failed")
     model.onPlayback = { [weak self, weak model] playback in
       guard let self, let model, self.activePicker === model, self.presentation != nil else { return }
       self.deliver(playback, source: model.lastSource)

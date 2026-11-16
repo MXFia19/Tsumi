@@ -238,6 +238,43 @@ enum PlaybackResolver {
     )
   }
 
+  /// Play from a Sora module result the title was opened from on the Search page (SoraPreferredSources): episodes of
+  /// that result, the requested episode, its stream; no search. Strict: a result listing several episodes but not the
+  /// requested one fails, so the caller shows every extension instead of playing another episode.
+  @MainActor
+  static func resolvePreferredSource(_ source: PlaybackSource, episode: EpisodeRef, onStatus: @escaping (String) -> Void) async throws -> PlaybackSourceStream {
+    onStatus("Connecting to extension...")
+    let manager = ExtensionManager.shared
+    await manager.awaitPendingLoads()
+    try Task.checkCancellation()
+    guard let ext = manager.enabledExtensions().first(where: { $0.key == source.extensionKey }) else {
+      throw ExtensionFailure("\(SoraSearchSource.moduleName(source.extensionKey)) is disabled or could not be loaded")
+    }
+    onStatus("Extracting episodes...")
+    let episodes = try await ExtensionCalls.extractEpisodes(ext, href: source.href)
+    try Task.checkCancellation()
+    guard let first = episodes.first else { throw PlaybackResolutionError.noEpisodes }
+    let match = matchEpisode(episodes, for: episode)
+    if match == nil && episodes.count > 1 {
+      let name: String
+      if let season = episode.season, let local = episode.localEpisode {
+        name = "S\(season)E\(local)"
+      } else {
+        name = "Episode \(episode.number)"
+      }
+      throw ExtensionFailure("\(name) is not listed by this result")
+    }
+    let target = match ?? first
+
+    onStatus("Loading stream...")
+    let stream = try await fetchStream(ext, episodeHref: target.href)
+    return PlaybackSourceStream(
+      stream: stream,
+      episode: playedEpisode(target, requested: episode),
+      source: PlaybackSource(extensionKey: ext.key, href: source.href, title: source.title)
+    )
+  }
+
   /// After a stream is found: remembered server, server choice or direct playback.
   @MainActor
   static func nextStep(media: Media, episode: EpisodeRef, stream: ExtensionStream, extensionKey: String) -> PlaybackResolutionStep {
