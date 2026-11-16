@@ -25,6 +25,8 @@ export const OFFER_MIN_AGE_DIFFERENCE = 5_000
 export const PERIODIC_WRITE_MS = 2 * 60_000
 /** Write after a pause (cancelled when playback resumes before). */
 export const PAUSE_WRITE_DELAY_MS = 3_000
+/** Longest position or duration read or written (99:59:59): a note edited by hand can hold any number of hours. */
+export const MAX_CLOCK = 99 * 3600 + 59 * 60 + 59
 
 const SEP = '\\s*[·|•]\\s*'
 const CLOCK = '((?:\\d+:)?\\d{1,2}:\\d{2})'
@@ -37,7 +39,8 @@ const OURS_RX = /^\s*\[Tsumi\]/i
  * @param {number} seconds
  */
 export function formatClock (seconds) {
-  const total = Math.max(0, Math.floor(Number(seconds) || 0))
+  const value = Number(seconds)
+  const total = Number.isFinite(value) ? Math.floor(Math.min(Math.max(0, value), MAX_CLOCK)) : 0
   const hours = Math.floor(total / 3600)
   const minutes = Math.floor((total % 3600) / 60)
   const secs = total % 60
@@ -51,7 +54,8 @@ export function formatClock (seconds) {
  */
 export function parseClock (text) {
   if (typeof text !== 'string' || !/^\d+(:\d{1,2}){1,2}$/.test(text.trim())) return NaN
-  return text.trim().split(':').reduce((total, part) => total * 60 + Number(part), 0)
+  const total = text.trim().split(':').reduce((sum, part) => sum * 60 + Number(part), 0)
+  return total <= MAX_CLOCK ? total : NaN // more than 99:59:59 (huge hour counts typed by hand): rejected
 }
 
 /**
@@ -181,6 +185,6 @@ export function needsWrite (last, next) {
  */
 export function positionLabel ({ time, percent }) {
   if (time > 0) return formatClock(time)
-  if (percent > 0) return `${Math.round(percent)}%`
+  if (percent > 0) return `${Math.round(Math.min(percent, 100))}%`
   return '0:00'
 }

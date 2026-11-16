@@ -1,4 +1,5 @@
-import { getRandomInt, matchPhrase } from '@/modules/util.js'
+import { matchPhrase } from '@/modules/util.js'
+import { TTL, expiresIn } from '@/modules/cachepolicy.js'
 import { printError, status } from '@/modules/networking.js'
 import { cache, caches } from '@/modules/cache.js'
 import { writable } from 'simple-store-svelte'
@@ -59,7 +60,9 @@ class MALDubs {
             if (!cachedEntry) printError('Dub Caching Failed', 'Failed to load dub information!', error)
           }
         } else if (!cachedEntry) printError('Dub Caching Failed', 'Failed to load dub information!', res)
-      } else if (json) return await cache.cacheEntry(caches.RSS, 'MALDubs', { mappings: true }, json, Date.now() + getRandomInt(100, 200) * 60 * 1000)
+        // The cached list (or an empty one) instead of undefined, which broke the "hide subs" filters.
+        return cachedEntry || { dubbed: [], incomplete: [] }
+      } else if (json) return await cache.cacheEntry(caches.RSS, 'MALDubs', { mappings: true }, json, expiresIn(TTL.malDubs))
       else throw res
     } catch (error) {
       const cachedEntry = await cache.cachedEntry(caches.RSS, 'MALDubs', true)

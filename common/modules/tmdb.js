@@ -2,6 +2,9 @@ import Bottleneck from 'bottleneck'
 import { cache, caches } from '@/modules/cache.js'
 import { anilistClient } from '@/modules/anilist.js'
 import { releaseRegions, movieReleaseNodes, MOVIE_WINDOW_DAYS } from '@/modules/schedule/movies.js'
+import { TTL, expiresIn, tmdbDetailsTtl, tmdbSeasonTtl } from '@/modules/cachepolicy.js'
+import { toLocalDate } from '@/modules/dates.js'
+import { status } from '@/modules/networking.js'
 import Debug from 'debug'
 const debug = Debug('ui:tmdb')
 
@@ -38,6 +41,24 @@ const TMDB_GENRES = {
 }
 
 const TMDB_GENRE_NAME_TO_ID = Object.fromEntries(Object.entries(TMDB_GENRES).map(([id, name]) => [name, Number(id)]))
+
+// TMDB answers are TTL entries of the mappings cache (cache.js, policy in cachepolicy.js): details and seasons stay
+// fresh for hours while a show airs and weeks once it ended, and "Reset caches" clears them. Keys carry the media
+// type: a show and a movie can have the same TMDB id (the media ids "tmdb-<id>" do not, see cache.js updateMedia).
+const offline = () => !!status.value?.match?.(/offline/i)
+
+/**
+ * Cached TMDB answer, or `request()` cached until `expiry(answer)`. A failed request (null) is not cached: the
+ * previous answer (even expired) is returned instead.
+ * @param {string} key
+ * @param {() => Promise<any>} request
+ * @param {(answer: any) => number} expiry expiry timestamp of an answer
+ */
+function cachedTmdb (key, request, expiry) {
+  const cached = cache.cachedEntry(caches.MAPPINGS, key, offline())
+  if (cached) return cached
+  return cache.cacheEntry(caches.MAPPINGS, key, {}, request().catch(() => null), expiry)
+}
 
 export const tmdbGenreList = [
   'Action', 'Action & Adventure', 'Adventure', 'Animation', 'Comedy', 'Crime',
@@ -347,7 +368,7 @@ class TMDBClient {
           const details = await this.getDetails(item.id, 'tv')
           let ep = details?.next_episode_to_air || details?.last_episode_to_air
 
-          if ((!details?.next_episode_to_air || new Date(details?.next_episode_to_air?.air_date) < new Date()) && details?.externalIds?.imdb_id) {
+          if ((!details?.next_episode_to_air || toLocalDate(details?.next_episode_to_air?.air_date) < toLocalDate(new Date())) && details?.externalIds?.imdb_id) {
             try {
               const imdbId = details.externalIds.imdb_id
               const tvmazeRes = await fetch(`https://api.tvmaze.com/lookup/shows?imdb=${imdbId}`).then(r => r.ok ? r.json() : null)
@@ -410,14 +431,11 @@ class TMDBClient {
    * added late.
    */
   async getReleaseDates (tmdbId) {
-    const key = `tmdb-release-dates-${tmdbId}`
-    const cached = cache.getEntry(caches.GENERAL, key)
-    if (cached?.time && Date.now() - cached.time < 12 * 60 * 60 * 1000) return cached.results
-    const data = await this.handleRequest(`/movie/${tmdbId}/release_dates`).catch(() => null)
-    if (!data) return cached?.results || []
-    const results = data.results || []
-    cache.setEntry(caches.GENERAL, key, { time: Date.now(), results })
-    return results
+    const results = await cachedTmdb(`tmdb-release-dates-movie-${tmdbId}`, async () => {
+      const data = await this.handleRequest(`/movie/${tmdbId}/release_dates`)
+      return data ? (data.results || []) : null
+    }, () => expiresIn(TTL.tmdbReleaseDates))
+    return results || []
   }
 
   /**
@@ -494,39 +512,23 @@ class TMDBClient {
       }
 
       if (!tmdbId) return
-      const cacheKey = `tmdb-banner-${tmdbId}`
-      const cached = cache.getEntry(caches.MEDIA, cacheKey)
-      if (cached && cached.logo !== undefined) {
-        if (cached.backdrop || cached.logo) {
-          mediaList[idx] = {
-            ...media,
-            bannerImage: cached.backdrop || media.bannerImage,
-            logo: cached.logo || media.logo
-          }
-        }
-        return
-      }
-
-      try {
+      // A failed request is not cached (it was, forever: no banner or logo ever again); found images are kept for
+      // weeks, "no image" for a few days (logos get added later).
+      const images = await cachedTmdb(`tmdb-banner-${isMovie ? 'movie' : 'tv'}-${tmdbId}`, async () => {
         const endpoint = isMovie ? `/movie/${tmdbId}` : `/tv/${tmdbId}`
-        const tmdbMedia = await this.handleRequest(endpoint, { append_to_response: 'images', include_image_language: 'en,null,ja' }).catch(() => null)
+        const tmdbMedia = await this.handleRequest(endpoint, { append_to_response: 'images', include_image_language: 'en,null,ja' })
+        if (!tmdbMedia) return null
+        const backdrop = tmdbMedia.backdrop_path ? `https://image.tmdb.org/t/p/w1280${tmdbMedia.backdrop_path}` : null
+        const logo = tmdbMedia.images?.logos?.find(l => l.iso_639_1 === 'en') || tmdbMedia.images?.logos?.find(l => l.iso_639_1 === null) || tmdbMedia.images?.logos?.[0]
+        return { backdrop, logo: logo ? `https://image.tmdb.org/t/p/w500${logo.file_path}` : null }
+      }, (found) => expiresIn(found?.backdrop || found?.logo ? TTL.tmdbImagesFound : TTL.tmdbImagesMissing)).catch(() => null)
 
-        const backdropPath = tmdbMedia ? tmdbMedia.backdrop_path : null
-        const backdrop = backdropPath ? `https://image.tmdb.org/t/p/w1280${backdropPath}` : null
-
-        const logo = tmdbMedia?.images?.logos?.find(l => l.iso_639_1 === 'en') || tmdbMedia?.images?.logos?.find(l => l.iso_639_1 === null) || tmdbMedia?.images?.logos?.[0]
-        const logoUrl = logo ? `https://image.tmdb.org/t/p/w500${logo.file_path}` : null
-
-        cache.setEntry(caches.MEDIA, cacheKey, { backdrop, logo: logoUrl })
-
-        if (backdrop || logoUrl) {
-          mediaList[idx] = {
-            ...media,
-            bannerImage: backdrop || media.bannerImage,
-            logo: logoUrl || media.logo
-          }
+      if (images?.backdrop || images?.logo) {
+        mediaList[idx] = {
+          ...media,
+          bannerImage: images.backdrop || media.bannerImage,
+          logo: images.logo || media.logo
         }
-      } catch (e) {
       }
     })
 
@@ -559,7 +561,7 @@ class TMDBClient {
         return {
           media,
           episode: ep.episode_number,
-          date: ep.air_date ? new Date(ep.air_date) : null,
+          date: toLocalDate(ep.air_date), // calendar day: new Date() made it the day before west of UTC
           episodeData: {
             image: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : media.backdrop,
             title: { en: ep.name }
@@ -587,13 +589,18 @@ class TMDBClient {
   }
 
   async getDetails (tmdbId, mediaType = 'tv') {
-    const typeKey = (mediaType || 'tv').toLowerCase()
-    const cacheKey = `tmdb-details-v2-${typeKey}-${tmdbId}`
-    const cached = cache.getEntry(caches.GENERAL, cacheKey)
-    if (cached) return cached
+    if (!tmdbId) return null
+    const type = String(mediaType || 'tv').toLowerCase() === 'movie' ? 'movie' : 'tv'
+    return cachedTmdb(`tmdb-details-${type}-${tmdbId}`, () => this.fetchDetails(tmdbId, type), (details) => Date.now() + tmdbDetailsTtl(details))
+  }
 
+  /**
+   * @param {number | string} tmdbId
+   * @param {'tv' | 'movie'} mediaType
+   */
+  async fetchDetails (tmdbId, mediaType) {
     try {
-      const type = mediaType?.toLowerCase() === 'movie' ? 'movie' : 'tv'
+      const type = mediaType
       const ratingEndpoint = type === 'movie' ? 'release_dates' : 'content_ratings'
       const append = `videos,credits,recommendations,similar,external_ids,keywords,watch/providers,${ratingEndpoint},images`
       const data = await this.handleRequest(`/${type}/${tmdbId}`, { append_to_response: append })
@@ -627,7 +634,7 @@ class TMDBClient {
         episodes: mediaType === 'movie' ? 1 : data.number_of_episodes,
         duration: mediaType === 'movie' ? data.runtime : (data.episode_run_time?.[0] || null),
         seasonYear: data.first_air_date ? parseInt(data.first_air_date.substring(0, 4)) : (data.release_date ? parseInt(data.release_date.substring(0, 4)) : null),
-        releaseDate: data.release_date || data.first_air_date,
+        releaseDate: toLocalDate(data.release_date || data.first_air_date), // calendar day, local midnight
         runtime: data.runtime || data.episode_run_time?.[0],
         seasons: mediaType === 'tv' ? (data.seasons || []).filter(s => s.season_number > 0) : [],
         numberOfSeasons: data.number_of_seasons || 0,
@@ -639,10 +646,9 @@ class TMDBClient {
         recommendations: data.recommendations?.results || [],
         similar: data.similar?.results || [],
         last_episode_to_air: data.last_episode_to_air,
+        next_episode_to_air: data.next_episode_to_air, // read by getSchedule (TVmaze is only asked without it)
         belongs_to_collection: data.belongs_to_collection
       }
-
-      cache.setEntry(caches.GENERAL, cacheKey, details)
       return details
     } catch (e) {
       console.error('[TMDB] getDetails failed', e)
@@ -651,51 +657,43 @@ class TMDBClient {
   }
 
   async getSeasonEpisodes (tmdbId, seasonNumber) {
-    const cacheKey = `tmdb-season-${tmdbId}-${seasonNumber}`
-    const cached = cache.getEntry(caches.GENERAL, cacheKey)
-    if (cached) return cached
+    const episodes = await cachedTmdb(`tmdb-season-tv-${tmdbId}-${seasonNumber}`, () => this.fetchSeasonEpisodes(tmdbId, seasonNumber), (episodes) => Date.now() + tmdbSeasonTtl(episodes))
+    return episodes || []
+  }
 
+  async fetchSeasonEpisodes (tmdbId, seasonNumber) {
     try {
       const data = await this.handleRequest(`/tv/${tmdbId}/season/${seasonNumber}`)
-      if (!data?.episodes) return []
+      if (!data?.episodes) return null
 
       const episodes = data.episodes.map(ep => ({
         episode: ep.episode_number,
         title: ep.name,
         summary: ep.overview,
         image: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : null,
-        airdate: ep.air_date ? new Date(ep.air_date) : null,
+        airdate: toLocalDate(ep.air_date), // calendar day, local midnight
         length: ep.runtime,
         rating: ep.vote_average ? Math.round(ep.vote_average * 10) : null,
         seasonNumber
       }))
-
-      cache.setEntry(caches.GENERAL, cacheKey, episodes)
       return episodes
     } catch (e) {
       debug('getSeasonEpisodes failed', e)
-      return []
+      return null
     }
   }
 
   async getCollection (collectionId) {
-    const cacheKey = `tmdb-collection-${collectionId}`
-    const cached = cache.getEntry(caches.GENERAL, cacheKey)
-    if (cached) return cached
-
-    try {
+    const parts = await cachedTmdb(`tmdb-collection-${collectionId}`, async () => {
       const data = await this.handleRequest(`/collection/${collectionId}`)
-      if (!data?.parts) return []
-
-      const parts = data.parts.map(item => this.normalizeMedia(item)).filter(Boolean)
-      if (parts.length > 0) await cache.updateMedia(parts)
-
-      cache.setEntry(caches.GENERAL, cacheKey, parts)
-      return parts
-    } catch (e) {
-      debug('getCollection failed', e)
-      return []
-    }
+      if (!data?.parts) return null
+      return data.parts.map(item => this.normalizeMedia(item)).filter(Boolean)
+    }, () => expiresIn(TTL.tmdbCollection)).catch(error => {
+      debug('getCollection failed', error)
+      return null
+    })
+    if (parts?.length > 0) await cache.updateMedia(parts)
+    return parts || []
   }
 
   async getRelations (tmdbId, mediaType = 'tv') {
@@ -704,7 +702,7 @@ class TMDBClient {
       if (details?.belongs_to_collection?.id) {
         const parts = await this.getCollection(details.belongs_to_collection.id)
         // Sort by release date so sequels appear in order
-        const sorted = parts.sort((a, b) => (a.seasonYear || 0) - (b.seasonYear || 0))
+        const sorted = [...parts].sort((a, b) => (a.seasonYear || 0) - (b.seasonYear || 0))
         // Map to relations format for UI (relations usually have relationType)
         return {
           relations: sorted.filter(p => p.idTmdb !== tmdbId).map(p => ({

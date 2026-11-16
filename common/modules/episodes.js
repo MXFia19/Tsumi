@@ -1,7 +1,9 @@
 import { cache, caches } from '@/modules/cache.js'
 import { getKitsuMappings } from '@/modules/anime/anime.js'
-import { codes, getRandomInt, sleep } from '@/modules/util.js'
+import { codes, sleep } from '@/modules/util.js'
 import { printError, status, isOffline } from '@/modules/networking.js'
+import { TTL, expiresIn, retryDelay } from '@/modules/cachepolicy.js'
+import { localDateTimeString } from '@/modules/dates.js'
 import Bottleneck from 'bottleneck'
 import Debug from 'debug'
 const debug = Debug('ui:episodes')
@@ -18,6 +20,17 @@ const JIKAN_MIRRORS = [
 ]
 
 const EDGE_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+
+/** Kitsu pages hold 10 episodes unless asked for more (20 at most): an episode list is read page by page. */
+const KITSU_PAGE_LIMIT = 20
+const KITSU_MAX_PAGES = 100
+
+/**
+ * Air date of a Jikan episode ("2023-09-29T00:00:00+00:00": a calendar day written as UTC midnight) as local
+ * midnight without offset ("2023-09-29T00:00:00"), so new Date() gives that day in every time zone (it was the day
+ * before west of UTC).
+ */
+const localAired = (aired) => localDateTimeString(aired)
 
 /** jikan-edge dates look like "Sep 29, 2023": converted to the Jikan ISO form ("2023-09-29T00:00:00+00:00"). */
 function edgeDate (text) {
@@ -72,14 +85,14 @@ class Episodes {
   }
 
   constructor () {
-    this.limiter.on('failed', async (error) => {
+    this.limiter.on('failed', async (error, jobInfo) => {
       if (typeof error?.json !== 'function') return // not an HTTP response (network error): don't retry
       const info = (await error.json().catch(() => null)) || error
       if (await isOffline(info)) throw new Error('Failed making episode request, network is offline... not retrying.')
-      if (info.status === 500) return 1
-
-      const time = ((error.headers.get('retry-after') || 2) + 1) * 1000
-      if (!this.rateLimitPromise) this.rateLimitPromise = sleep(time).then(() => { this.rateLimitPromise = null })
+      // A few retries (Retry-After read as a number: "2" + 1 was "21" seconds), then the cached data is used.
+      const time = retryDelay(error, jobInfo?.retryCount, { retries: 3, base: 2 * 1000, max: 30 * 1000 })
+      if (time === null) return
+      if (error.status === 429 && !this.rateLimitPromise) this.rateLimitPromise = sleep(time).then(() => { this.rateLimitPromise = null })
       return time
     })
   }
@@ -95,7 +108,7 @@ class Episodes {
         recap: e.recap,
         episode_id: e.mal_id, // mal_id is the episode_id in the v4 API very stupid
         title: e.title || e.title_romanji || e.title_japanese,
-        aired: e.aired
+        aired: localAired(e.aired)
       }))
       return arr || []
     } else {
@@ -104,7 +117,7 @@ class Episodes {
         recap: e.recap,
         episode_id: e.mal_id, // mal_id is the episode_id in the v4 API very stupid
         title: e.title || e.title_romanji || e.title_japanese,
-        aired: e.aired
+        aired: localAired(e.aired)
       })) || []
     }
   }
@@ -118,7 +131,7 @@ class Episodes {
       recap: singleEpisode.recap,
       episode_id: singleEpisode.mal_id, // mal_id is the episode_id in the v4 API very stupid
       title: singleEpisode.title || singleEpisode.title_romanji || singleEpisode.title_japanese,
-      aired: singleEpisode.aired
+      aired: localAired(singleEpisode.aired)
     } : []
   }
 
@@ -156,7 +169,7 @@ class Episodes {
       debug(`Fetching Episode ${episode} for ${id} with Page ${page}`)
       const targets = jikan
         ? JIKAN_MIRRORS.map(mirror => ({ name: mirror.name, url: `${mirror.base}/anime/${id}${!root ? `/episodes?page=${page}` : ''}`, normalize: mirror.normalize }))
-        : [{ name: 'kitsu', url: `https://kitsu.app/api/edge/anime/${id}/episodes` }]
+        : [{ name: 'kitsu', url: `https://kitsu.app/api/edge/anime/${id}/episodes?page%5Blimit%5D=${KITSU_PAGE_LIMIT}` }]
       let res = null
       let normalize = null
       for (const target of targets) {
@@ -179,9 +192,11 @@ class Episodes {
         throw res
       }
       let json = null
+      let partial = false
       try {
         json = await res.json()
         if (res.ok && normalize) json = normalize(json, root)
+        if (res.ok && !jikan) partial = await this.readKitsuPages(json)
       } catch (error) {
         if (res.ok) this.checkError(error, `${jikan ? 'jikan' : 'kitsu'}`)
       }
@@ -194,7 +209,7 @@ class Episodes {
           this.checkError(res, `${jikan ? 'jikan' : 'kitsu'}`)
         }
       }
-      return cache.cacheEntry(caches.EPISODES, `${id}:${page}:${root}`, {}, json, Date.now() + getRandomInt(1, 3) * 24 * 60 * 60 * 1000)
+      return cache.cacheEntry(caches.EPISODES, `${id}:${page}:${root}`, {}, json, expiresIn(partial ? TTL.kitsuPartialEpisodes : TTL.jikanEpisodes))
     })().catch((error) => {
       // Episode titles / filler flags are optional: fall back to stale data (or nothing) instead of failing the list.
       debug('Episode request failed, returning cached episode data if available', error)
@@ -204,6 +219,30 @@ class Episodes {
     })
     this.concurrentRequests.set(`${id}:${page}:${root}`, requestPromise)
     return requestPromise
+  }
+
+  /**
+   * Appends the next pages of a Kitsu episode list (links.next) to the first one. Resolves to true when a page
+   * failed (the list is partial and gets cached for a short time).
+   * @param {any} json first page, completed in place
+   */
+  async readKitsuPages (json) {
+    let next = json?.links?.next
+    for (let page = 1; next && page < KITSU_MAX_PAGES && Array.isArray(json.data); page++) {
+      if (!String(next).startsWith('https://kitsu.app/')) break
+      try {
+        const response = await fetch(next, { signal: AbortSignal.timeout(10_000) })
+        if (!response.ok) return true
+        const more = await response.json()
+        json.data.push(...(Array.isArray(more?.data) ? more.data : []))
+        next = more?.links?.next
+      } catch (error) {
+        debug('Failed to read a Kitsu episode page', error)
+        return true
+      }
+    }
+    if (json?.links) delete json.links.next
+    return false
   }
 
   checkError (error, type, silent) {

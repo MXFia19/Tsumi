@@ -104,5 +104,15 @@ test('animeQuery uses the TVDB numbering of ani.zip, the TMDB id for movies', ()
   assert.equal(animeQuery({ mappings: { type: 'MOVIE' } }, 1, true), null)
 })
 
+test('animeQuery keeps episode 0 (prologue) instead of using episode 1', () => {
+  const mappings = {
+    mappings: { type: 'TV', thetvdb_id: 424536 },
+    episodes: { 1: { seasonNumber: 1, episodeNumber: 1, tvdbShowId: 424536 } }
+  }
+  assert.equal(animeQuery(mappings, 0, false), null)
+  assert.deepEqual(animeQuery(mappings, undefined, false), { tvdb: 424536, season: 1, episode: 1, tvdbEpisode: undefined })
+  assert.deepEqual(animeQuery(mappings, '1', false), { tvdb: 424536, season: 1, episode: 1, tvdbEpisode: undefined })
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed) process.exit(1)

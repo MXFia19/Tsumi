@@ -109,10 +109,12 @@ export function animeQuery (mappings, episode, isMovie) {
     const tmdb = positive(ids.themoviedb_id)
     return tmdb ? { tmdb } : null
   }
-  const entry = mappings?.episodes?.[String(Number(episode) || 1)]
+  // Episode 0 (prologue) stays 0: ani.zip has no "0" episode, so no skip times rather than episode 1's.
+  const number = Number(episode)
+  const entry = mappings?.episodes?.[String(episode === null || episode === undefined || episode === '' || !Number.isFinite(number) || number < 0 ? 1 : number)]
   const tvdb = positive(entry?.tvdbShowId) || positive(ids.thetvdb_id)
   const season = Number(entry?.seasonNumber)
-  const number = positive(entry?.episodeNumber)
-  if (!tvdb || !Number.isInteger(season) || season < 0 || !number) return null
-  return { tvdb, season, episode: number, tvdbEpisode: positive(entry?.tvdbId) || undefined }
+  const tvdbNumber = positive(entry?.episodeNumber)
+  if (!tvdb || !Number.isInteger(season) || season < 0 || !tvdbNumber) return null
+  return { tvdb, season, episode: tvdbNumber, tvdbEpisode: positive(entry?.tvdbId) || undefined }
 }

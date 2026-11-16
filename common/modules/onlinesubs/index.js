@@ -2,7 +2,7 @@ import { getAniMappings } from '@/modules/anime/anime.js'
 import { tmdbClient } from '@/modules/tmdb.js'
 import { parseSrt } from '@/modules/vtt.js'
 import Debug from 'debug'
-import { subtitlesUrl, episodeCandidates, tmdbSeasonEpisode, parseSubtitleList, languageName } from './core.js'
+import { subtitlesUrl, episodeCandidates, tmdbSeasonEpisode, parseSubtitleList, languageName, episodeNumber } from './core.js'
 
 const debug = Debug('ui:onlinesubs')
 
@@ -28,7 +28,7 @@ export function errorMessage (error) {
  */
 export async function resolveQueries (media, episode) {
   if (!media) return []
-  const number = Number(episode) || 1
+  const number = episodeNumber(episode) // episode 0 (prologue) stays 0: no subtitles rather than episode 1's
   const isTmdb = media.isTmdb || (typeof media.id === 'string' && media.id.startsWith('tmdb-'))
   if (isTmdb) {
     const tmdb = Number(media.idTmdb || String(media.id).replace('tmdb-', ''))
@@ -38,7 +38,7 @@ export async function resolveQueries (media, episode) {
     const details = await tmdbClient.getDetails(tmdb, 'tv').catch(() => null)
     const mapped = tmdbSeasonEpisode(details?.seasons, number)
     const candidates = mapped ? [mapped] : []
-    if (!mapped || mapped.season !== 1 || mapped.episode !== number) candidates.push({ season: 1, episode: number })
+    if (number >= 1 && (!mapped || mapped.season !== 1 || mapped.episode !== number)) candidates.push({ season: 1, episode: number })
     return candidates.map(candidate => ({ type: 'tv', tmdb, ...candidate }))
   }
   const mappings = await getAniMappings(media.id).catch(error => {
@@ -50,6 +50,7 @@ export async function resolveQueries (media, episode) {
   if (!tmdb) return []
   const type = String(mappings?.mappings?.type || animap?.type || '').toUpperCase()
   if (media.format === 'MOVIE' || type === 'MOVIE') return [{ type: 'movie', tmdb }]
+  if (number < 1) return [] // a prologue has no TVDB numbering (the season offset would point at another episode)
   return episodeCandidates({
     episode: number,
     aniEpisode: mappings?.episodes?.[String(number)],

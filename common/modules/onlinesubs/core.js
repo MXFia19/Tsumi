@@ -81,6 +81,17 @@ const positive = (value) => {
 }
 
 /**
+ * Episode number of the player: 1 when missing or invalid (movies, single files), but 0 stays 0 (a prologue is not
+ * episode 1, whose subtitles or skip times would be wrong).
+ * @param {any} episode
+ */
+export function episodeNumber (episode) {
+  if (episode === null || episode === undefined || episode === '') return 1
+  const number = Number(episode)
+  return Number.isFinite(number) && number >= 0 ? number : 1
+}
+
+/**
  * Season / episode pairs to try, in order, for an anime episode. ani.zip gives the TVDB numbering
  * (seasonNumber / episodeNumber) and the absolute number; some shows are filed by the provider under one long
  * season (One Piece episode 1000 is S1E1000, not S21E109), so absolute numbering is the fallback.
