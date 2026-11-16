@@ -269,7 +269,7 @@ struct ShellConnectionBanner: View {
       if monitor.isOffline {
         // Tap: the downloads, which play without network.
         Button {
-          DownloadNavigation.open()
+          ShellNavigation.openDownloads()
         } label: {
           bar(text: "Offline · Downloads", icon: "wifi.slash", background: ShellPalette.color(0x101114))
         }

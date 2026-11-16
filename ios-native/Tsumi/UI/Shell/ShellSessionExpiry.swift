@@ -72,7 +72,12 @@ struct ShellSessionExpiryCard: View {
           .buttonStyle(.plain)
         }
         Button {
-          center.logInAgain(prompt)
+          // The login web view is hosted by the profiles sheet: the sheets that would hide it are closed first.
+          center.dismiss(prompt)
+          Task { @MainActor in
+            await ShellNavigation.prepareProfilesSheet()
+            SessionExpiryCenter.shared.logInAgain(prompt)
+          }
         } label: {
           Text("Log in again")
             .font(.subheadline.weight(.bold))

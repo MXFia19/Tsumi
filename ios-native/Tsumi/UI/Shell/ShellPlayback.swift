@@ -69,6 +69,8 @@ enum ShellPlayback {
       if resolved == nil, media.source == .anilist, let anilistId = media.anilistId {
         resolved = try? await AniListService.shared.media(id: anilistId)
       }
+      // The loading dialog and the player would not show over a screen's own sheet (filters, queue...).
+      await ShellNavigation.dismissLocalSheets()
       ShellPlayback.play(resolved ?? media, episode: episode, force: false)
     }
   }
@@ -109,6 +111,8 @@ enum ShellPlayback {
     // PiP window being closed and the player UI is presented here only once.
     controller.stopPictureInPictureForRestore()
     Task { @MainActor in
+      // A screen's own sheet (invisible to ShellLayers) would keep the player from being presented.
+      await ShellNavigation.dismissLocalSheets()
       await ShellPresentationTiming.waitUntilSettled(maxDepth: 0)
       if presentation.controller === controller {
         presentation.isPresented = true
@@ -150,6 +154,11 @@ enum ShellPlayback {
         await ShellPresentationTiming.waitUntilSettled(maxDepth: 1)
         guard token == ShellPlayback.generation else { return }
         presentation.dismiss()
+      } else {
+        // A screen's own sheet (a downloaded episode played from it, for instance) would keep the player from
+        // being presented: the root must be free.
+        await ShellNavigation.dismissLocalSheets()
+        guard token == ShellPlayback.generation else { return }
       }
       await ShellPresentationTiming.waitUntilSettled(maxDepth: 0)
       while loader.result == nil && Date() < deadline {
