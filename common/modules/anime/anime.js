@@ -1,4 +1,4 @@
-import { codes, DOMPARSER, getRandomInt, countdown, sleep } from '@/modules/util.js'
+import { codes, DOMPARSER, countdown, sleep } from '@/modules/util.js'
 import { printError } from '@/modules/networking.js'
 import { anilistClient } from '@/modules/anilist.js'
 import _anitomyscript from 'anitomyscript'
@@ -14,6 +14,9 @@ import { settings } from '@/modules/settings.js'
 import { cache, caches } from '@/modules/cache.js'
 import { status } from '@/modules/networking.js'
 import Helper from '@/modules/helper.js'
+import { constructChapters } from '@/modules/anime/chapters.js'
+import { mappingTtl, retryDelay } from '@/modules/cachepolicy.js'
+import { localDateTimeString } from '@/modules/dates.js'
 import Bottleneck from 'bottleneck'
 import { Drama, BookHeart, MountainSnow, Laugh, Adult, Droplets, FlaskConical, Ghost, Skull, HeartPulse, Volleyball, Car, Brain, Footprints, Guitar, Bot, Sparkles, WandSparkles, Activity } from 'lucide-svelte'
 import Debug from 'debug'
@@ -102,51 +105,7 @@ export async function traceAnime (image) { // WAIT lookup logic
   }
 }
 
-function constructChapters (results, duration) {
-  const chapters = results.map(result => {
-    const diff = duration - result.episodeLength
-    return {
-      start: (result.interval.startTime + diff) * 1000,
-      end: (result.interval.endTime + diff) * 1000,
-      text: result.skipType.toUpperCase()
-    }
-  })
-  const ed = chapters.find(({ text }) => text === 'ED')
-  const recap = chapters.find(({ text }) => text === 'RECAP')
-  if (recap) recap.text = 'Recap'
-
-  chapters.sort((a, b) => a - b)
-  if ((chapters[0].start | 0) !== 0) {
-    chapters.unshift({ start: 0, end: chapters[0].start, text: chapters[0].text === 'OP' ? 'Intro' : 'Episode' })
-  }
-  if (ed) {
-    if ((ed.end | 0) + 5000 - duration * 1000 < 0) {
-      chapters.push({ start: ed.end, end: duration * 1000, text: 'Preview' })
-    }
-  } else if ((chapters[chapters.length - 1].end | 0) + 5000 - duration * 1000 < 0) {
-    chapters.push({
-      start: chapters[chapters.length - 1].end,
-      end: duration * 1000,
-      text: 'Episode'
-    })
-  }
-
-  for (let i = 0, len = chapters.length - 2; i <= len; ++i) {
-    const current = chapters[i]
-    const next = chapters[i + 1]
-    if ((current.end | 0) !== (next.start | 0)) {
-      chapters.push({
-        start: current.end,
-        end: next.start,
-        text: 'Episode'
-      })
-    }
-  }
-
-  chapters.sort((a, b) => a.start - b.start)
-
-  return chapters
-}
+// constructChapters (AniSkip results -> chapters, sorted by start) lives in chapters.js, tested by chapters.test.mjs.
 
 export async function getChaptersAniSkip (file, duration) {
   if (!file.media?.media?.idMal || !file.media?.episode) return []
@@ -763,8 +722,8 @@ export function setStatus (status, other = {}, media) {
     id: media.id,
     idMal: media.idMal,
     status,
-    score: media.mediaListEntry?.score ? Helper.isAniAuth() ? (media.mediaListEntry?.score * 10) : media.mediaListEntry?.score : 0, // AniList score scale is out of 100, others use a scale of 10,
-    repeat: media.mediaListEntry?.repeat || 0,
+    // No score: a status change leaves it alone. An unknown MyAnimeList rewatch count is left out (MyAnimeList keeps it).
+    repeat: media.mediaListEntry?.repeat ?? (Helper.isAniAuth() ? 0 : undefined),
     ...fuzzyDate,
     ...other
   }
@@ -801,8 +760,8 @@ function kitsuToAniEpisodes (data) {
         ja: attributes.titles?.ja || null,
         'x-jat': attributes.titles?.['x-jat'] || attributes.titles?.ja_jp || null
       },
-      airDate: attributes.airdate || null,
-      airdate: attributes.airdate || null,
+      airDate: localDateTimeString(attributes.airdate), // calendar day, read as local midnight
+      airdate: localDateTimeString(attributes.airdate),
       length: attributes.length || null,
       runtime: attributes.length || null,
       overview: attributes.synopsis || attributes.description || null,
@@ -947,10 +906,7 @@ export async function getKitsuMappings (anilistID) {
           checkError(res, 'kitsu')
         }
       }
-      const date = new Date()
-      const media = cache.getMedia(anilistID)
-      const cacheDuration = media?.status === 'FINISHED' && (media?.endDate ? (date.getFullYear() - media?.endDate.year) * 12 + (date.getMonth() + 1 - media?.endDate.month) >= 1 : (media?.startDate?.year || media?.seasonYear) && date.getFullYear() - (media?.startDate?.year || media?.seasonYear) >= 1) ? getRandomInt(14, 21) * 24 * 60 * 60 * 1_000 : getRandomInt(60, 90) * 60 * 1_000
-      return cache.cacheEntry(caches.MAPPINGS, `kitsu-${anilistID}`, {}, json, date.getTime() + cacheDuration) // caches currently airing series for 60 to 90 minutes, or 2 to 3 weeks for finished series (its highly unlikely the mappings will change drastically at that point).
+      return cache.cacheEntry(caches.MAPPINGS, `kitsu-${anilistID}`, {}, json, Date.now() + mappingTtl(cache.getMedia(anilistID))) // caches currently airing series for 60 to 90 minutes, or 2 to 3 weeks for finished series (its highly unlikely the mappings will change drastically at that point).
     } catch (e) {
       const cachedEntry = cache.cachedEntry(caches.MAPPINGS, `kitsu-${anilistID}`, true)
       if (cachedEntry) {
@@ -973,15 +929,13 @@ const aniLimiter = new Bottleneck({
   maxConcurrent: 15,
   minTime: 80
 })
-aniLimiter.on('failed', async (error) => {
+aniLimiter.on('failed', async (error, jobInfo) => {
   if (status.value === 'offline') throw new Error('Failed making request to api.ani.zip, network is offline... not retrying')
-  if (error.status === 500) return 1
-  if (!error.statusText) {
-    if (!aniRateLimitPromise) aniRateLimitPromise = sleep(10 * 1000).then(() => { aniRateLimitPromise = null })
-    return 10 * 1000
-  }
-  const time = (Number((error.headers.get('retry-after') || 10)) + 1) * 1000
-  if (!aniRateLimitPromise) aniRateLimitPromise = sleep(time).then(() => { aniRateLimitPromise = null })
+  // A few retries with a growing delay (a 500 was retried every millisecond forever), then the request fails.
+  const networkError = !error?.statusText
+  const time = retryDelay(error, jobInfo?.retryCount, { retries: 3, base: networkError ? 10 * 1000 : 1000, max: 60 * 1000 })
+  if (time === null) return
+  if ((networkError || error.status === 429) && !aniRateLimitPromise) aniRateLimitPromise = sleep(time).then(() => { aniRateLimitPromise = null })
   return time
 })
 
@@ -1018,10 +972,7 @@ export async function getAniMappings (anilistID) {
           checkError(res, 'ani')
         }
       }
-      const date = new Date()
-      const media = cache.getMedia(anilistID)
-      const cacheDuration = media?.status === 'FINISHED' && (media?.endDate ? (date.getFullYear() - media?.endDate.year) * 12 + (date.getMonth() + 1 - media?.endDate.month) >= 1 : (media?.startDate?.year || media?.seasonYear) && date.getFullYear() - (media?.startDate?.year || media?.seasonYear) >= 1) ? getRandomInt(14, 21) * 24 * 60 * 60 * 1_000 : getRandomInt(60, 90) * 60 * 1_000
-      return cache.cacheEntry(caches.MAPPINGS, `ani-${anilistID}`, {}, json, date.getTime() + cacheDuration) // caches currently airing series for 60 to 90 minutes, or 2 to 3 weeks for finished series (its highly unlikely the mappings will change drastically at that point).
+      return cache.cacheEntry(caches.MAPPINGS, `ani-${anilistID}`, {}, json, Date.now() + mappingTtl(cache.getMedia(anilistID))) // caches currently airing series for 60 to 90 minutes, or 2 to 3 weeks for finished series (its highly unlikely the mappings will change drastically at that point).
     } catch (e) {
       const cachedEntry = cache.cachedEntry(caches.MAPPINGS, `ani-${anilistID}`, true)
       if (cachedEntry) {

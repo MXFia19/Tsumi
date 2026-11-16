@@ -155,7 +155,7 @@ class AnimeSchedule {
 
   async findNewNotifications () {
     for (const type of ['Dub', 'Sub', 'Hentai']) {
-      if (type === 'Hentai' && settings.value.adult !== 'hentai') return
+      if (type === 'Hentai' && settings.value.adult !== 'hentai') continue
       const key = `${type.toLowerCase()}Announce`
       const notifyKey = `announced${type}s`
       const airingListKey = `${type === 'Hentai' ? 'sub' : type.toLowerCase()}AiringLists`
@@ -163,20 +163,21 @@ class AnimeSchedule {
       debug(`Checking for new ${type} Schedule notifications`)
       const newNotifications = (await this[airingListKey].value)?.filter(entry => (entry?.unaired && ((type !== 'Hentai' && !(entry?.media?.media?.genres || entry?.genres)?.includes('Hentai')) || (type === 'Hentai' && (entry?.media?.media?.genres || entry?.genres)?.includes('Hentai'))) && !cache.getEntry(caches.NOTIFICATIONS, notifyKey).includes(entry?.media?.media?.id || entry?.id))).map(entry => entry?.media?.media || entry)
       debug(`Found ${newNotifications?.length} new ${type} notifications`)
-      if (!newNotifications?.length) return
+      if (!newNotifications?.length) continue // the other types are still checked
       await anilistClient.searchAllIDS({ id: newNotifications.map(media => media.id).filter(Boolean) })
       for (const media of newNotifications) {
         const cachedMedia = await cache.requestMedia(media?.id)
         if (settings.value[key] !== 'none' && media?.id) {
           const res = await Helper.getClient().userLists.value
           const isFollowing = () => {
-            if (!res?.data && res?.errors) throw res.errors[0]
-            if (!Helper.isAuthorized()) return false
+            if (!Helper.isAuthorized() || !res?.data) return false // lists unavailable: no "following" notification
+            // Every list with one of these statuses (find() only looked at the first one).
             const mediaList = Helper.isAniAuth()
-              ? res.data.MediaListCollection.lists.find(({ status }) => status === 'CURRENT' || status === 'REPEATING' || status === 'COMPLETED' || status === 'PAUSED' || status === 'PLANNING')?.entries
-              : res.data.MediaList.filter(({ node }) => node.my_list_status.status === Helper.statusMap('CURRENT') || node.my_list_status.is_rewatching || node.my_list_status.status === Helper.statusMap('COMPLETED') || node.my_list_status.status === Helper.statusMap('PAUSED') || node.my_list_status.status === Helper.statusMap('PLANNING'))
-            if (!mediaList) return false
-            return (cachedMedia?.relations?.edges?.map(edge => edge.node.id) || []).some(id => (Helper.isAniAuth() ? mediaList.map(({ media }) => media.id) : mediaList.map(({ node }) => node.id)).includes(id))
+              ? (res.data.MediaListCollection?.lists || []).filter(({ status }) => status === 'CURRENT' || status === 'REPEATING' || status === 'COMPLETED' || status === 'PAUSED' || status === 'PLANNING').flatMap(({ entries }) => entries || [])
+              : (res.data.MediaList || []).filter(({ node }) => node.my_list_status.status === Helper.statusMap('CURRENT') || node.my_list_status.is_rewatching || node.my_list_status.status === Helper.statusMap('COMPLETED') || node.my_list_status.status === Helper.statusMap('PAUSED') || node.my_list_status.status === Helper.statusMap('PLANNING'))
+            // MyAnimeList lists hold MyAnimeList ids: compared with the MyAnimeList ids of the relations.
+            const listIds = new Set(Helper.isAniAuth() ? mediaList.map(({ media }) => media?.id) : mediaList.map(({ node }) => node?.id))
+            return (cachedMedia?.relations?.edges || []).some(edge => listIds.has(Helper.isAniAuth() ? edge.node?.id : edge.node?.idMal))
           }
           const notify = (cache.getEntry(caches.NOTIFICATIONS, `last${type}`) > 0) && (settings.value[key] === 'all' || isFollowing())
           if (notify && media.format !== 'MUSIC') {

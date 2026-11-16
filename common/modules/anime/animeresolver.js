@@ -222,10 +222,12 @@ export default new class AnimeResolver {
    */
   async getAnimeById (id) {
     if (!id) return null
+    // getMedia answers {} for an unknown id (a media object never has a length: the cache was never used). The
+    // relations are needed to walk the seasons.
     const cachedMedia = cache.getMedia(id)
-    if (cachedMedia?.length) return cachedMedia
+    if (cachedMedia?.id && cachedMedia.relations) return cachedMedia
     const res = await anilistClient.searchIDSingle({ id })
-    return res.data.Media
+    return res?.data?.Media ?? null
   }
 
   async findAndCacheTitle (fileName, findAnime = true) {
@@ -656,7 +658,12 @@ export default new class AnimeResolver {
       if (!force) debug(`Failed to resolve season ${media.id}:${media.title.userPreferred} ${episode} ${increment} ${offset} ${rootMedia.id}:${rootMedia.title.userPreferred}`)
       return obj
     }
-    media = await this.getAnimeById(edge.id)
+    const edgeMedia = await this.getAnimeById(edge.id)
+    if (!edgeMedia) { // not found (or the request failed): resolve no further
+      if (!force) debug(`Failed to resolve season ${media.id}: related media ${edge.id} unavailable`)
+      return { media, episode: episode - offset, offset, increment, rootMedia, failed: true }
+    }
+    media = edgeMedia
 
     const highest = media.nextAiringEpisode?.episode || media.episodes
 
