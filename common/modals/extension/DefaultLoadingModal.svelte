@@ -153,14 +153,20 @@
 
     const title = anilistClient.title(capturedMedia)
     const defaultKey = settings.value.defaultExtension
+    // Right after the app starts the extensions are still being downloaded: wait for the default one.
+    if (extensionManager.loading.has(defaultKey)) {
+      await extensionManager.loading.get(defaultKey)
+      if (!active()) return
+    }
     const defaultExt = extensionManager
       .getEnabled()
       .find((e) => e.key === defaultKey)
 
     const launch = { source: defaultExt?.manifest?.sourceName || defaultExt?.key || '', origin: {} }
     if (!defaultExt) {
+      const loadError = extensionManager.getStatus(defaultKey)?.error
       fail(
-        'Default extension not found or disabled',
+        loadError ? `Default extension failed to load: ${loadError}` : 'Default extension not found or disabled',
         capturedMedia,
         capturedEpisode
       )
