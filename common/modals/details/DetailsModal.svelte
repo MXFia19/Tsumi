@@ -24,6 +24,7 @@
   import SmallCardSk from '@/components/skeletons/SmallCardSk.svelte'
   import Helper from '@/modules/helper.js'
   import { modal } from '@/modules/navigation.js'
+  import { modalLayer } from '@/modules/modalstack.js'
   import DOMPurify from 'dompurify'
   import { marked } from 'marked'
   import { Clapperboard, Users, Heart, Play, Timer, TrendingUp, Tv, Hash, ArrowDown01, ArrowUp10, ListPlus } from 'lucide-svelte'
@@ -56,9 +57,13 @@
   }
   // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data.
   mediaCache.subscribe((value) => {
-    if (value && media?.id && value[media.id] && JSON.stringify(value[media.id]) !== JSON.stringify(media)) { media = value[media.id] }
+    const cached = value?.[media?.id]
+    if (cached && cached !== media && JSON.stringify(cached) !== JSON.stringify(media)) { media = cached }
   })
-  $: episodeOrder = !!staticMedia
+  // Identity of the shown title. The TMDB enrichment below replaces staticMedia with the same title: that must not
+  // scroll back to the top, reset the episode order or reload the episodes and recommendations.
+  $: staticId = staticMedia?.id
+  $: episodeOrder = !!staticId
   // Spoiler protection (modules/spoilers.js), from the live list entry.
   $: hideDuration = hidesMedia('duration', media, $settings)
   $: hideRating = hidesMedia('rating', media, $settings)
@@ -70,11 +75,11 @@
     ['CURRENT', 'REPEATING', 'PAUSED', 'DROPPED'].includes(
       media?.mediaListEntry?.status
     ) && media?.mediaListEntry?.progress
-  $: missingIds = staticMedia && []
+  $: missingIds = staticId && []
   $: recommendations =
-    staticMedia &&
-    typeof staticMedia.id !== 'string' &&
-    anilistClient.recommendations({ id: staticMedia.id })
+    staticId &&
+    typeof staticId !== 'string' &&
+    anilistClient.recommendations({ id: staticId })
   $: searchIDS =
     staticMedia &&
     typeof staticMedia.id !== 'string' &&
@@ -111,105 +116,85 @@
       })
     })()
 
-  // TMDB detail enrichment for western media
-  $: {
-    if (
-      staticMedia &&
-      typeof staticMedia.id === 'string' &&
-      staticMedia?.idTmdb &&
-      !staticMedia._tmdbEnriched
-    ) {
-      tmdbClient
-        .getDetails(
-          staticMedia.idTmdb,
-          staticMedia.format === 'MOVIE' ? 'movie' : 'tv'
-        )
-        .then((details) => {
-          if (details && staticMedia?.isTmdb) {
-            staticMedia = {
-              ...staticMedia,
-              _tmdbEnriched: true,
-              genres: details.genres || staticMedia.genres,
-              tags: details.tags || staticMedia.tags || [],
-              description: details.description || staticMedia.description,
-              episodes: details.episodes || staticMedia.episodes,
-              duration: details.duration || staticMedia.duration,
-              status: details.status || staticMedia.status,
-              averageScore: details.averageScore || staticMedia.averageScore,
-              trailer: details.trailer || staticMedia.trailer,
-              bannerImage: details.backdrop || staticMedia.bannerImage,
-              seasonYear: details.seasonYear || staticMedia.seasonYear,
-              isAdult: details.isAdult || staticMedia.isAdult,
-              studios: {
-                nodes: details.studios?.map((name) => ({ name })) || []
-              },
-              staff: {
-                edges:
-                  details.staff?.map((person) => ({
-                    node: {
-                      name: { userPreferred: person.name },
-                      image: {
-                        large: person.image
-                          ? `https://image.tmdb.org/t/p/w185${person.image}`
-                          : null
-                      }
-                    },
-                    role: person.role
-                  })) || []
-              },
-              characters: {
-                edges:
-                  details.characters?.map((char) => ({
-                    node: {
-                      name: { userPreferred: char.name },
-                      image: {
-                        large: char.image
-                          ? `https://image.tmdb.org/t/p/w185${char.image}`
-                          : null
-                      }
-                    },
-                    voiceActors: [{ name: { userPreferred: char.actorName } }]
-                  })) || []
-              },
-              rating: details.rating || staticMedia.rating,
-              externalIds: details.externalIds || {}
-            }
-          }
-        })
-    }
+  // TMDB detail enrichment for western media, applied to the title it was asked for only: the details may show
+  // another title by the time TMDB answers.
+  let enriching = null
+  $: if (staticMedia && typeof staticMedia.id === 'string' && staticMedia.idTmdb && !staticMedia._tmdbEnriched) enrich(staticMedia)
+  function enrich (target) {
+    const key = `${target.id}|${target.idTmdb}`
+    if (enriching === key) return
+    enriching = key
+    tmdbClient
+      .getDetails(target.idTmdb, target.format === 'MOVIE' ? 'movie' : 'tv')
+      .catch(() => null)
+      .then((details) => {
+        if (enriching === key) enriching = null
+        if (!details || !staticMedia?.isTmdb || staticMedia._tmdbEnriched || staticMedia.id !== target.id || staticMedia.idTmdb !== target.idTmdb) return
+        staticMedia = {
+          ...staticMedia,
+          _tmdbEnriched: true,
+          genres: details.genres || staticMedia.genres,
+          tags: details.tags || staticMedia.tags || [],
+          description: details.description || staticMedia.description,
+          episodes: details.episodes || staticMedia.episodes,
+          duration: details.duration || staticMedia.duration,
+          status: details.status || staticMedia.status,
+          averageScore: details.averageScore || staticMedia.averageScore,
+          trailer: details.trailer || staticMedia.trailer,
+          bannerImage: details.backdrop || staticMedia.bannerImage,
+          seasonYear: details.seasonYear || staticMedia.seasonYear,
+          isAdult: details.isAdult || staticMedia.isAdult,
+          studios: {
+            nodes: details.studios?.map((name) => ({ name })) || []
+          },
+          staff: {
+            edges:
+              details.staff?.map((person) => ({
+                node: {
+                  name: { userPreferred: person.name },
+                  image: {
+                    large: person.image
+                      ? `https://image.tmdb.org/t/p/w185${person.image}`
+                      : null
+                  }
+                },
+                role: person.role
+              })) || []
+          },
+          characters: {
+            edges:
+              details.characters?.map((char) => ({
+                node: {
+                  name: { userPreferred: char.name },
+                  image: {
+                    large: char.image
+                      ? `https://image.tmdb.org/t/p/w185${char.image}`
+                      : null
+                  }
+                },
+                voiceActors: [{ name: { userPreferred: char.actorName } }]
+              })) || []
+          },
+          rating: details.rating || staticMedia.rating,
+          externalIds: details.externalIds || {}
+        }
+      })
   }
-  $: tmdbRecs =
-    staticMedia &&
-    typeof staticMedia.id === 'string' &&
-    staticMedia?.idTmdb &&
-    tmdbClient.getRecommendations(
-      staticMedia.idTmdb,
-      staticMedia.format === 'MOVIE' ? 'movie' : 'tv'
-    )
-  $: tmdbRelations =
-    staticMedia &&
-    typeof staticMedia.id === 'string' &&
-    staticMedia?.idTmdb &&
-    tmdbClient.getRelations(
-      staticMedia.idTmdb,
-      staticMedia.format === 'MOVIE' ? 'movie' : 'tv'
-    )
-  $: staticMedia &&
-    (_modal?.focus(),
-    container && container.scrollTo({ top: 0, behavior: 'smooth' }))
-  $: staticMedia &&
-    modal.length === 1 &&
-    $modal[modal.ANIME_DETAILS] &&
+  /** TMDB recommendations / relations of the shown title (getRecommendations | getRelations). */
+  function tmdbList (method) {
+    if (typeof staticMedia?.id !== 'string' || !staticMedia.idTmdb) return null
+    return tmdbClient[method](staticMedia.idTmdb, staticMedia.format === 'MOVIE' ? 'movie' : 'tv')
+  }
+  $: tmdbRecs = staticId && tmdbList('getRecommendations')
+  $: tmdbRelations = staticId && tmdbList('getRelations')
+  // Another title: back to the top (a function, so that only staticId triggers it).
+  function resetView () {
     _modal?.focus()
-  $: {
-    if (staticMedia) {
-      if (scrollTags) scrollTags.scrollLeft = 0
-      if (scrollGenres) scrollGenres.scrollLeft = 0
-    }
+    container?.scrollTo({ top: 0, behavior: 'smooth' })
+    if (scrollTags) scrollTags.scrollLeft = 0
+    if (scrollGenres) scrollGenres.scrollLeft = 0
   }
-  function checkClose ({ keyCode }) {
-    if (keyCode === 27) close()
-  }
+  $: if (staticId) resetView()
   function play (media, episode, force = false) {
     if (!media) return
     const isEpisodeValid = isValidNumber(episode) || (typeof episode === 'object' && episode !== null && isValidNumber(episode.number))
@@ -342,8 +327,10 @@
   let episodeList = []
   let episodeLoad
   $: if (episodeLoad) {
-    episodeLoad.then((episodes) => {
-      episodeList = episodes
+    const load = episodeLoad
+    // Only the load of the shown title (an earlier title may finish later).
+    load.then((episodes) => {
+      if (load === episodeLoad) episodeList = episodes
     })
   }
 
@@ -374,12 +361,16 @@
   onDestroy(() => resizeObserver?.disconnect())
 </script>
 
+<!-- A layer of the modal stack (modules/modalstack.js): Esc closes it only when it is the top layer. -->
 <div
   class='modal modal-full z-50'
   class:show={staticMedia}
-  on:keydown={checkClose}
   tabindex='-1'
-  role='button'
+  role='dialog'
+  aria-modal='true'
+  aria-label={staticMedia ? anilistClient.title(staticMedia) : undefined}
+  aria-hidden={staticMedia ? undefined : 'true'}
+  use:modalLayer={{ open: !!staticMedia, close, priority: modal.priority(modal.ANIME_DETAILS) }}
   bind:this={_modal}
 >
   <div
@@ -424,7 +415,7 @@
                 <div class='position-relative h-full'>
                   <SmartImage
                     class='rounded cover-img overflow-hidden h-full w-full'
-                    color={media.coverImage.color || 'var(--tertiary-color)'}
+                    color={media?.coverImage?.color || 'var(--tertiary-color)'}
                     images={[
                       staticMedia.coverImage?.extraLarge,
                       staticMedia.coverImage?.medium,
