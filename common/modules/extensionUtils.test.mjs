@@ -1,6 +1,6 @@
 // Extensions / Stremio pure helpers. Run with: node common/modules/extensionUtils.test.mjs
 import assert from 'node:assert/strict'
-import { hashString, extensionKey, LruCache, CatalogPager, pickStremioSubtitle, subtitleLanguageCode, animeMetaId } from './extensionUtils.js'
+import { shortHash, installKey, LruCache, CatalogPager, pickStremioSubtitle, subtitleLanguageCode, animeMetaId } from './extensionUtils.js'
 
 let passed = 0
 let failed = 0
@@ -15,22 +15,32 @@ async function test (name, fn) {
   }
 }
 
-await test('hashString is stable and short', () => {
-  assert.equal(hashString('abc'), hashString('abc'))
-  assert.notEqual(hashString('https://a.example/x/manifest.json'), hashString('https://a.example/y/manifest.json'))
-  assert.match(hashString(''), /^[0-9a-z]{1,7}$/)
+await test('shortHash: first 4 bytes of SHA-256, hex (as on iOS)', async () => {
+  assert.equal(await shortHash('abc'), 'ba7816bf')
+  assert.equal(await shortHash(''), 'e3b0c442')
+  assert.notEqual(await shortHash('https://a.example/x'), await shortHash('https://a.example/y'))
 })
 
-await test('extensionKey: same addon, two configurations', () => {
-  const a = extensionKey({ type: 'stremio', id: 'com.stremio.torrentio.addon', url: 'https://torrentio.strem.fun/providers=yts' })
-  const b = extensionKey({ type: 'stremio', id: 'com.stremio.torrentio.addon', url: 'https://torrentio.strem.fun/providers=eztv' })
-  assert.notEqual(a, b)
-  assert.ok(a.startsWith('stremio-com.stremio.torrentio.addon-'))
-  assert.ok(!a.includes('providers'), 'the key never contains the configured URL')
-  // Sora modules: no version in the key, so an update keeps it.
-  const sora = extensionKey({ name: 'AnimeWorld', url: 'https://example.com/aw.json' })
-  assert.equal(sora, extensionKey({ name: 'AnimeWorld', url: 'https://example.com/aw.json' }))
-  assert.ok(sora.startsWith('AnimeWorld-'))
+await test('installKey: same scheme as iOS', () => {
+  const same = (a, b) => a === b
+  const torrentio = { stremioId: 'com.stremio.torrentio.addon', sourceName: 'Torrentio', version: '0.0.15' }
+  const installed = [
+    ['Torrentio-0.0.15', { url: 'https://torrentio.strem.fun/providers=yts/manifest.json', manifest: torrentio }],
+    ['AnimeWorld-1.0.0', { url: 'https://example.com/aw.json', manifest: { sourceName: 'AnimeWorld', version: '1.0.0' } }]
+  ]
+  // New extension: name-version, like before.
+  assert.equal(installKey({ type: 'sora', name: 'Other', version: '2.1', url: 'https://o.example/m.json', addressHash: 'h' }, installed, same), 'Other-2.1')
+  assert.equal(installKey({ type: 'sora', name: 'NoVersion', version: undefined, url: 'https://n.example/m.json', addressHash: 'h' }, installed, same), 'NoVersion-undefined')
+  // Same address: that entry is updated (Stremio and Sora).
+  assert.equal(installKey({ type: 'stremio', name: 'Torrentio', version: '0.0.16', url: 'https://torrentio.strem.fun/providers=yts/manifest.json', addressHash: 'h' }, installed, same), 'Torrentio-0.0.15')
+  // A Sora module with the same name (new version, new address) updates its entry instead of adding a duplicate.
+  assert.equal(installKey({ type: 'sora', name: 'AnimeWorld', version: '1.1.0', url: 'https://mirror.example/aw.json', addressHash: 'h' }, installed, same), 'AnimeWorld-1.0.0')
+  // A second configuration of one Stremio addon: same name and version, so the key gets the address hash.
+  assert.equal(installKey({ type: 'stremio', name: 'Torrentio', version: '0.0.15', url: 'https://torrentio.strem.fun/providers=eztv/manifest.json', addressHash: '1a2b3c4d' }, installed, same), 'Torrentio-0.0.15#1a2b3c4d')
+  const more = [...installed, ['Torrentio-0.0.15#1a2b3c4d', { url: 'https://x/manifest.json', manifest: torrentio }]]
+  assert.equal(installKey({ type: 'stremio', name: 'Torrentio', version: '0.0.15', url: 'https://y/manifest.json', addressHash: '1a2b3c4d' }, more, same), 'Torrentio-0.0.15#1a2b3c4d-2')
+  // A Stremio addon never takes over a Sora module of the same name.
+  assert.equal(installKey({ type: 'stremio', name: 'AnimeWorld', version: '9', url: 'https://aw-addon.example/manifest.json', addressHash: 'h' }, installed, same), 'AnimeWorld-9')
 })
 
 await test('LruCache evicts the least recently used', () => {

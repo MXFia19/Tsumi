@@ -2,26 +2,39 @@ import { preferredLanguage, normalizeLanguage, languageName } from './onlinesubs
 
 // Pure helpers of the extensions (extension.js) and Stremio addons (stremio.js), unit tested by extensionUtils.test.mjs.
 
-/** Short stable hash of a string (FNV-1a 32 bits, base 36). */
-export function hashString (text) {
-  let hash = 0x811c9dc5
-  const value = String(text ?? '')
-  for (let i = 0; i < value.length; i++) {
-    hash ^= value.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return (hash >>> 0).toString(36)
+/** First 4 bytes of the SHA-256 of a string, hex (same short hash as the iOS app). */
+export async function shortHash (text) {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text ?? '')))
+  return [...new Uint8Array(digest).slice(0, 4)].map(byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
 /**
- * Settings key of a newly installed extension. The version is not part of it (an update keeps the same key, so the
- * default / starred choice survives), and the address is: two configurations of the same Stremio addon (same id,
- * different configured URL) or two copies of a module from different places are two extensions.
- * @param {{ type?: string, id?: string, name?: string, url: string }} extension
+ * Settings key of an extension being added (same scheme as the iOS app, ExtensionManager.installKey):
+ * - the installed entry it updates: same manifest address, or for a Sora module the same name (an update never adds
+ *   a duplicate, and keeps the default / starred choice);
+ * - else `name-version`, as before;
+ * - when another entry already has that key (two configurations of one Stremio addon share their name and version),
+ *   `name-version#<short hash of the addon address>` (then -2, -3...), so the new one does not replace the other.
+ * Existing keys never change.
+ * @param {{ type?: string, name?: string, version?: string, url: string, addressHash: string }} candidate
+ * @param {[string, any][]} installed entries of settings.extensions
+ * @param {(a: string, b: string) => boolean} sameUrl
  */
-export function extensionKey ({ type, id, name, url }) {
-  const label = String((type === 'stremio' ? id : name) || 'extension').replace(/\s+/g, ' ').trim()
-  return `${type === 'stremio' ? 'stremio-' : ''}${label}-${hashString(url)}`
+export function installKey ({ type, name, version, url, addressHash }, installed, sameUrl) {
+  const sameAddress = installed.find(([, config]) => config?.url && sameUrl(config.url, url))
+  if (sameAddress) return sameAddress[0]
+  if (type !== 'stremio') {
+    const sameName = installed.find(([, config]) => config?.manifest && !config.manifest.stremioId && config.manifest.sourceName === name)
+    if (sameName) return sameName[0]
+  }
+  // JavaScript template literal of the old key: a missing version printed "undefined".
+  const base = `${name}-${version}`
+  const taken = new Set(installed.map(([key]) => key))
+  if (!taken.has(base)) return base
+  const hashed = `${base}#${addressHash}`
+  let candidate = hashed
+  for (let counter = 2; taken.has(candidate); counter++) candidate = `${hashed}-${counter}`
+  return candidate
 }
 
 /**

@@ -1,10 +1,10 @@
 import { writable } from 'simple-store-svelte'
 import { settings } from '@/modules/settings.js'
 import { ELECTRON } from '@/modules/bridge.js'
-import { isStremioManifest, loadStremioAddon, callStremioFunction, normalizeManifestUrl } from '@/modules/stremio.js'
+import { isStremioManifest, loadStremioAddon, callStremioFunction, normalizeManifestUrl, addonBaseUrl } from '@/modules/stremio.js'
 import { runSandboxed, abortError } from '@/modules/sandbox/sandbox.js'
 import { checkModuleUrl, checkManifestUrl, isLocalUrl, maskUrl, moduleDomains, readCapped, scriptUrlCandidates } from '@/modules/sandbox/network.js'
-import { extensionKey } from '@/modules/extensionUtils.js'
+import { installKey, shortHash } from '@/modules/extensionUtils.js'
 import Debug from 'debug'
 
 const debug = Debug('ui:extension:manager')
@@ -262,31 +262,39 @@ class ExtensionManager {
     return () => this.subscribers.delete(cb)
   }
 
-  /** Key of the installed extension with this manifest URL, if any. */
-  findKeyByUrl (manifestUrl) {
-    return Object.entries(settings.value.extensions || {}).find(([, config]) => config?.url && sameManifestUrl(config.url, manifestUrl))?.[0] || null
+  /** Settings key for a loaded extension: the entry it updates, else a new key (installKey, same scheme as iOS). */
+  keyFor (loaded, addressHash) {
+    return installKey(
+      { type: loaded.type === 'stremio' ? 'stremio' : 'sora', name: loaded.manifest?.sourceName, version: loaded.manifest?.version, url: loaded.url, addressHash },
+      Object.entries(settings.value.extensions || {}),
+      sameManifestUrl
+    )
   }
 
   /**
    * Loads an extension without installing it, for the install dialog: what it is, the hosts it says it uses, and the
-   * installed copy it would update (same manifest URL).
+   * installed entry it would update (same manifest URL, or same Sora module name).
    */
   async previewExtension (manifestUrl) {
     const loaded = await loadExtension(manifestUrl)
-    const existingKey = this.findKeyByUrl(loaded.url)
+    // Short hash of the addon address, only used in the key when name-version is already taken.
+    const addressHash = await shortHash(addonBaseUrl(loaded.url))
+    const key = this.keyFor(loaded, addressHash)
+    const existingKey = settings.value.extensions?.[key] ? key : null
     return {
       loaded,
+      addressHash,
       existingKey,
-      installedVersion: existingKey ? settings.value.extensions?.[existingKey]?.manifest?.version || null : null,
+      installedVersion: existingKey ? settings.value.extensions[existingKey].manifest?.version || null : null,
       domains: extensionDomains(loaded),
       insecureScript: !!loaded.scriptUrl?.startsWith('http:') && !isLocalUrl(loaded.scriptUrl)
     }
   }
 
-  /** Installs a previewed extension. Same manifest URL as an installed one: updated in place (same key). */
+  /** Installs a previewed extension; an installed entry it matches is updated in place (same key). */
   installExtension (preview) {
     const { loaded } = preview
-    const key = this.findKeyByUrl(loaded.url) || extensionKey({ type: loaded.type, id: loaded.stremio?.manifest?.id, name: loaded.manifest?.sourceName, url: loaded.url })
+    const key = this.keyFor(loaded, preview.addressHash)
     this.extensions.set(key, loaded)
     this.status.set(key, { state: 'ready' })
     settings.set({
