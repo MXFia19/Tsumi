@@ -15,6 +15,8 @@ export default class Updater {
   constructor (window) {
     this.window = window
     autoUpdater.autoInstallOnAppQuit = false
+    // "Install Updates On Quit" (App settings, sent by UpdateModal.svelte at launch and on every change).
+    ipcMain.on('updater:install-on-quit', (event, enabled) => { autoUpdater.autoInstallOnAppQuit = enabled === true })
     // Releases of github.com/MXFia19/Tsumi ("publish" in electron/package.json): latest.yml of the latest release.
     // Failures (offline, rate limit...) are reported through the 'error' event.
     ipcMain.on('update', () => autoUpdater.checkForUpdates()?.catch(() => {}))
