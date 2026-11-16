@@ -42,6 +42,12 @@ final class BrowseSearchModel {
   /// Image search results (trace.moe) replace the normal results until a filter changes.
   private(set) var isTraceMode = false
   private(set) var isTracing = false
+  /// Results of the selected Sora module (filters.soraModule), shown instead of `media`; no next page.
+  private(set) var soraResults: [SoraSearchResult] = []
+  /// Module result being matched to an AniList / TMDB title (spinner on its card).
+  private(set) var matchingResultID: String?
+  @ObservationIgnored private var matchTask: Task<Void, Never>?
+  @ObservationIgnored private var matchToken = 0
   private var generation = 0
   @ObservationIgnored private var lastRunKey: RunKey? = nil
   @ObservationIgnored private var token = 0
@@ -61,10 +67,19 @@ final class BrowseSearchModel {
   }
 
   var hasActiveFilters: Bool {
-    !badges.isEmpty || sectionTitle != nil || isTraceMode
+    !badges.isEmpty || sectionTitle != nil || isTraceMode || filters.soraModule != nil
   }
 
-  var isEmpty: Bool { media.isEmpty && episodes.isEmpty }
+  var isEmpty: Bool { media.isEmpty && episodes.isEmpty && soraResults.isEmpty }
+
+  /// A Sora module is the Source: the AniList / TMDB filters (genres, season, format, status, sort, list and dub
+  /// filters) do not apply and are disabled.
+  var isSoraSource: Bool { filters.soraModule != nil }
+
+  /// Name of the selected Sora module (nil for AniList / TMDB).
+  var soraModuleName: String? {
+    filters.soraModule.map { SoraSearchSource.moduleName($0) }
+  }
 
   // MARK: Navigation input
 
@@ -116,6 +131,21 @@ final class BrowseSearchModel {
     BrowseFilterBadge.remove(badge, from: &filters)
   }
 
+  /// Source menu (SearchBar.svelte changeSource): a Sora module (its key) or back to AniList / TMDB (nil). A module
+  /// keeps the typed title, which is what it searches, and clears the filters it ignores.
+  func selectSoraModule(_ key: String?) {
+    guard let key else {
+      if filters.soraModule != nil { filters.soraModule = nil }
+      return
+    }
+    guard filters.soraModule != key else { return }
+    var next = BrowseSearchFilters()
+    next.text = filters.text
+    next.soraModule = key
+    filters = next
+    isTraceMode = false
+  }
+
   func toggleHideMyAnime() {
     filters.hideMyAnime.toggle()
     if filters.hideMyAnime { filters.showMyAnime = false }
@@ -153,10 +183,24 @@ final class BrowseSearchModel {
     phase = .loading
     media = []
     episodes = []
+    soraResults = []
+    cancelSoraMatch()
     page = 0
     hasNextPage = false
     if section == nil { filters.save(key: Self.storageKey) }
     do {
+      if section == nil, let moduleKey = key.filters.soraModule {
+        // Sora module source: its own search of the title, one page of cards (SoraSearchSource.swift).
+        let found = try await SoraSearchSource.search(moduleKey: moduleKey, title: key.filters.text)
+        guard current == token else { return }
+        if Task.isCancelled {
+          lastRunKey = nil
+          return
+        }
+        soraResults = found
+        phase = .loaded
+        return
+      }
       let result = try await fetch(page: 1)
       guard current == token else { return }
       if Task.isCancelled {
@@ -271,6 +315,8 @@ final class BrowseSearchModel {
       isTraceMode = true
       leaveSection()
       media = []
+      soraResults = []
+      cancelSoraMatch()
       episodes = matches.sorted { $0.similarity > $1.similarity }.map { BrowseEpisodeCardData(trace: $0) }
       hasNextPage = false
       phase = .loaded
@@ -283,6 +329,45 @@ final class BrowseSearchModel {
     }
   }
 
+  // MARK: Sora module results (searchsource.js openSoraResult)
+
+  /// Card tap on a module result: finds the matching AniList / TMDB title, opens its details and remembers the
+  /// module result for Play (session only). A tap on another result replaces the running lookup.
+  func openSoraResult(_ result: SoraSearchResult) {
+    guard matchingResultID != result.id else { return }
+    cancelSoraMatch()
+    matchToken += 1
+    let current = matchToken
+    matchingResultID = result.id
+    matchTask = Task { [weak self] in
+      do {
+        let match = try await SoraSearchSource.findMatch(result)
+        guard let self, current == self.matchToken, !Task.isCancelled else { return }
+        self.matchingResultID = nil
+        self.matchTask = nil
+        guard let match else {
+          ServiceMessages.shared.post(.error, "No AniList or TMDB title matches this result", "\(result.title) (\(result.extensionName))")
+          return
+        }
+        SoraPreferredSources.shared.remember(PlaybackSource(extensionKey: result.extensionKey, href: result.href, title: result.title), for: match.id)
+        BrowseActions.open(match)
+      } catch {
+        guard let self, current == self.matchToken else { return }
+        self.matchingResultID = nil
+        self.matchTask = nil
+        if PlaybackResolver.isCancellation(error) { return }
+        ServiceMessages.shared.post(.error, "Could not open this result", error.localizedDescription)
+      }
+    }
+  }
+
+  /// Stops the running lookup (its results were replaced).
+  private func cancelSoraMatch() {
+    matchTask?.cancel()
+    matchTask = nil
+    matchToken += 1
+    matchingResultID = nil
+  }
 }
 
 @MainActor
@@ -370,8 +455,14 @@ struct BrowseSearchHeader: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 8) {
-        BrowseSourceMenu(western: $model.filters.western, disabled: model.context.lockSource || model.context.disableSearch)
-        BrowseSearchField(text: $model.filters.text, disabled: model.context.disableSearch)
+        BrowseSourceMenu(
+          western: $model.filters.western,
+          disabled: model.context.lockSource || model.context.disableSearch,
+          modules: SoraSearchSource.modules(),
+          selectedModule: model.filters.soraModule,
+          onSelectModule: { key in model.selectSoraModule(key) }
+        )
+        BrowseSearchField(text: $model.filters.text, disabled: model.context.disableSearch, placeholder: model.isSoraSource ? "Type a title to search" : "Any")
       }
       buttons
       BrowseFilterBadgesView(badges: model.badges) { badge in
@@ -385,11 +476,13 @@ struct BrowseSearchHeader: View {
   private var buttons: some View {
     let context = model.context
     let authorized = ProfilesService.shared.isAuthorized
+    // A Sora module source only searches the title: the AniList / TMDB filters are disabled.
+    let soraSource = model.isSoraSource
     return HStack(spacing: 8) {
       BrowseIconButton(systemImage: "slider.horizontal.3", active: model.filters.activeCount > 0, badge: model.filters.activeCount, label: "Advanced Search") {
         showFilters = true
       }
-      .disabled(context.disableSearch)
+      .disabled(context.disableSearch || soraSource)
       BrowseIconButton(systemImage: model.filters.showMyAnime ? "hourglass" : "eye.slash", active: model.filters.hideMyAnime || model.filters.showMyAnime, tint: model.filters.showMyAnime ? BrowsePalette.partialDub : BrowsePalette.tertiary, label: model.filters.showMyAnime ? "Show My Anime" : "Hide My Anime") {
         model.toggleHideMyAnime()
       }
@@ -400,11 +493,11 @@ struct BrowseSearchHeader: View {
           Label("Show My Anime", systemImage: "hourglass")
         }
       }
-      .disabled(context.disableHide || context.disableSearch || !authorized)
+      .disabled(context.disableHide || context.disableSearch || !authorized || soraSource)
       BrowseIconButton(systemImage: "mic", active: model.filters.dubOnly, label: "Dubbed Audio") {
         model.filters.dubOnly.toggle()
       }
-      .disabled(context.disableSearch)
+      .disabled(context.disableSearch || soraSource)
       PhotosPicker(selection: $photoItem, matching: .images) {
         BrowseIconLabel(systemImage: model.isTracing ? "hourglass" : "photo.badge.arrow.down", active: model.isTraceMode)
       }
@@ -454,13 +547,23 @@ struct BrowseCardModeButtons: View {
   }
 }
 
-/// Source select: Both / Anime / Western.
+/// Source select: Both / Anime / Western, then the enabled Sora modules in a "Sora Modules" submenu (Search page
+/// only, SearchBar.svelte buildSourceGroups).
 @MainActor
 struct BrowseSourceMenu: View {
   @Binding var western: Bool?
   var disabled = false
+  /// Enabled Sora modules (SoraSearchSource.modules); empty on the Schedule page.
+  var modules: [SoraModuleOption] = []
+  /// Key of the selected module, nil for AniList / TMDB.
+  var selectedModule: String? = nil
+  /// Picks a module (its key) or leaves it (nil, before Both / Anime / Western applies).
+  var onSelectModule: ((String?) -> Void)? = nil
 
   private var title: String {
+    if let selectedModule {
+      return modules.first { $0.key == selectedModule }?.name ?? SoraSearchSource.moduleName(selectedModule)
+    }
     switch western {
     case .none: return "Both"
     case .some(false): return "Anime"
@@ -468,15 +571,44 @@ struct BrowseSourceMenu: View {
     }
   }
 
+  /// A long module name is shortened, so the title field keeps its room.
+  private var shortTitle: String {
+    let value = title
+    return value.count > 18 ? String(value.prefix(17)) + "…" : value
+  }
+
+  private func pick(_ value: Bool?) {
+    if selectedModule != nil { onSelectModule?(nil) }
+    western = value
+  }
+
   var body: some View {
     Menu {
-      Button("Both") { western = nil }
-      Button("Anime") { western = false }
-      Button("Western") { western = true }
+      Button("Both") { pick(nil) }
+      Button("Anime") { pick(false) }
+      Button("Western") { pick(true) }
+      if !modules.isEmpty {
+        Menu {
+          ForEach(modules) { module in
+            Button {
+              onSelectModule?(module.key)
+            } label: {
+              if module.key == selectedModule {
+                Label(module.name, systemImage: "checkmark")
+              } else {
+                Text(module.name)
+              }
+            }
+          }
+        } label: {
+          Label("Sora Modules", systemImage: "puzzlepiece.extension")
+        }
+      }
     } label: {
       HStack(spacing: 4) {
-        Image(systemName: "square.grid.2x2")
-        Text(title)
+        Image(systemName: selectedModule == nil ? "square.grid.2x2" : "puzzlepiece.extension")
+        Text(shortTitle)
+          .lineLimit(1)
         Image(systemName: "chevron.down")
           .font(.system(size: 9, weight: .bold))
       }
@@ -496,12 +628,13 @@ struct BrowseSourceMenu: View {
 struct BrowseSearchField: View {
   @Binding var text: String
   var disabled = false
+  var placeholder = "Any"
 
   var body: some View {
     HStack(spacing: 6) {
       Image(systemName: "magnifyingglass")
         .foregroundStyle(BrowsePalette.dimmed)
-      TextField("Any", text: $text)
+      TextField(placeholder, text: $text)
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled(true)
         .submitLabel(.search)
@@ -607,7 +740,12 @@ struct BrowseSearchResults: View {
     case .failed(let message):
       BrowseErrorCard(kind: .failed(message), height: 300, onRetry: { model.retry() })
     case .loaded:
-      BrowseErrorCard(kind: model.filters == BrowseSearchFilters() && model.sectionTitle == nil ? .empty : .noResults, height: 300)
+      if let moduleName = model.soraModuleName, model.filters.trimmedText.isEmpty {
+        // A module searches titles only: nothing to show before one is typed.
+        BrowseSoraHint(moduleName: moduleName, height: 300)
+      } else {
+        BrowseErrorCard(kind: model.filters == BrowseSearchFilters() && model.sectionTitle == nil ? .empty : .noResults, height: 300)
+      }
     }
   }
 
@@ -625,7 +763,13 @@ struct BrowseSearchResults: View {
 
   private var grid: some View {
     LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
-      if model.episodes.isEmpty {
+      if !model.soraResults.isEmpty {
+        ForEach(model.soraResults) { result in
+          BrowseSoraResultCard(result: result, style: style, isMatching: model.matchingResultID == result.id) {
+            model.openSoraResult(result)
+          }
+        }
+      } else if model.episodes.isEmpty {
         ForEach(model.media) { media in
           BrowseMediaCard(media: media, style: style)
         }

@@ -1,0 +1,239 @@
+import Foundation
+
+// Sora modules as a Source of the Search page (common/modules/sora/searchsource.js + match.js): the title is searched
+// in the module itself and its results are shown as cards (SearchView.swift, BrowseSoraCards.swift). Opening one finds
+// the matching AniList / TMDB title (details, list tracking) and remembers the module result, so Play uses it directly
+// instead of searching every extension (PlaybackRequestCoordinator.play). Remembered for the session only.
+
+/// One `searchResults` entry of a Sora module, shown as a card of the Search page (resultMedia of match.js).
+struct SoraSearchResult: Identifiable, Hashable {
+  var extensionKey: String
+  var extensionName: String
+  var href: String
+  var title: String
+  var imageURL: URL?
+
+  var id: String { extensionKey + "|" + href }
+}
+
+/// Enabled Sora module offered by the Source menu of the Search page.
+struct SoraModuleOption: Identifiable, Hashable {
+  var key: String
+  var name: String
+
+  var id: String { key }
+}
+
+enum SoraSearchSource {
+  /// Most results shown for one search (searchsource.js `slice(0, 100)`); there is no next page.
+  static let maxResults = 100
+  /// Lowest title score accepted as the same title, so a fuzzy match with a few typos still passes
+  /// (match.js MATCH_MIN_SCORE = SCORE.FUZZY).
+  static let matchMinScore = SearchRelevance.fuzzy
+  /// Results of the AniList search compared with a title (searchsource.js `perPage: 10`).
+  static let candidatesPerTitle = 10
+
+  // MARK: Modules
+
+  /// Enabled Sora modules, in the order of the settings (Stremio addons are not offered).
+  @MainActor
+  static func modules() -> [SoraModuleOption] {
+    ExtensionManager.shared.enabledExtensions()
+      .filter { $0.kind == .sora }
+      .map { SoraModuleOption(key: $0.key, name: $0.displayName) }
+  }
+
+  /// Name of a module for the Source menu and the hints (its key when it is not installed any more).
+  @MainActor
+  static func moduleName(_ key: String) -> String {
+    ExtensionManager.shared.installedExtension(key)?.displayName ?? key
+  }
+
+  // MARK: Search
+
+  /// searchResults(title) of one module, as cards. Empty without a title (nothing is searched then).
+  @MainActor
+  static func search(moduleKey: String, title: String) async throws -> [SoraSearchResult] {
+    let query = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !query.isEmpty else { return [] }
+    let manager = ExtensionManager.shared
+    // A search right after launch or a refresh waits for the modules being loaded.
+    await manager.awaitPendingLoads()
+    try Task.checkCancellation()
+    guard let ext = manager.enabledExtensions().first(where: { $0.key == moduleKey && $0.kind == .sora }) else {
+      throw ExtensionFailure("\(moduleName(moduleKey)) is disabled or could not be loaded")
+    }
+    let items = try await ExtensionCalls.searchResults(ext, title: query, media: nil)
+    try Task.checkCancellation()
+    return results(items, extensionKey: ext.key, extensionName: ext.displayName)
+  }
+
+  /// Cards of a module answer: entries with a title and a link, one per link, at most `maxResults`.
+  static func results(_ items: [ExtensionSearchItem], extensionKey: String, extensionName: String) -> [SoraSearchResult] {
+    var seen = Set<String>()
+    var list: [SoraSearchResult] = []
+    for item in items {
+      let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !title.isEmpty, !item.href.isEmpty, !seen.contains(item.href) else { continue }
+      seen.insert(item.href)
+      list.append(SoraSearchResult(extensionKey: extensionKey, extensionName: extensionName, href: item.href, title: title, imageURL: imageURL(item.image)))
+      if list.count >= maxResults { break }
+    }
+    return list
+  }
+
+  /// Web images only (match.js resultMedia: `^https?://`).
+  static func imageURL(_ text: String) -> URL? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let lowered = trimmed.lowercased()
+    guard lowered.hasPrefix("http://") || lowered.hasPrefix("https://") else { return nil }
+    return URL.lenient(trimmed)
+  }
+
+  // MARK: Matching (match.js)
+
+  /// Catalogues to search for a module, from its manifest `type` ("anime", "movies", "shows"...): AniList for anime,
+  /// TMDB for movies and shows, both when unknown (most modules don't say). match.js matchTargets.
+  static func matchTargets(_ type: String?) -> (anime: Bool, western: Bool) {
+    let value = (type ?? "").lowercased()
+    if ["anime", "manga", "donghua"].contains(where: { value.contains($0) }) { return (anime: true, western: false) }
+    if ["movie", "show", "serie", "tv", "film", "drama", "cartoon"].contains(where: { value.contains($0) }) {
+      return (anime: false, western: true)
+    }
+    return (anime: true, western: true)
+  }
+
+  /// Best media for a result title among the candidates: the highest title score (aliases included, scored by
+  /// SearchRelevance like the search page), then the most popular. nil when nothing reaches `matchMinScore` (better no
+  /// match than another show). match.js pickBestMatch.
+  static func pickBestMatch(_ titles: [String], _ candidates: [Media]) -> Media? {
+    let queries = titles
+      .map { RelevanceText($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+      .filter { !$0.compact.isEmpty }
+    guard !queries.isEmpty else { return nil }
+    var best: (media: Media, score: Int)?
+    for media in candidates where !media.id.isEmpty {
+      var score = 0
+      for query in queries {
+        score = Swift.max(score, SearchRelevance.scoreMedia(query, media))
+      }
+      if score < matchMinScore { continue }
+      if let current = best {
+        let better = score > current.score
+          || (score == current.score && SearchRelevance.popularity(media) > SearchRelevance.popularity(current.media))
+        if better { best = (media: media, score: score) }
+      } else {
+        best = (media: media, score: score)
+      }
+    }
+    return best?.media
+  }
+
+  /// Aliases of an `extractDetails` answer (an object, or an array whose first entry is the object): "A, B" text or
+  /// an array, at most 10. searchsource.js resultAliases.
+  static func aliases(fromDetails raw: Any?) -> [String] {
+    let details: [String: Any]?
+    if let list = raw as? [Any] {
+      details = list.first as? [String: Any]
+    } else {
+      details = raw as? [String: Any]
+    }
+    guard let value = details?["aliases"] else { return [] }
+    var list: [String] = []
+    if let array = value as? [Any] {
+      list = array.compactMap { ExtensionJSON.string($0) }
+    } else if let text = value as? String {
+      list = text.components(separatedBy: CharacterSet(charactersIn: ",;\n|"))
+    }
+    let cleaned = list
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty && $0.utf16.count < 200 }
+    return Array(cleaned.prefix(10))
+  }
+
+  /// Aliases given by the module details, to match titles listed under another name. Empty when the module has no
+  /// details or they fail.
+  static func aliases(_ ext: LoadedExtension, href: String) async -> [String] {
+    do {
+      let raw = try await ExtensionCalls.extractDetails(ext, href: href)
+      return aliases(fromDetails: raw)
+    } catch {
+      #if DEBUG
+      print("[Sora search] extractDetails failed: \(error.localizedDescription)")
+      #endif
+      return []
+    }
+  }
+
+  /// AniList / TMDB media found for up to 3 titles, in the order of the requests (title by title, AniList then TMDB),
+  /// which is the tie-break order of `pickBestMatch`. A failed request gives nothing.
+  static func candidates(_ titles: [String], anime: Bool, western: Bool) async -> [Media] {
+    let searched = Array(titles.prefix(3))
+    let lists: [(index: Int, media: [Media])] = await withTaskGroup(of: (index: Int, media: [Media]).self) { group in
+      for (offset, title) in searched.enumerated() {
+        if anime {
+          group.addTask {
+            var variables = AniListVariables()
+            variables.search = title
+            variables.page = 1
+            variables.perPage = SoraSearchSource.candidatesPerTitle
+            // Best title matches first, so the right title is among the few results kept.
+            variables.sort = "SEARCH_MATCH"
+            let page = try? await AniListService.shared.search(variables)
+            return (index: offset * 2, media: page?.items ?? [])
+          }
+        }
+        if western {
+          group.addTask {
+            let page = await TMDBService.shared.textSearch(title)
+            return (index: offset * 2 + 1, media: page.items)
+          }
+        }
+      }
+      var found: [(index: Int, media: [Media])] = []
+      for await list in group {
+        found.append(list)
+      }
+      return found
+    }
+    return lists.sorted { $0.index < $1.index }.flatMap { $0.media }
+  }
+
+  /// AniList / TMDB media matching a module result (its title, then the aliases of the module details), nil when none
+  /// is close enough. searchsource.js findMatch.
+  @MainActor
+  static func findMatch(_ result: SoraSearchResult) async throws -> Media? {
+    let ext = ExtensionManager.shared.loadedExtension(result.extensionKey)
+    let targets = matchTargets(ext?.manifest.type)
+    let found = await candidates([result.title], anime: targets.anime, western: targets.western)
+    try Task.checkCancellation()
+    if let match = pickBestMatch([result.title], found) { return match }
+    guard let ext else { return nil }
+    let names = await Self.aliases(ext, href: result.href)
+    try Task.checkCancellation()
+    guard !names.isEmpty else { return nil }
+    let more = await candidates(names, anime: targets.anime, western: targets.western)
+    try Task.checkCancellation()
+    return pickBestMatch([result.title] + names, more)
+  }
+}
+
+/// Module result each title was opened from (searchsource.js preferredSources): Play resolves that module and result
+/// first (PlaybackRequestCoordinator.play). Kept for the session only.
+@MainActor
+final class SoraPreferredSources {
+  static let shared = SoraPreferredSources()
+
+  private var sources: [String: PlaybackSource] = [:]
+
+  private init() {}
+
+  /// Module result remembered for a media id (`Media.id`).
+  func source(for mediaID: String) -> PlaybackSource? {
+    sources[mediaID]
+  }
+
+  func remember(_ source: PlaybackSource, for mediaID: String) {
+    sources[mediaID] = source
+  }
+}
