@@ -16,7 +16,8 @@ final class BrowseBannerModel {
 
   /// Settings that change the banner source (bannerProvider, adult, hentaiBanner).
   static var settingsKey: String {
-    let values = AppSettings.shared.values
+    // Mirrored values: HomeView keys its task on this, so it does not depend on every other setting.
+    let values = BrowseSettingsMirror.shared
     return "\(values.bannerProvider)-\(values.adult)-\(values.hentaiBanner)"
   }
 
@@ -68,8 +69,15 @@ final class BrowseBannerModel {
 @MainActor
 struct BrowseHeroBanner: View {
   let model: BrowseBannerModel
+  @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   static let height: CGFloat = 540
+
+  /// No auto-advance with VoiceOver (the page would change under the cursor) or Reduce Motion.
+  private var autoAdvance: Bool {
+    !voiceOver && !reduceMotion
+  }
 
   var body: some View {
     Group {
@@ -102,13 +110,14 @@ struct BrowseHeroBanner: View {
     }
     .tabViewStyle(.page(indexDisplayMode: .never))
     .overlay(alignment: .bottomLeading) {
-      BrowseBannerIndicators(count: model.items.count, index: model.index) { value in
+      BrowseBannerIndicators(count: model.items.count, index: model.index, autoAdvance: autoAdvance) { value in
         model.index = value
       }
       .padding(.leading, 16)
       .padding(.bottom, 10)
     }
-    .task(id: model.index) {
+    .task(id: "\(model.index)-\(autoAdvance)") {
+      guard autoAdvance else { return }
       try? await Task.sleep(nanoseconds: 15 * 1_000_000_000)
       if Task.isCancelled { return }
       await MainActor.run {
@@ -125,6 +134,7 @@ struct BrowseHeroBanner: View {
 struct BrowseBannerIndicators: View {
   let count: Int
   let index: Int
+  var autoAdvance = true
   let onSelect: (Int) -> Void
 
   var body: some View {
@@ -133,12 +143,14 @@ struct BrowseBannerIndicators: View {
         Button {
           onSelect(position)
         } label: {
-          BrowseBannerIndicator(active: position == index)
+          BrowseBannerIndicator(active: position == index, filling: autoAdvance)
             .padding(.vertical, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(position == index)
+        .accessibilityLabel("Banner \(position + 1) of \(count)")
+        .accessibilityAddTraits(position == index ? .isSelected : [])
       }
     }
   }
@@ -146,6 +158,8 @@ struct BrowseBannerIndicators: View {
 
 struct BrowseBannerIndicator: View {
   let active: Bool
+  /// The active badge fills in 15 seconds while the banner auto-advances, else it is shown full.
+  var filling = true
   /// Start of the 15 second fill. The fill is computed from a timeline instead of a 15 second
   /// `withAnimation` started in onAppear (that transaction also animated the layout of the page).
   @State private var start = Date()
@@ -155,7 +169,11 @@ struct BrowseBannerIndicator: View {
       .fill(Color.white.opacity(0.25))
       .frame(width: active ? 50 : 27, height: 3)
       .overlay(alignment: .leading) {
-        if active {
+        if active && !filling {
+          Capsule()
+            .fill(Color.white)
+            .frame(width: 50, height: 3)
+        } else if active {
           TimelineView(.periodic(from: start, by: 0.1)) { context in
             let progress = min(max(context.date.timeIntervalSince(start) / 15, 0), 1)
             Capsule()
@@ -177,7 +195,7 @@ struct BrowseBannerPage: View {
 
   var body: some View {
     let current = BrowseMediaInfo.current(media)
-    let settings = AppSettings.shared.values
+    let settings = BrowseSettingsMirror.shared
     // FullBanner rotated: no banner and no trailer, adult "hentai" with the hentai banner setting.
     let rotated = current.images.banner == nil && current.trailerYouTubeId == nil && settings.adult == "hentai" && settings.hentaiBanner
     ZStack(alignment: .bottomLeading) {
@@ -256,7 +274,7 @@ struct BrowseBannerInfo: View {
     if media.format != .unknown { parts.append(BrowseMediaInfo.formatText(media)) }
     let showDuration = !SpoilerProtection.hidesMedia(.duration, entry: BrowseMediaInfo.entry(media))
     if let episodes = BrowseMediaInfo.bannerEpisodesText(media, entry: media.listEntry, showDuration: showDuration) { parts.append(episodes) }
-    if ServiceSettingsExtras.cardAudio && media.source == .anilist {
+    if BrowseSettingsMirror.shared.cardAudio && media.source == .anilist {
       if Services.shared.dubs.isFullyDubbed(malId: media.malId) {
         parts.append("Dub | Sub")
       } else if Services.shared.dubs.isIncomplete(malId: media.malId) {
@@ -280,13 +298,25 @@ struct BrowseBannerButtons: View {
   let media: Media
 
   var body: some View {
+    // With the list editor and favourite buttons, the labelled row is wider than an iPhone (the labels were
+    // truncated): View Details then falls back to an icon button.
+    ViewThatFits(in: .horizontal) {
+      row(compactDetails: false)
+      row(compactDetails: true)
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func row(compactDetails: Bool) -> some View {
     let entry = media.listEntry
-    HStack(spacing: 10) {
+    return HStack(spacing: 10) {
       Button {
         BrowseActions.playMedia(media)
       } label: {
         Label(BrowseMediaInfo.playButtonText(entry), systemImage: "play.fill")
           .font(.subheadline.weight(.semibold))
+          .lineLimit(1)
+          .minimumScaleFactor(0.8)
           .foregroundStyle(.white)
           .padding(.horizontal, 16)
           .frame(height: 44)
@@ -295,13 +325,23 @@ struct BrowseBannerButtons: View {
       Button {
         BrowseActions.open(media)
       } label: {
-        Text("View Details")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(.white)
-          .padding(.horizontal, 16)
-          .frame(height: 44)
-          .background(BrowsePalette.cardStrong, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        Group {
+          if compactDetails {
+            Image(systemName: "info.circle")
+              .font(.system(size: 18, weight: .semibold))
+              .frame(width: 44, height: 44)
+          } else {
+            Text("View Details")
+              .font(.subheadline.weight(.semibold))
+              .lineLimit(1)
+              .padding(.horizontal, 16)
+              .frame(height: 44)
+          }
+        }
+        .foregroundStyle(.white)
+        .background(BrowsePalette.cardStrong, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
       }
+      .accessibilityLabel("View Details")
       if BrowseMediaInfo.canEditList(media) {
         BrowseListEditorButton(media: media)
       }
@@ -309,7 +349,6 @@ struct BrowseBannerButtons: View {
         BrowseFavouriteButton(media: media)
       }
     }
-    .buttonStyle(.plain)
   }
 }
 

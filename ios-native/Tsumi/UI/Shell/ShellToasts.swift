@@ -1,6 +1,7 @@
 import SwiftUI
 import Observation
 import Network
+import Accessibility
 
 // Toasts (svelte-sonner <Toaster visibleToasts={2} position='top-right' theme='dark' richColors
 // duration={10_000} closeButton> in App.svelte) fed by ServiceMessages, and the connection status bar
@@ -160,6 +161,28 @@ struct ShellToastCard: View {
   }
 }
 
+/// VoiceOver reads each new toast: they appear at the top of the screen without taking the focus, so they
+/// were silent. Hosted once by the root view (the toast stack itself moves between layers).
+@MainActor
+struct ShellToastAnnouncer: View {
+  /// Toasts posted before this date were already announced (or posted before launch).
+  @State private var announcedUntil = Date()
+
+  var body: some View {
+    let latestId = ServiceMessages.shared.latest?.id
+    return Color.clear
+      .frame(width: 0, height: 0)
+      .accessibilityHidden(true)
+      .onChange(of: latestId) { _, _ in
+        // The latest one also changes when the newest toast is closed: only newer toasts are read.
+        guard let message = ServiceMessages.shared.latest, message.date > announcedUntil else { return }
+        announcedUntil = message.date
+        let text = message.detail.isEmpty ? message.title : "\(message.title). \(message.detail)"
+        AccessibilityNotification.Announcement(text).post()
+      }
+  }
+}
+
 /// sonner timers: every toast disappears 10 s after it was posted, visible or not.
 @MainActor
 enum ShellToastJanitor {
@@ -269,7 +292,7 @@ struct ShellConnectionBanner: View {
       if monitor.isOffline {
         // Tap: the downloads, which play without network.
         Button {
-          DownloadNavigation.open()
+          ShellNavigation.openDownloads()
         } label: {
           bar(text: "Offline · Downloads", icon: "wifi.slash", background: ShellPalette.color(0x101114))
         }

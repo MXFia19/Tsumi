@@ -62,6 +62,8 @@ final class ShellState {
 
   /// A new player is replacing the current one: the closing details sheet must not resume the old one.
   @ObservationIgnored var replacingPlayer = false
+  /// Downloads screens on screen (ShellRouteDestination), so the offline banner does not push another one.
+  @ObservationIgnored var downloadsOnScreen = 0
   /// Episode switch requested by Watch Together (setindex): its start is not shared back to the lobby.
   @ObservationIgnored var suppressShareUntil = Date.distantPast
 
@@ -97,6 +99,20 @@ enum ShellLayers {
       return AppRouter.shared.presentedMedia != nil ? .playerSheet : .player
     }
     return rootSheet != nil ? .rootSheet : .root
+  }
+
+  /// View controllers the shell itself presents above the window root for the current layers (the root
+  /// sheet, the player, the details over the player, a playback dialog). Anything presented above them is a
+  /// screen's own sheet (filters, list editor, trailer, Year in Review, Watch Together queue, an alert...).
+  static var knownDepth: Int {
+    var depth: Int
+    switch top {
+    case .root: depth = 0
+    case .rootSheet, .player: depth = 1
+    case .playerSheet: depth = 2
+    }
+    if PlaybackRequestCoordinator.shared.presentation != nil { depth += 1 }
+    return depth
   }
 
   /// Reads every value the presentation bindings depend on, so the calling body is re-evaluated when one
@@ -185,6 +201,41 @@ enum ShellNavigation {
     }
   }
 
+  /// The sheets that screens present themselves are invisible to ShellLayers, and nothing the shell presents
+  /// shows while one is up (UIKit refuses a second presentation from the same controller), so a deep link, a
+  /// Watch Together remote play or a Picture in Picture restore was dropped. Closes the ones above the layers
+  /// the shell knows (ShellLayers.knownDepth) and waits for their dismissal.
+  static func dismissLocalSheets() async {
+    // State just changed (a root sheet or a playback dialog cleared) is applied by SwiftUI first, and a sheet
+    // being dismissed finishes, so only the sheets nobody is closing are left above the known layers.
+    try? await Task.sleep(nanoseconds: 60_000_000)
+    await ShellPresentationTiming.waitUntilSettled(maxDepth: Int.max, timeout: 1)
+    let known = ShellLayers.knownDepth
+    guard ShellPresentationTiming.dismissPresented(above: known) else { return }
+    await ShellPresentationTiming.waitUntilSettled(maxDepth: known, timeout: 1.5)
+  }
+
+  /// "Log in again": the profiles sheet hosts the login web view, but ShellLayers.rootSheet shows the details
+  /// and notifications sheets before it, and a screen's own sheet covers the root. Those are closed first (the
+  /// login otherwise ran unseen under them and popped up later).
+  static func prepareProfilesSheet() async {
+    let router = AppRouter.shared
+    if !ShellLayers.playerVisible && (router.presentedMedia != nil || router.showNotifications) {
+      router.presentedMedia = nil
+      router.showNotifications = false
+    }
+    await dismissLocalSheets()
+  }
+
+  /// Offline banner: the downloads, unless a Downloads screen is already shown (each tap pushed another one).
+  static func openDownloads() {
+    if ShellState.shared.downloadsOnScreen > 0 {
+      clearRootSheets()
+      return
+    }
+    DownloadNavigation.open()
+  }
+
   /// onDismiss of the root sheet.
   static func rootSheetDidDismiss() {
     guard ShellLayers.rootSheet == nil else { return }
@@ -226,6 +277,13 @@ enum ShellDeepLinks {
   }
 
   static func route(_ link: TsumiDeepLink) async {
+    switch link {
+    case .anime, .malAnime, .play, .schedule:
+      // What these open would not show over a screen's own sheet.
+      await ShellNavigation.dismissLocalSheets()
+    case .watchTogether, .loginCallback:
+      break
+    }
     switch link {
     case .anime, .malAnime:
       // App.svelte handleAnime: searchIDSingle by id / idMal, then open the details.
@@ -295,6 +353,21 @@ enum ShellPresentationTiming {
       if !state.transitioning && state.depth <= maxDepth { return }
       try? await Task.sleep(nanoseconds: 100_000_000)
     }
+  }
+
+  /// Dismisses whatever is presented above the controller at `depth` (0 = the window root). Returns false when
+  /// there is nothing above it, or the chain is not that deep yet (a presentation still to come).
+  static func dismissPresented(above depth: Int) -> Bool {
+    guard let root = keyRootViewController() else { return false }
+    var current: UIViewController = root
+    var level = 0
+    while level < depth, let presented = current.presentedViewController {
+      current = presented
+      level += 1
+    }
+    guard level == depth, let extra = current.presentedViewController, !extra.isBeingDismissed else { return false }
+    current.dismiss(animated: true)
+    return true
   }
 
   private static func presentationState() -> (depth: Int, transitioning: Bool) {

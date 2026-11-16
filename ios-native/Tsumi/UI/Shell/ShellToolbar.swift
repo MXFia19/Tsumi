@@ -48,6 +48,8 @@ struct ShellRouteDestination: View {
       ShellCatalogsScreen()
     case .downloads:
       DownloadsView()
+        .onAppear { ShellState.shared.downloadsOnScreen += 1 }
+        .onDisappear { ShellState.shared.downloadsOnScreen = max(ShellState.shared.downloadsOnScreen - 1, 0) }
     }
   }
 }

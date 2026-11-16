@@ -8,12 +8,13 @@ import UserNotifications
 // files, devtools, updater) and the changelog are not applicable; new versions are announced by AppUpdateChecker
 // (Settings row and banner).
 
-/// Actions guarded by "Confirm Reset".
+/// Actions guarded by "Confirm Reset" (and the settings import, which replaces every setting too).
 enum ShellResetAction: String, Identifiable {
   case notifications
   case history
   case caches
   case settings
+  case importSettings
 
   var id: String { rawValue }
 
@@ -23,7 +24,16 @@ enum ShellResetAction: String, Identifiable {
     case .history: return "Reset History"
     case .caches: return "Reset Caches"
     case .settings: return "Reset to Defaults"
+    case .importSettings: return "Import from Clipboard"
     }
+  }
+
+  var confirmTitle: String {
+    self == .importSettings ? "Replace My Settings" : "Confirm Reset"
+  }
+
+  var message: String? {
+    self == .importSettings ? "Every setting is replaced by the ones copied in the clipboard." : nil
   }
 }
 
@@ -63,10 +73,14 @@ struct ShellAppSettingsView: View {
       titleVisibility: .visible,
       presenting: confirming
     ) { action in
-      Button("Confirm Reset", role: .destructive) {
+      Button(action.confirmTitle, role: .destructive) {
         perform(action)
       }
       Button("Cancel", role: .cancel) {}
+    } message: { action in
+      if let message = action.message {
+        Text(message)
+      }
     }
   }
 
@@ -89,6 +103,8 @@ struct ShellAppSettingsView: View {
       }
     case .settings:
       ShellSettingsDefaults.resetAll()
+    case .importSettings:
+      ShellSettingsManagementSection.importFromClipboard()
     }
   }
 }
@@ -161,11 +177,26 @@ struct ShellSettingsManagementSection: View {
     }
   }
 
+  /// The import replaces every setting: confirmed first (an accidental tap lost the whole configuration). An
+  /// empty clipboard fails at once (hasStrings does not read the clipboard, so no paste prompt for nothing).
   private func importSettings() {
-    guard let text = UIPasteboard.general.string, ShellSettingsTransfer.importJSON(text) else {
-      ServiceMessages.shared.post(.error, "Failed to import settings", "Failed to import settings from clipboard, make sure the copied data is valid JSON.")
+    guard UIPasteboard.general.hasStrings else {
+      Self.importFailed()
       return
     }
+    confirming = .importSettings
+  }
+
+  static func importFromClipboard() {
+    guard let text = UIPasteboard.general.string, ShellSettingsTransfer.importJSON(text) else {
+      importFailed()
+      return
+    }
+    ServiceMessages.shared.post(.success, "Settings imported", "Your settings were replaced by the ones from the clipboard.")
+  }
+
+  private static func importFailed() {
+    ServiceMessages.shared.post(.error, "Failed to import settings", "Failed to import settings from clipboard, make sure the copied data is valid JSON.")
   }
 
   private func exportSettings() {

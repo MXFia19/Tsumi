@@ -69,6 +69,8 @@ enum ShellPlayback {
       if resolved == nil, media.source == .anilist, let anilistId = media.anilistId {
         resolved = try? await AniListService.shared.media(id: anilistId)
       }
+      // The loading dialog and the player would not show over a screen's own sheet (filters, queue...).
+      await ShellNavigation.dismissLocalSheets()
       ShellPlayback.play(resolved ?? media, episode: episode, force: false)
     }
   }
@@ -109,6 +111,8 @@ enum ShellPlayback {
     // PiP window being closed and the player UI is presented here only once.
     controller.stopPictureInPictureForRestore()
     Task { @MainActor in
+      // A screen's own sheet (invisible to ShellLayers) would keep the player from being presented.
+      await ShellNavigation.dismissLocalSheets()
       await ShellPresentationTiming.waitUntilSettled(maxDepth: 0)
       if presentation.controller === controller {
         presentation.isPresented = true
@@ -150,6 +154,11 @@ enum ShellPlayback {
         await ShellPresentationTiming.waitUntilSettled(maxDepth: 1)
         guard token == ShellPlayback.generation else { return }
         presentation.dismiss()
+      } else {
+        // A screen's own sheet (a downloaded episode played from it, for instance) would keep the player from
+        // being presented: the root must be free.
+        await ShellNavigation.dismissLocalSheets()
+        guard token == ShellPlayback.generation else { return }
       }
       await ShellPresentationTiming.waitUntilSettled(maxDepth: 0)
       while loader.result == nil && Date() < deadline {
@@ -266,8 +275,11 @@ enum ShellPlayback {
       AnimeProgressService.shared.set(mediaKey: snapshot.media.id, episode: snapshot.episode.number, currentTime: snapshot.currentTime, safeDuration: snapshot.duration)
       sync.progress(snapshot, playing: controller?.isPlaying ?? false)
     }
+    // One closure for both end hooks (a second assignment further down replaced this one, so Trakt never got
+    // its stop at 100%): the sync end, then Watch Together v2.4 (the host plays the next queued item).
     controller.onPlaybackEnded = { _, _ in
       sync.ended()
+      WatchTogetherClient.shared.playbackEnded()
     }
     // checkCompletion → Helper.updateEntry.
     controller.onAutocomplete = { media, episode in
@@ -329,10 +341,7 @@ enum ShellPlayback {
     controller.isWatchTogetherActive = {
       WatchTogetherClient.shared.isInLobby
     }
-    // Watch Together v2.4: at the end of an episode the host plays the next queued item ("Up next").
-    controller.onPlaybackEnded = { _, _ in
-      WatchTogetherClient.shared.playbackEnded()
-    }
+    // Watch Together v2.4 "Up next" at the end of an episode: in onPlaybackEnded above, with the sync end.
   }
 
   /// Display name of an installed extension / addon (Watch Together `status.source`), the key when unknown.

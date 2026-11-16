@@ -58,7 +58,7 @@ struct BrowseMediaCard: View {
 
   @ViewBuilder
   private func decorated(_ current: Media) -> some View {
-    if AppSettings.shared.values.cardPreview {
+    if BrowseSettingsMirror.shared.cardPreview {
       button(current)
         .contextMenu {
           BrowseMediaMenuItems(media: current, onEditList: { showEditor = true })
@@ -195,21 +195,45 @@ struct BrowseAiringBadge: View {
 }
 
 /// Loads the dub schedule and the dub episode feed once for every audio label (the dub episode counts).
+/// A failed load (the service then keeps empty lists, e.g. offline) is retried with a fresh request once
+/// `retryDelay` passed, instead of leaving the labels without dub counts for the whole session.
 @MainActor
 enum BrowseDubFeed {
-  private static var task: Task<Void, Never>?
+  private static var task: Task<Bool, Never>?
+  private static var generation = 0
+  private static var failedAt: Date?
+  private static let retryDelay: TimeInterval = 60
+
+  /// Both lists loaded and not empty (an empty list is what a failed request leaves).
+  static var isLoaded: Bool {
+    let schedule = AnimeScheduleService.shared
+    guard let aired = schedule.loadedAiredList(.dub), let airing = schedule.loadedDubAiringList() else { return false }
+    return !aired.isEmpty && !airing.isEmpty
+  }
 
   static func load() async {
     if let existing = Self.task {
-      await existing.value
+      _ = await existing.value
       return
     }
-    let created = Task {
-      _ = await AnimeScheduleService.shared.airedList(.dub)
-      _ = await AnimeScheduleService.shared.dubAiringList()
+    if let failed = Self.failedAt, Date().timeIntervalSince(failed) < retryDelay { return }
+    let refresh = failedAt != nil
+    let created = Task { () async -> Bool in
+      let aired = await AnimeScheduleService.shared.airedList(.dub, refresh: refresh)
+      let airing = await AnimeScheduleService.shared.dubAiringList(refresh: refresh)
+      return !aired.isEmpty && !airing.isEmpty
     }
+    generation += 1
+    let current = generation
     Self.task = created
-    await created.value
+    let loaded = await created.value
+    guard current == generation else { return }
+    if loaded {
+      failedAt = nil
+    } else {
+      failedAt = Date()
+      Self.task = nil
+    }
   }
 }
 
@@ -218,11 +242,11 @@ enum BrowseDubFeed {
 @MainActor
 struct BrowseAudioLabel: View {
   let media: Media
-  /// Set once the dub feed is loaded so the counts refresh.
-  @State private var feedLoaded = false
+  /// Bumped once the dub feed is loaded (or retried) so the counts refresh.
+  @State private var feedVersion = 0
 
   var body: some View {
-    if ServiceSettingsExtras.cardAudio && media.source == .anilist {
+    if BrowseSettingsMirror.shared.cardAudio && media.source == .anilist {
       labels
         .task(id: media.id) {
           await loadDubFeed()
@@ -231,7 +255,7 @@ struct BrowseAudioLabel: View {
   }
 
   private var labels: some View {
-    let refreshed = feedLoaded
+    let refreshed = feedVersion > 0
     let dubs = Services.shared.dubs
     let dubbed = dubs.isFullyDubbed(malId: media.malId)
     let partial = dubs.isIncomplete(malId: media.malId)
@@ -273,11 +297,10 @@ struct BrowseAudioLabel: View {
 
   private func loadDubFeed() async {
     guard media.malId != nil else { return }
-    let schedule = AnimeScheduleService.shared
-    if schedule.loadedAiredList(.dub) != nil && schedule.loadedDubAiringList() != nil { return }
+    if BrowseDubFeed.isLoaded { return }
     await BrowseDubFeed.load()
     if Task.isCancelled { return }
-    feedLoaded = true
+    feedVersion += 1
   }
 
   private func label(systemImage: String, text: String?, color: Color) -> some View {

@@ -106,6 +106,39 @@ struct BrowseSearchFilters: Codable, Equatable {
 
   init() {}
 
+  // MARK: Lossy decoding
+
+  private enum CodingKeys: String, CodingKey {
+    case text, western, genres, genresNot, tags, tagsNot, season, year, formats, formatsNot, status, statusNot, sort
+    case hideMyAnime, showMyAnime, dubOnly, release
+  }
+
+  /// Field by field: a missing or unreadable field keeps its default instead of failing the whole decode, so
+  /// a field added (or changed) later never resets the saved lastSearched / lastSchedule filters.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+      (try? container.decodeIfPresent(T.self, forKey: key)) ?? fallback
+    }
+    text = value(.text, "")
+    western = value(.western, Bool?.none)
+    genres = value(.genres, [String]())
+    genresNot = value(.genresNot, [String]())
+    tags = value(.tags, [String]())
+    tagsNot = value(.tagsNot, [String]())
+    season = value(.season, "")
+    year = value(.year, Int?.none)
+    formats = value(.formats, [String]())
+    formatsNot = value(.formatsNot, [String]())
+    status = value(.status, [String]())
+    statusNot = value(.statusNot, [String]())
+    sort = value(.sort, "")
+    hideMyAnime = value(.hideMyAnime, false)
+    showMyAnime = value(.showMyAnime, false)
+    dubOnly = value(.dubOnly, false)
+    release = value(.release, ScheduleRelease?.none)
+  }
+
   /// Variables passed to the loader (createFallbackLoad or the section loader).
   func sectionQuery(base: SectionQuery, isSection: Bool) -> SectionQuery {
     var query = base

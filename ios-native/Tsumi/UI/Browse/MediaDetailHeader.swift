@@ -158,7 +158,8 @@ struct BrowseDetailActions: View {
       }
       // "Resume Episode 5 at 12:34 (from PC)": cross-device resume (BrowseRemoteResume.swift).
       .modifier(BrowseRemoteResume(media: media))
-      HStack(spacing: 10) {
+      // Wrapping row: up to seven 44 pt buttons plus the share links do not fit the width of an iPhone.
+      BrowseFlowLayout(spacing: 10, lineSpacing: 10) {
         if BrowseMediaInfo.canEditList(media) {
           BrowseListEditorButton(media: media)
         }
@@ -182,7 +183,6 @@ struct BrowseDetailActions: View {
             }
           }
         }
-        Spacer(minLength: 0)
       }
     }
   }
@@ -267,6 +267,8 @@ struct BrowseFollowingRow: View {
             BrowseUserAvatar(entry: entry, size: 44)
           }
           .buttonStyle(.plain)
+          .accessibilityLabel(entry.name)
+          .accessibilityAddTraits(selectedId == entry.id ? .isSelected : [])
           .zIndex(selectedId == entry.id ? 1 : 0)
         }
         if entries.count > 11 {
@@ -276,6 +278,7 @@ struct BrowseFollowingRow: View {
             .frame(width: 44, height: 44)
             .background(Color(white: 0.18), in: Circle())
             .overlay(Circle().stroke(Color.black.opacity(0.9), lineWidth: 3))
+            .accessibilityLabel("\(entries.count - 11) more")
         }
       }
       if let selected = entries.first(where: { $0.id == selectedId }) {

@@ -44,12 +44,19 @@ final class AppRouter {
   /// Opens the Search tab on a given home section (its "see all" list).
   func showAll(sectionTitle: String) {
     pendingSearch = PendingSearch(sectionTitle: sectionTitle, query: nil)
-    show(.search)
+    showSearchPage()
   }
 
   /// Opens the Search tab with a query (genre/tag/studio chips in the details view...).
   func search(_ query: MediaQuery) {
     pendingSearch = PendingSearch(sectionTitle: nil, query: query)
+    showSearchPage()
+  }
+
+  /// The Search page itself: whatever was pushed on the Search stack (Catalogs, Downloads) is popped, else the
+  /// list opened behind it.
+  private func showSearchPage() {
+    ShellState.shared.setPath(NavigationPath(), for: .search)
     show(.search)
   }
 }

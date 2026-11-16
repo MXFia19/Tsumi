@@ -221,10 +221,14 @@ final class BrowseSearchModel {
   }
 
   /// SearchPage.svelte onDestroy: leaving the page clears a feed section search (disableSearch), so the
-  /// Search tab does not reopen stuck on it.
+  /// Search tab does not reopen stuck on it. It goes back to the last plain search (a feed is never saved as
+  /// lastSearched): resetting to empty filters saved those over it.
   func leavePage() {
     guard section != nil, context.disableSearch else { return }
-    reset()
+    leaveSection()
+    filters = BrowseSearchFilters.load(key: Self.storageKey, fallback: BrowseSearchFilters())
+    isTraceMode = false
+    generation += 1
   }
 
   // MARK: Image search (traceAnime)
@@ -303,7 +307,17 @@ struct SearchView: View {
       .padding(.bottom, 24)
     }
     .onDisappear {
-      model.leavePage()
+      // Only a real tab change leaves a feed: the page also disappears under the full screen player and
+      // under a screen pushed on the Search stack, and the feed must still be there when they close.
+      if AppRouter.shared.selectedTab != .search {
+        model.leavePage()
+      }
+    }
+    .onChange(of: router.selectedTab) { _, tab in
+      // Tab changed while a screen was pushed over the page (no disappearance of the page itself then).
+      if tab != .search {
+        model.leavePage()
+      }
     }
     .background(BrowsePalette.background)
     .scrollDismissesKeyboard(.immediately)

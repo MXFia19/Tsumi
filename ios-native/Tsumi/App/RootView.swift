@@ -26,6 +26,10 @@ struct RootView: View {
         ShellMiniPlayerOverlay(layer: .root)
       }
       .modifier(ShellRootPresenters())
+      // VoiceOver announcement of each new toast.
+      .background {
+        ShellToastAnnouncer()
+      }
       .task {
         await ShellLaunch.startFromView()
       }

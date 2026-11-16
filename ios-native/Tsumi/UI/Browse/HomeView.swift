@@ -24,9 +24,17 @@ final class BrowseHomeModel {
     return created
   }
 
+  /// Pull to refresh: returns once the banner and the first page of every row are reloaded, so the spinner
+  /// stays until the new content is in. The rows reload from their own tasks (keyed on refreshToken).
   func refresh() async {
     refreshToken += 1
     await banner.load(force: true)
+    // The row tasks restart on the next render: let them begin before waiting for them.
+    try? await Task.sleep(nanoseconds: 150_000_000)
+    let deadline = Date().addingTimeInterval(20)
+    while !Task.isCancelled && Date() < deadline && rows.values.contains(where: { $0.isLoadingFirstPage }) {
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
   }
 }
 
@@ -96,6 +104,8 @@ final class BrowseSectionRowModel {
   private(set) var page = 0
   @ObservationIgnored private var loadedKey: String? = nil
   @ObservationIgnored private var generation = 0
+  /// A first page request is running (awaited by pull to refresh).
+  @ObservationIgnored private(set) var isLoadingFirstPage = false
 
   init(section: HomeSection) {
     title = section.title
@@ -111,6 +121,10 @@ final class BrowseSectionRowModel {
     if loadedKey == key { return }
     generation += 1
     let current = generation
+    isLoadingFirstPage = true
+    defer {
+      if current == generation { isLoadingFirstPage = false }
+    }
     if isEmpty { phase = .loading }
     do {
       let result = try await section.load(page: 1, perPage: Self.pageSize)
