@@ -68,8 +68,15 @@ final class BrowseBannerModel {
 @MainActor
 struct BrowseHeroBanner: View {
   let model: BrowseBannerModel
+  @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   static let height: CGFloat = 540
+
+  /// No auto-advance with VoiceOver (the page would change under the cursor) or Reduce Motion.
+  private var autoAdvance: Bool {
+    !voiceOver && !reduceMotion
+  }
 
   var body: some View {
     Group {
@@ -102,13 +109,14 @@ struct BrowseHeroBanner: View {
     }
     .tabViewStyle(.page(indexDisplayMode: .never))
     .overlay(alignment: .bottomLeading) {
-      BrowseBannerIndicators(count: model.items.count, index: model.index) { value in
+      BrowseBannerIndicators(count: model.items.count, index: model.index, autoAdvance: autoAdvance) { value in
         model.index = value
       }
       .padding(.leading, 16)
       .padding(.bottom, 10)
     }
-    .task(id: model.index) {
+    .task(id: "\(model.index)-\(autoAdvance)") {
+      guard autoAdvance else { return }
       try? await Task.sleep(nanoseconds: 15 * 1_000_000_000)
       if Task.isCancelled { return }
       await MainActor.run {
@@ -125,6 +133,7 @@ struct BrowseHeroBanner: View {
 struct BrowseBannerIndicators: View {
   let count: Int
   let index: Int
+  var autoAdvance = true
   let onSelect: (Int) -> Void
 
   var body: some View {
@@ -133,12 +142,14 @@ struct BrowseBannerIndicators: View {
         Button {
           onSelect(position)
         } label: {
-          BrowseBannerIndicator(active: position == index)
+          BrowseBannerIndicator(active: position == index, filling: autoAdvance)
             .padding(.vertical, 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(position == index)
+        .accessibilityLabel("Banner \(position + 1) of \(count)")
+        .accessibilityAddTraits(position == index ? .isSelected : [])
       }
     }
   }
@@ -146,6 +157,8 @@ struct BrowseBannerIndicators: View {
 
 struct BrowseBannerIndicator: View {
   let active: Bool
+  /// The active badge fills in 15 seconds while the banner auto-advances, else it is shown full.
+  var filling = true
   /// Start of the 15 second fill. The fill is computed from a timeline instead of a 15 second
   /// `withAnimation` started in onAppear (that transaction also animated the layout of the page).
   @State private var start = Date()
@@ -155,7 +168,11 @@ struct BrowseBannerIndicator: View {
       .fill(Color.white.opacity(0.25))
       .frame(width: active ? 50 : 27, height: 3)
       .overlay(alignment: .leading) {
-        if active {
+        if active && !filling {
+          Capsule()
+            .fill(Color.white)
+            .frame(width: 50, height: 3)
+        } else if active {
           TimelineView(.periodic(from: start, by: 0.1)) { context in
             let progress = min(max(context.date.timeIntervalSince(start) / 15, 0), 1)
             Capsule()
