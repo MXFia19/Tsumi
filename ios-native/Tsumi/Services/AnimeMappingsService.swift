@@ -424,30 +424,44 @@ final class AnimeMappingsService: @unchecked Sendable {
     }
   }
 
-  /// First page of Kitsu episodes of an AniList media (same request as episodes.js).
+  /// Kitsu episodes of an AniList media. Kitsu pages hold 10 episodes unless `page[limit]` (20 at most) is given:
+  /// the pages are followed (`links.next`) up to `kitsuMaxPages`.
   func kitsuEpisodes(anilistId: Int) async -> [KitsuEpisode] {
     guard let kitsuIdentifier = await self.kitsuId(anilistId: anilistId) else { return [] }
-    let cacheKey = "kitsu.episodes.\(kitsuIdentifier)"
+    let cacheKey = "kitsu.episodes.v2.\(kitsuIdentifier)"
     let online = ServiceNetworkMonitor.shared.isOnline
     if let cached = await DiskCache.shared.get(cacheKey, as: [KitsuEpisode].self, allowExpired: !online) { return cached }
     if !online { return [] }
     do {
-      guard let url = URL(string: "https://kitsu.app/api/edge/anime/\(kitsuIdentifier)/episodes") else { return [] }
-      await episodesLimiter.acquire()
-      let json = try await HTTP.jsonObject(from: url) as? [String: Any]
-      let episodes: [KitsuEpisode] = (json?.array("data") ?? []).compactMap { item in
-        guard let attributes = item.dict("attributes"), let number = attributes.int("number") else { return nil }
-        var titles: [String: String] = [:]
-        for (key, value) in attributes.dict("titles") ?? [:] {
-          if let text = value as? String { titles[key] = text }
-        }
-        let thumbnail = attributes.dict("thumbnail")
-        return KitsuEpisode(id: item.string("id"), number: number, seasonNumber: attributes.int("seasonNumber"), canonicalTitle: attributes.string("canonicalTitle"), titles: titles, airdate: attributes.string("airdate"), length: attributes.int("length"), synopsis: attributes.string("synopsis"), description: attributes.string("description"), thumbnail: thumbnail?.string("original") ?? thumbnail?.string("large"))
+      var next = URL(string: "https://kitsu.app/api/edge/anime/\(kitsuIdentifier)/episodes?page%5Blimit%5D=20")
+      var episodes: [KitsuEpisode] = []
+      var pages = 0
+      while let url = next, pages < Self.kitsuMaxPages {
+        pages += 1
+        await episodesLimiter.acquire()
+        let json = try await HTTP.jsonObject(from: url) as? [String: Any]
+        episodes += Self.kitsuPage(json)
+        next = URL.lenient(json?.dict("links")?.string("next"))
       }
       await DiskCache.shared.set(cacheKey, episodes, ttl: TimeInterval(Int.random(in: 1...3) * 24 * 3600))
       return episodes
     } catch {
       return await DiskCache.shared.get(cacheKey, as: [KitsuEpisode].self, allowExpired: true) ?? []
+    }
+  }
+
+  /// Pages of Kitsu episodes read at most (20 episodes each).
+  private static let kitsuMaxPages = 10
+
+  private static func kitsuPage(_ json: [String: Any]?) -> [KitsuEpisode] {
+    (json?.array("data") ?? []).compactMap { item -> KitsuEpisode? in
+      guard let attributes = item.dict("attributes"), let number = attributes.int("number") else { return nil }
+      var titles: [String: String] = [:]
+      for (key, value) in attributes.dict("titles") ?? [:] {
+        if let text = value as? String { titles[key] = text }
+      }
+      let thumbnail = attributes.dict("thumbnail")
+      return KitsuEpisode(id: item.string("id"), number: number, seasonNumber: attributes.int("seasonNumber"), canonicalTitle: attributes.string("canonicalTitle"), titles: titles, airdate: attributes.string("airdate"), length: attributes.int("length"), synopsis: attributes.string("synopsis"), description: attributes.string("description"), thumbnail: thumbnail?.string("original") ?? thumbnail?.string("large"))
     }
   }
 

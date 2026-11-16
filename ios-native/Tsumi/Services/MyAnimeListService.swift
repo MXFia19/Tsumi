@@ -73,8 +73,6 @@ final class MyAnimeListService: @unchecked Sendable {
   private let failedRefresh = ServiceLocked<Set<String>>([])
   /// Tokens whose refresh failed for a transient reason (network, 5xx, 429): next attempt not before this date.
   private let refreshRetryAt = ServiceLocked<[String: Date]>([:])
-  /// Profiles marked `reauth` whose refresh was already retried this session (see `request`).
-  private let healAttempted = ServiceLocked<Set<String>>([])
   private let refreshes = ServiceInflight()
 
   /// Wait before retrying a refresh that failed for a transient reason.
@@ -97,7 +95,8 @@ final class MyAnimeListService: @unchecked Sendable {
       if failedRefresh.get().contains(account.token) { return nil }
       if account.reauth {
         // Older versions marked a profile `reauth` after any failed refresh (even offline): its refresh token is
-        // tried once per session, so a profile that was never really rejected comes back without a new login.
+        // tried again (at most every 5 minutes, never after a rejection), so a profile that was never really
+        // rejected comes back without a new login.
         guard let healed = await healExpired(account) else { return nil }
         account = healed
       } else if let refreshAt = account.refreshAt, Date() >= refreshAt, canRetryRefresh(account.token) {
@@ -179,13 +178,9 @@ final class MyAnimeListService: @unchecked Sendable {
     return Date() >= retryAt
   }
 
-  /// A profile marked `reauth` with a refresh token: one refresh per session, which clears the mark when it works.
+  /// A profile marked `reauth` that still has a refresh token: a refresh that works clears the mark.
   private func healExpired(_ profile: AccountProfile) async -> AccountProfile? {
     guard let refresh = profile.refreshToken, !refresh.isEmpty, canRetryRefresh(profile.token) else { return nil }
-    let first = healAttempted.update { attempted -> Bool in
-      attempted.insert(profile.token).inserted
-    }
-    guard first else { return nil }
     return await refreshToken(profile)
   }
 
@@ -321,7 +316,7 @@ final class MyAnimeListService: @unchecked Sendable {
   /// my_list_status of one anime for a profile (other profiles kept in sync): nil when it is not on the list.
   /// Throws when it could not be read.
   func listStatus(malId: Int, profile: AccountProfile? = nil) async throws -> UserListItem? {
-    let query = [URLQueryItem(name: "fields", value: "my_list_status,num_episodes,media_type,status")]
+    let query = [URLQueryItem(name: "fields", value: "my_list_status{status,score,num_episodes_watched,is_rewatching,num_times_rewatched,start_date,finish_date,updated_at},num_episodes,media_type,status")]
     guard let json = try await request(path: "anime/\(malId)", query: query, profile: profile) as? [String: Any],
           json["error"] == nil, json.int("id") != nil else {
       throw ServiceError.api("Failed to read the MyAnimeList entry")

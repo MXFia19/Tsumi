@@ -771,6 +771,18 @@ final class AnimeScheduleService: @unchecked Sendable {
       variables.sort = nil
       variables.id = fresh.compactMap { $0.id }
       _ = try? await AniListService.shared.searchAllIDs(variables)
+      // MyAnimeList lists hold MAL ids: the related media must be loaded to know theirs (isFollowing).
+      if setting == "following", ServiceListOverlay.lists?.service == .myanimelist {
+        let relationIds = Set(fresh.compactMap { $0.id }.flatMap { id in
+          MediaStore.shared.extras(Media.anilistKey(id))?.relationEdges.map { $0.id } ?? []
+        }).filter { MediaStore.shared.anilist($0) == nil }
+        if !relationIds.isEmpty {
+          var relations = AniListVariables()
+          relations.sort = nil
+          relations.id = Array(relationIds)
+          _ = try? await AniListService.shared.searchAllIDs(relations)
+        }
+      }
       for scheduled in fresh {
         guard let id = scheduled.id else { continue }
         let media = await AniListService.shared.requestMedia(id: id)
