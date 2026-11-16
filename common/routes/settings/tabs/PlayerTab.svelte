@@ -217,6 +217,14 @@
       on:keydown={captureKey} />
   </SettingCard>
 {/if}
+<!-- Watch Together v2.5 (common/routes/w2g/PROTOCOL.md "TURN server"): optional relay, empty by default. -->
+<SettingCard title='TURN Server' description='Optional relay for Watch Together when members cannot connect directly (mobile networks, strict firewalls): a turn: or turns: URL, with its username and credential. Leave empty to connect directly. Used from the next lobby.'>
+  <div class='d-flex flex-column w-250 mw-full'>
+    <input type='text' class='form-control bg-dark mb-5' placeholder='turn:example.com:3478' autocomplete='off' spellcheck='false' aria-label='TURN server URL' bind:value={settings.w2gTurnUrl} />
+    <input type='text' class='form-control bg-dark mb-5' placeholder='Username' autocomplete='off' spellcheck='false' aria-label='TURN username' bind:value={settings.w2gTurnUsername} />
+    <input type='password' class='form-control bg-dark' placeholder='Credential' autocomplete='off' aria-label='TURN credential' bind:value={settings.w2gTurnCredential} />
+  </div>
+</SettingCard>
 
 <SyncSettings bind:settings />
 

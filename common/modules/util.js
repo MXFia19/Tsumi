@@ -626,6 +626,10 @@ export const defaults = {
   w2gVoiceDucking: true,
   w2gPushToTalk: false,
   w2gPushToTalkKey: 'KeyT',
+  // Watch Together: optional TURN server (turn: / turns: URL, username, credential) for links that can't connect directly.
+  w2gTurnUrl: '',
+  w2gTurnUsername: '',
+  w2gTurnCredential: '',
   // Offline downloads: folder ('' = Videos/Tsumi), simultaneous downloads, HLS quality (highest | 1080 | 720 | 480 | 360 | lowest).
   downloadFolder: '',
   downloadMaxConcurrent: 2,
