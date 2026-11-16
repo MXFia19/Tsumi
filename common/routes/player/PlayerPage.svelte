@@ -355,6 +355,8 @@
 
   /** The remembered subtitle choice of the show was applied (once per episode). */
   let subtitlePreferenceDone = false
+  /** The show's remembered choice is OFF (no automatic online subtitles then). */
+  let subtitlesOff = false
   /**
    * Applies the remembered subtitle choice of the show (OFF, or a track name) as soon as the tracks it needs exist:
    * tracks arrive at any time (stream subtitle URL, online subtitles), so this runs on every header change until done.
@@ -564,6 +566,7 @@
     current = file
     subDelay = savedSubDelay()
     subDelayText = String(subDelay)
+    subtitlesOff = cache.getEntry(caches.HISTORY, 'lastSubtitle')?.[showKey()] === 'OFF'
     startW2GLoading()
     setCurrent(file, loadToken)
   }
@@ -2564,7 +2567,7 @@
       }}><track kind='captions' src="" srclang='en' label='English' /></video
     >
     <CastOverlay {miniplayer} />
-    <OnlineSubtitles bind:open={onlineSubsOpen} {subs} media={current?.media?.media || media?.media} episode={current?.media?.episode ?? media?.episode} />
+    <OnlineSubtitles bind:open={onlineSubsOpen} {subs} media={current?.media?.media || media?.media} episode={current?.media?.episode ?? media?.episode} automatic={!subtitlesOff} />
     {#if stats && !miniplayer}
       <div
         class='position-absolute top-0 bg-tp p-10 ml-20 mt-100 text-monospace rounded z-50'

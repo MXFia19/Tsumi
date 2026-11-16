@@ -16,6 +16,8 @@
   /** AniList or TMDB media playing */
   export let media = null
   export let episode = null
+  /** false: the show's remembered subtitle choice is OFF, the automatic mode leaves it alone */
+  export let automatic = true
 
   let status = 'idle'
   let error = ''
@@ -100,7 +102,7 @@
   // Automatic mode: when the source brought no subtitle track a few seconds after loading, add the first one in
   // the preferred language. Failures stay quiet (debug log only).
   let autoFor = null
-  $: scheduleAutomatic(subs, $settings.onlineSubtitlesAuto)
+  $: scheduleAutomatic(subs, $settings.onlineSubtitlesAuto && automatic)
   function scheduleAutomatic (instance, enabled) {
     if (!instance || !enabled || autoFor === instance) return
     autoFor = instance
