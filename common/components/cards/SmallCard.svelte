@@ -161,7 +161,7 @@
         {/if}
       </div>
       <div class='d-flex align-items-center text-nowrap text-right'>
-        <span class='line-height-1'>{formatMap[media?.format] || 'N/A'}</span>
+        <span class='line-height-1'>{media?.isSora ? 'Result' : (formatMap[media?.format] || 'N/A')}</span>
         <Tv class='pl-5' size='2.6rem' />
       </div>
     </div>
