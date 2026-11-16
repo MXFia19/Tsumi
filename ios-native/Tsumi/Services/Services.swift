@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // Container of the data / services layer and app-level wiring (startup, deep links of
 // capacitor/src/main/protocol.js and the clipboard links of settings.js).
@@ -42,6 +43,8 @@ final class Services {
 
   private var started = false
   private var dubsTask: Task<Void, Never>?
+  private var observers: [NSObjectProtocol] = []
+  private var saveTask: UIBackgroundTaskIdentifier = .invalid
 
   private init() {}
 
@@ -54,8 +57,13 @@ final class Services {
     schedule.start()
     notifications.start()
     sections.rebuild()
+    observeLifecycle()
     Task.detached(priority: .utility) {
       _ = await AnimeMappingsService.shared.animapIndex()
+    }
+    // Cache files expired long ago are deleted once per launch.
+    Task.detached(priority: .background) {
+      DiskCache.shared.pruneExpiredFiles()
     }
     dubsTask = Task.detached(priority: .utility) {
       while !Task.isCancelled {
@@ -63,6 +71,47 @@ final class Services {
         try? await Task.sleep(nanoseconds: 3600 * 1_000_000_000)
       }
     }
+  }
+
+  /// Memory warnings empty the in-memory caches; going to the background writes the media store (its saves are
+  /// grouped every minute otherwise).
+  private func observeLifecycle() {
+    let center = NotificationCenter.default
+    observers.append(center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
+      MediaStore.shared.purgeMemory()
+      AnimeMappingsService.shared.purgeMemory()
+      Task.detached(priority: .utility) {
+        await DiskCache.shared.purgeMemory()
+      }
+    })
+    observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+      MainActor.assumeIsolated {
+        Services.shared.saveStores()
+      }
+    })
+  }
+
+  private func saveStores() {
+    endSaveTask()
+    saveTask = UIApplication.shared.beginBackgroundTask(withName: "Tsumi media store") {
+      MainActor.assumeIsolated {
+        Services.shared.endSaveTask()
+      }
+    }
+    DispatchQueue.global(qos: .utility).async {
+      MediaStore.shared.saveNow()
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          Services.shared.endSaveTask()
+        }
+      }
+    }
+  }
+
+  private func endSaveTask() {
+    guard saveTask != .invalid else { return }
+    UIApplication.shared.endBackgroundTask(saveTask)
+    saveTask = .invalid
   }
 
   /// Handles an incoming URL (onOpenURL / notification tap / pasted link). Login callbacks are

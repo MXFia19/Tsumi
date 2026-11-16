@@ -64,6 +64,12 @@ struct UserListItem: Codable, Hashable, Identifiable {
     ListEntry(status: status, progress: progress, score: score, repeatCount: repeatCount, updatedAt: updatedAt)
   }
 
+  enum CodingKeys: String, CodingKey {
+    case id, media, anilistId, malId, listEntryId, status, progress, score, repeatCount, updatedAt, startedAt
+    case completedAt, isRewatching, title, alternativeTitles, malMediaType, malNumEpisodes, malAverageEpisodeDuration
+    case malStartSeason, malStartYear, malAiringStatus, cover
+  }
+
   static func fromAniList(_ media: Media, extras: MediaExtras) -> UserListItem? {
     guard let entry = media.listEntry else { return nil }
     return UserListItem(id: media.id, media: media, anilistId: media.anilistId, malId: media.malId, listEntryId: extras.listEntryId, status: entry.status, progress: entry.progress, score: entry.score ?? 0, repeatCount: entry.repeatCount ?? 0, updatedAt: entry.updatedAt, startedAt: extras.startedAt, completedAt: extras.completedAt, isRewatching: entry.status == .repeating, title: media.title.display(), alternativeTitles: media.title.all, cover: media.images.cover)
@@ -81,6 +87,37 @@ struct UserListItem: Codable, Hashable, Identifiable {
     let season = node.dict("start_season")
     let picture = node.dict("main_picture")
     return UserListItem(id: "mal-\(malId)", malId: malId, status: status, progress: listStatus.int("num_episodes_watched") ?? 0, score: listStatus.double("score") ?? 0, repeatCount: listStatus.int("num_times_rewatched") ?? 0, updatedAt: ServiceDates.parse(listStatus.string("updated_at")), startedAt: FuzzyDate.parse(isoDay: listStatus.string("start_date")), completedAt: FuzzyDate.parse(isoDay: listStatus.string("finish_date")), isRewatching: rewatching, title: node.string("title"), alternativeTitles: titles, malMediaType: node.string("media_type"), malNumEpisodes: node.int("num_episodes"), malAverageEpisodeDuration: node.int("average_episode_duration"), malStartSeason: season?.string("season"), malStartYear: season?.int("year"), malAiringStatus: node.string("status"), cover: URL.lenient(picture?.string("large") ?? picture?.string("medium")))
+  }
+}
+
+extension UserListItem {
+  /// Tolerant decoding of the cached lists: only the id and the status are required.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      id: try container.decode(String.self, forKey: .id),
+      media: container.svcValue(Media.self, .media),
+      anilistId: container.svcLossyInt(.anilistId),
+      malId: container.svcLossyInt(.malId),
+      listEntryId: container.svcLossyInt(.listEntryId),
+      status: try container.decode(ListStatus.self, forKey: .status),
+      progress: container.svcLossyInt(.progress) ?? 0,
+      score: container.svcLossyDouble(.score) ?? 0,
+      repeatCount: container.svcLossyInt(.repeatCount) ?? 0,
+      updatedAt: container.svcValue(Date.self, .updatedAt),
+      startedAt: container.svcValue(FuzzyDate.self, .startedAt),
+      completedAt: container.svcValue(FuzzyDate.self, .completedAt),
+      isRewatching: container.svcLossyBool(.isRewatching) ?? false,
+      title: container.svcValue(String.self, .title),
+      alternativeTitles: container.svcArray(String.self, .alternativeTitles),
+      malMediaType: container.svcValue(String.self, .malMediaType),
+      malNumEpisodes: container.svcLossyInt(.malNumEpisodes),
+      malAverageEpisodeDuration: container.svcLossyInt(.malAverageEpisodeDuration),
+      malStartSeason: container.svcValue(String.self, .malStartSeason),
+      malStartYear: container.svcLossyInt(.malStartYear),
+      malAiringStatus: container.svcValue(String.self, .malAiringStatus),
+      cover: container.svcValue(URL.self, .cover)
+    )
   }
 }
 
