@@ -186,6 +186,7 @@
   }
   .w2g-badge[data-kind='ahead'],
   .w2g-badge[data-kind='behind'],
+  .w2g-badge[data-kind='speed'],
   .w2g-badge[data-kind='other'] {
     background: hsla(var(--warning-color-hsl), 0.2);
     color: var(--warning-color);

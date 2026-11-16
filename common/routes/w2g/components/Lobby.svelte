@@ -48,7 +48,8 @@
     return client?.joinOffer() ?? null
   }
   $: members = listMembers(client, $clock, $peers, $lobby, $signals, $localStatus, $voice, $voiceStates, $voiceLinks)
-  $: isHost = !!client && $lobby?.hostId != null && String($lobby.hostId) === client.selfId
+  // The client compares member keys: another device of our account is not us.
+  $: isHost = !!client && !!$lobby && client.isHost
   $: hostMode = $lobby?.hostId != null && $lobby?.mode === 'host'
   $: watching = !!$localStatus && $localStatus.state !== 'idle'
   // v2.3: "{reference} is watching {title · episode}" with Join, while the lobby watches without us.

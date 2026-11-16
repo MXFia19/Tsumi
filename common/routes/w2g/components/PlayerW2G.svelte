@@ -79,7 +79,8 @@
     return client.hostPaused()
   }
   $: members = open ? listMembers(client, $clock, $peers, $lobby, $signals, $localStatus, $voice, $voiceStates, $voiceLinks) : []
-  $: isHost = $lobby.hostId != null && String($lobby.hostId) === client.selfId
+  // The client compares member keys: another device of our account is not us.
+  $: isHost = !!$lobby && client.isHost
   $: hostMode = $lobby.hostId != null && $lobby.mode === 'host'
   $: locked = hostMode && !isHost && $following
   $: canCountdown = $following && (isHost || !hostMode)

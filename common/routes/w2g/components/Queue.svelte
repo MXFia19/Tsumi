@@ -21,7 +21,8 @@
   $: lobby = client.lobby
   $: peers = client.peers
   $: following = client.following
-  $: isHost = $lobby.hostId != null && String($lobby.hostId) === client.selfId
+  // The client compares member keys: another device of our account is not us.
+  $: isHost = !!$lobby && client.isHost
   // The stores are passed so the values are recomputed whenever one of them changes.
   function available (client, ..._stores) {
     return client.queueAvailable

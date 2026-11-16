@@ -38,6 +38,32 @@ export const SEEK_THRESHOLD_S = 0.5
 /** How long a remotely applied state is expected to come back as local player events. */
 export const EXPECT_MS = 10_000
 
+// v2.5 limits on what a peer may send (PROTOCOL.md "v2.5 additions"). Anything outside them is dropped.
+/** Longest event, in UTF-16 code units of its JSON text, checked before JSON.parse. */
+export const MAX_EVENT_CHARS = 256_000
+/** P2PT chunk index `c` must be below this (chunks are 16000 units, see MAX_EVENT_CHARS). */
+export const MAX_CHUNKS = 64
+/** Messages being reassembled at once per peer... */
+export const MAX_PENDING_MESSAGES = 4
+/** ... each dropped when its last chunk did not come within this time ... */
+export const CHUNK_TIMEOUT_MS = 30_000
+/** ... and every peer together buffers at most this many units. */
+export const MAX_BUFFERED_CHARS = 2_000_000
+/** Media positions (seconds) are taken in 0…MAX_TIME_S (about 115 days). */
+export const MAX_TIME_S = 1e7
+/** Episode, season and local episode numbers are taken in 0…MAX_EPISODE. */
+export const MAX_EPISODE = 1e6
+/** `index` is a whole number in 0…MAX_INDEX. */
+export const MAX_INDEX = 9_999
+/** Longest member name shown (AniList names have 20 characters at most, MyAnimeList 16). */
+export const MAX_NAME_LENGTH = 32
+/** Longest chat message. */
+export const MAX_MESSAGE_LENGTH = 2048
+/** Longest SDP of a `voiceSignal`. */
+export const MAX_SDP_LENGTH = 64_000
+/** Longest media key. */
+export const MAX_KEY_LENGTH = 200
+
 export const MODES = /** @type {const} */ (['everyone', 'host'])
 export const STATES = /** @type {const} */ (['playing', 'paused', 'buffering', 'loading', 'idle'])
 export const ACTIONS = /** @type {const} */ (['play', 'pause', 'seek', 'sync'])
@@ -98,10 +124,19 @@ export function normalizeCountdownSeconds (seconds) {
  * @param {{ id?: unknown, name?: unknown, displayName?: unknown } | null | undefined} user
  */
 export function memberName (user) {
-  if (typeof user?.name === 'string' && user.name.trim()) return user.name.trim()
-  if (typeof user?.displayName === 'string' && user.displayName.trim()) return user.displayName.trim().slice(0, 32)
+  if (typeof user?.name === 'string' && user.name.trim()) return user.name.trim().slice(0, MAX_NAME_LENGTH)
+  if (typeof user?.displayName === 'string' && user.displayName.trim()) return user.displayName.trim().slice(0, MAX_NAME_LENGTH)
   if (user?.id != null) return `Guest ${String(user.id).slice(0, 4)}`
   return 'Anonymous'
+}
+
+/**
+ * Name of another member: memberName, but a remote member can't pass for us ("You paused at…").
+ * @param {{ id?: unknown, name?: unknown, displayName?: unknown } | null | undefined} user
+ */
+export function remoteName (user) {
+  const name = memberName(user)
+  return /^you$/i.test(name) ? `${name} (${user?.id != null ? String(user.id).slice(0, 4) : 'guest'})` : name
 }
 
 /**
@@ -145,7 +180,7 @@ export function computeDrift (expected, localTime) {
  * @param {number} seconds
  */
 export function formatClock (seconds) {
-  const total = Math.max(0, Math.floor(Number(seconds) || 0))
+  const total = Math.min(MAX_TIME_S, Math.max(0, Math.floor(Number(seconds) || 0)))
   const hours = Math.floor(total / 3600)
   const minutes = Math.floor((total % 3600) / 60)
   const secs = String(total % 60).padStart(2, '0')
@@ -207,8 +242,18 @@ export function inferAction (previous, next) {
  * @typedef {{ state: string, time: number, mediaKey?: string, rate?: number, source?: string, following?: boolean, nowPlaying?: NowPlaying | null }} Status
  * @typedef {{ status?: Status | null, receivedAt?: number, rtt?: number, protocol?: number, lastSeen?: number, joinedAt?: number }} MemberSignal
  * @typedef {Status & { at: number }} LocalStatus our own status, `at` = when `time` was read
- * @typedef {{ kind: 'old' | 'nosignal' | 'connecting' | 'idle' | 'loading' | 'buffering' | 'other' | 'own' | 'sync' | 'ahead' | 'behind' | 'playing' | 'paused', text: string, drift?: number }} Badge
+ * @typedef {{ kind: 'old' | 'nosignal' | 'connecting' | 'idle' | 'loading' | 'buffering' | 'other' | 'own' | 'sync' | 'ahead' | 'behind' | 'playing' | 'paused' | 'speed', text: string, drift?: number }} Badge
  */
+
+/** "1.25×" */
+export function formatRate (rate) {
+  return `${Math.round(normalizeRate(rate) * 100) / 100}×`
+}
+
+/** v2.5: two playback rates differ (a member at 1.25× drifts on its own, auto-sync can't fix it). */
+export function differentRate (a, b) {
+  return Math.abs(normalizeRate(a) - normalizeRate(b)) > 0.001
+}
 
 /**
  * Label of our own row.
@@ -261,6 +306,8 @@ export function syncBadge (member, local, now) {
   if ((status.mediaKey || '') !== (local.mediaKey || '')) return { kind: 'other', text: 'Other episode' }
 
   const drift = computeDrift(expectedTime(status, member.receivedAt ?? now, now, member.rtt), expectedTime(local, local.at, now, 0))
+  // v2.5: another playback rate drifts by itself; auto-sync leaves it alone, the badge says why.
+  if (differentRate(status.rate, local.rate)) return { kind: 'speed', text: `Different speed (${formatRate(status.rate)})`, drift }
   const samePlayState = (status.state === 'playing') === (local.state === 'playing')
   if (samePlayState && Math.abs(drift) <= IN_SYNC_S) return { kind: 'sync', text: 'In sync', drift }
   const amount = (Math.round(Math.abs(drift) * 10) / 10).toFixed(1)
@@ -282,6 +329,8 @@ export function autoSyncStep (memory, { enabled, isHost, hostStatus, hostReceive
   if (hostStatus.following === false) return idle
   if (hostStatus.state !== 'playing' || local.state !== 'playing') return idle
   if ((hostStatus.mediaKey || '') !== (local.mediaKey || '')) return idle
+  // v2.5: at another playback rate the drift grows again right after each jump.
+  if (differentRate(hostStatus.rate, local.rate)) return idle
 
   const expected = expectedTime(hostStatus, hostReceivedAt, now, hostRtt)
   const localTime = expectedTime(local, local.at, now, 0)
@@ -295,6 +344,8 @@ export function autoSyncStep (memory, { enabled, isHost, hostStatus, hostReceive
 /**
  * Where a non-host should be to follow the host: from its last `status`, else from its
  * last applied `player` event (v1 host). Returns null when nothing usable is known.
+ * v2.5: the `player` event is only used for a host that sends no `status` at all (v1). A v2 host that is idle,
+ * loading or silent has no position: snapping back to its last `player` event would jump to a stale time.
  * @param {{ status?: Status | null, receivedAt?: number, rtt?: number, lastPlayer?: { time: number, paused: boolean, rate?: number, at: number } | null }} host
  * @param {number} now
  * @returns {{ time: number, paused: boolean, mediaKey: string | null } | null}
@@ -310,6 +361,7 @@ export function hostReference ({ status, receivedAt, rtt, lastPlayer }, now) {
       mediaKey: status.mediaKey ?? ''
     }
   }
+  if (status) return null
   if (lastPlayer && isFiniteNumber(lastPlayer.time)) {
     const elapsed = lastPlayer.paused ? 0 : Math.max(0, now - lastPlayer.at) / 1000 * normalizeRate(lastPlayer.rate)
     return { time: lastPlayer.time + elapsed, paused: !!lastPlayer.paused, mediaKey: null }
@@ -519,10 +571,13 @@ export function canInvite ({ offeredKey, effectiveMode, isHost, now, member }) {
 
 /**
  * Whether an `invite` is for us and allowed: anyone in `everyone` mode, the host only in `host` mode.
- * @param {{ to: unknown, selfId: string, senderId: string, hostId: string | null, effectiveMode: string }} input
+ * v2.5: with `toSession`, only that device of the account takes it. `senderId` / `hostId` are member keys when the
+ * client uses them, then `selfKey` is ours.
+ * @param {{ to: unknown, toSession?: string | null, selfId: string, sessionId?: string | null, senderId: string, selfKey?: string, hostId: string | null, effectiveMode: string }} input
  */
-export function acceptsInvite ({ to, selfId, senderId, hostId, effectiveMode }) {
-  if (!sameId(to, selfId) || sameId(senderId, selfId)) return false
+export function acceptsInvite ({ to, toSession, selfId, sessionId, senderId, selfKey, hostId, effectiveMode }) {
+  if (!sameId(to, selfId) || sameId(senderId, selfKey ?? selfId)) return false
+  if (toSession && sessionId && toSession !== sessionId) return false
   return effectiveMode !== 'host' || sameId(senderId, hostId)
 }
 
@@ -581,12 +636,17 @@ export function pickFollowingHost (peers) {
 
 /**
  * Host migration (v2.2): independent members are skipped, unless nobody follows.
- * @param {{ selfId: string, selfFollowing: boolean, peers: Array<{ userId: string, following?: boolean }> }} input
+ * v2.5: a v1 client (`protocol` 1) is never elected (it would never claim the role), nor a member in `skip` (it was
+ * elected and did not claim the role within TENTATIVE_HOST_MS).
+ * @param {{ selfId: string, selfFollowing: boolean, peers: Array<{ userId: string, following?: boolean, protocol?: number }>, skip?: Iterable<string> }} input
+ *   userId: the member key (see memberKey)
  * @returns {string | null}
  */
-export function electFollowingHost ({ selfId, selfFollowing, peers }) {
-  const following = [...(selfFollowing ? [selfId] : []), ...peers.filter(peer => peer.following !== false).map(peer => peer.userId)]
-  return electHost(following.length ? following : [selfId, ...peers.map(peer => peer.userId)])
+export function electFollowingHost ({ selfId, selfFollowing, peers, skip = [] }) {
+  const skipped = new Set(skip)
+  const eligible = peers.filter(peer => !(peer.protocol < 2) && !skipped.has(peer.userId))
+  const following = [...(selfFollowing ? [selfId] : []), ...eligible.filter(peer => peer.following !== false).map(peer => peer.userId)]
+  return electHost(following.length ? following : [selfId, ...eligible.map(peer => peer.userId)])
 }
 
 /**
@@ -820,16 +880,18 @@ const cleanId = value => ((typeof value === 'string' && value !== '') || isFinit
  * @param {unknown} episode
  */
 export function normalizeQueueEpisode (episode) {
-  if (isFiniteNumber(episode)) return episode
-  if (typeof episode === 'string' && /^\d+$/.test(episode)) return Number(episode)
-  if (episode && typeof episode === 'object') {
+  // v2.5: episode, season and local episode numbers are within 0…MAX_EPISODE.
+  const valid = value => isFiniteNumber(value) && value >= 0 && value <= MAX_EPISODE
+  if (valid(episode)) return episode
+  if (typeof episode === 'string' && /^\d{1,7}$/.test(episode) && valid(Number(episode))) return Number(episode)
+  if (episode && typeof episode === 'object' && !Array.isArray(episode)) {
     const raw = /** @type {any} */ (episode)
-    const number = isFiniteNumber(raw.number) ? raw.number : isFiniteNumber(raw.localEpisode) ? raw.localEpisode : null
+    const number = valid(raw.number) ? raw.number : valid(raw.localEpisode) ? raw.localEpisode : null
     if (number === null) return null
     /** @type {{ number: number, season?: number, localEpisode?: number }} */
     const out = { number }
-    if (isFiniteNumber(raw.season)) out.season = raw.season
-    if (isFiniteNumber(raw.localEpisode)) out.localEpisode = raw.localEpisode
+    if (valid(raw.season)) out.season = raw.season
+    if (valid(raw.localEpisode)) out.localEpisode = raw.localEpisode
     return out
   }
   return null
@@ -844,7 +906,7 @@ export function normalizeQueueItem (value) {
   if (!value || typeof value !== 'object') return null
   const raw = /** @type {any} */ (value)
   const id = cleanId(raw.id)
-  const media = raw.media && typeof raw.media === 'object' && !Array.isArray(raw.media) && cleanId(raw.media.id) ? raw.media : null
+  const media = cleanMedia(raw.media)
   const episode = normalizeQueueEpisode(raw.episode)
   const key = cleanText(raw.key, 200)
   if (!id || !media || episode === null || !key) return null
@@ -878,7 +940,9 @@ export function normalizeQueue (payload) {
   }).slice(0, max)
   const items = clean(raw.items, QUEUE_MAX_ITEMS)
   const pending = clean(raw.pending, QUEUE_MAX_PENDING)
-  return { items, pending, policy: raw.policy === 'approval' ? 'approval' : 'open', rev: isFiniteNumber(raw.rev) ? raw.rev : 0 }
+  // v2.5: `rev` is a whole number that every app can store (the iOS app crashed on 1e300).
+  const rev = isFiniteNumber(raw.rev) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(raw.rev))) : 0
+  return { items, pending, policy: raw.policy === 'approval' ? 'approval' : 'open', rev }
 }
 
 /**
@@ -1066,6 +1130,527 @@ export function nextEpisodeTarget ({ lobby, queue }) {
  */
 export function acceptsQueue ({ senderId, hostId, tentative }) {
   return hostId == null || tentative || sameId(senderId, hostId)
+}
+
+// ---------------------------------------------------------------- v2.5: transport limits, validation, identity
+
+/**
+ * Reassembles P2PT messages (`{ id, msg, c, last }` frames, PROTOCOL.md "Transport") per peer, within limits.
+ * P2PT's own handler keeps the chunks of every message in one table shared by all peers, at whatever index a peer
+ * picks: a single frame with `c: 4294967294` makes its `join('')` walk billions of holes and freezes the app.
+ */
+export class ChunkAssembler {
+  /** @type {Map<string, { peerId: string, parts: string[], size: number, at: number }>} */
+  #messages = new Map()
+  #buffered = 0
+  #limits
+
+  /** @param {{ maxChunks?: number, maxChars?: number, maxPending?: number, timeoutMs?: number, maxBuffered?: number }} [limits] */
+  constructor (limits = {}) {
+    this.#limits = { maxChunks: MAX_CHUNKS, maxChars: MAX_EVENT_CHARS, maxPending: MAX_PENDING_MESSAGES, timeoutMs: CHUNK_TIMEOUT_MS, maxBuffered: MAX_BUFFERED_CHARS, ...limits }
+  }
+
+  /** Units buffered in partial messages. */
+  get buffered () {
+    return this.#buffered
+  }
+
+  /** Partial messages. */
+  get pending () {
+    return this.#messages.size
+  }
+
+  /**
+   * One frame from a peer.
+   * @param {string} peerId
+   * @param {unknown} frame the parsed frame
+   * @param {number} now
+   * @returns {string | false} the whole message once its last chunk came; false before that, and when a limit is
+   *   broken (the message is then dropped)
+   */
+  add (peerId, frame, now) {
+    this.#expire(now)
+    const { maxChunks, maxChars, maxPending, maxBuffered } = this.#limits
+    const data = frame && typeof frame === 'object' ? /** @type {any} */ (frame) : null
+    const id = !data ? null : typeof data.id === 'string' ? data.id : isFiniteNumber(data.id) ? String(data.id) : null
+    if (id === null || id.length > 64) return false
+    const key = `${peerId}\u0000${id}`
+    const index = data.c ?? 0
+    if (!Number.isInteger(index) || index < 0 || index >= maxChunks || typeof data.msg !== 'string') {
+      this.#drop(key)
+      return false
+    }
+    let entry = this.#messages.get(key)
+    if (!entry) {
+      // Too many messages in progress from this peer: its oldest one goes.
+      let oldest = null
+      let count = 0
+      for (const [other, item] of this.#messages) {
+        if (item.peerId !== peerId) continue
+        count++
+        if (!oldest || item.at < this.#messages.get(oldest).at) oldest = other
+      }
+      if (count >= maxPending && oldest) this.#drop(oldest)
+      entry = { peerId, parts: [], size: 0, at: now }
+      this.#messages.set(key, entry)
+    }
+    const growth = data.msg.length - (entry.parts[index]?.length ?? 0)
+    if (entry.size + growth > maxChars || this.#buffered + growth > maxBuffered) {
+      this.#drop(key)
+      return false
+    }
+    entry.parts[index] = data.msg
+    entry.size += growth
+    this.#buffered += growth
+    if (!data.last) return false
+    // Complete: every chunk up to the last one, none after it.
+    const parts = entry.parts
+    this.#drop(key)
+    if (parts.length !== index + 1) return false
+    for (let chunk = 0; chunk <= index; chunk++) if (typeof parts[chunk] !== 'string') return false
+    return parts.join('')
+  }
+
+  /** A peer left: its partial messages go. */
+  forget (peerId) {
+    for (const [key, entry] of this.#messages) if (entry.peerId === peerId) this.#drop(key)
+  }
+
+  clear () {
+    this.#messages.clear()
+    this.#buffered = 0
+  }
+
+  #drop (key) {
+    const entry = this.#messages.get(key)
+    if (!entry) return
+    this.#buffered -= entry.size
+    this.#messages.delete(key)
+  }
+
+  #expire (now) {
+    for (const [key, entry] of this.#messages) if (now - entry.at > this.#limits.timeoutMs) this.#drop(key)
+  }
+}
+
+/** Ids a peer could use to reach Object.prototype through a lookup table. */
+const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype'])
+
+/**
+ * A wire id (`userId`, `hostId`, request, item and offer ids): a non-empty string of at most 64 characters or a
+ * finite number, as a string. Null otherwise.
+ * @param {unknown} value
+ */
+export function wireId (value) {
+  if (isFiniteNumber(value)) return String(value)
+  return typeof value === 'string' && value.length > 0 && value.length <= 64 ? value : null
+}
+
+/**
+ * v2.5 `init.sessionId` (also `host.hostSession`, `invite.toSession`): 4 to 64 letters, digits, `-` or `_`.
+ * @param {unknown} value
+ */
+export function cleanSessionId (value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{4,64}$/.test(value) ? value : null
+}
+
+/**
+ * A media position in 0…MAX_TIME_S, null otherwise.
+ * @param {unknown} value
+ */
+export function cleanTime (value) {
+  return isFiniteNumber(value) && value >= 0 && value <= MAX_TIME_S ? value : null
+}
+
+/**
+ * An http(s) URL of at most `max` characters, '' otherwise.
+ * @param {unknown} value
+ */
+export function cleanUrl (value, max = 1000) {
+  if (typeof value !== 'string') return ''
+  const url = value.trim()
+  return url.length <= max && /^https?:\/\/\S+$/i.test(url) ? url : ''
+}
+
+/**
+ * A media key (`media.key`, `status.mediaKey`...): '' when missing or longer than MAX_KEY_LENGTH.
+ * @param {unknown} value
+ */
+export function cleanKey (value) {
+  if (isFiniteNumber(value)) return String(value)
+  return typeof value === 'string' && value.length <= MAX_KEY_LENGTH ? value : ''
+}
+
+const MEDIA_NUMBERS = ['idMal', 'idTmdb', 'episodes', 'seasonYear', 'duration', 'averageScore']
+const MEDIA_TEXTS = ['format', 'status', 'season']
+const MEDIA_TITLES = ['romaji', 'english', 'native', 'userPreferred']
+const MEDIA_COVERS = ['extraLarge', 'large', 'medium']
+
+/**
+ * The shared media shape (session.js SHARED_MEDIA_FIELDS) rebuilt from what a peer sent: the known fields with the
+ * right types, http(s) URLs only. Null without a usable id (AniList number, or a short text id like "tmdb-123").
+ * @param {unknown} value
+ * @returns {Record<string, any> | null}
+ */
+export function cleanMedia (value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const raw = /** @type {any} */ (value)
+  let id = null
+  if (isFiniteNumber(raw.id)) id = raw.id
+  else if (typeof raw.id === 'string' && /^[A-Za-z0-9:._-]{1,64}$/.test(raw.id) && !RESERVED_IDS.has(raw.id)) id = raw.id
+  if (id === null) return null
+  /** @type {Record<string, any>} */
+  const media = { id }
+  for (const field of MEDIA_NUMBERS) if (isFiniteNumber(raw[field])) media[field] = raw[field]
+  if (typeof raw.isTmdb === 'boolean') media.isTmdb = raw.isTmdb
+  for (const field of MEDIA_TEXTS) if (typeof raw[field] === 'string' && /^[A-Za-z_]{1,32}$/.test(raw[field])) media[field] = raw[field]
+  if (raw.title && typeof raw.title === 'object') {
+    /** @type {Record<string, string>} */
+    const title = {}
+    for (const field of MEDIA_TITLES) if (typeof raw.title[field] === 'string') title[field] = raw.title[field].slice(0, 300)
+    media.title = title
+  }
+  if (raw.coverImage && typeof raw.coverImage === 'object') {
+    /** @type {Record<string, string>} */
+    const cover = {}
+    for (const field of MEDIA_COVERS) {
+      const url = cleanUrl(raw.coverImage[field])
+      if (url) cover[field] = url
+    }
+    if (typeof raw.coverImage.color === 'string' && /^#[0-9a-f]{3,8}$/i.test(raw.coverImage.color)) cover.color = raw.coverImage.color
+    media.coverImage = cover
+  }
+  const banner = cleanUrl(raw.bannerImage)
+  if (banner) media.bannerImage = banner
+  if (Array.isArray(raw.genres)) media.genres = raw.genres.filter(genre => typeof genre === 'string' && genre.length <= 64).slice(0, 32)
+  return media
+}
+
+/** @param {unknown} value @returns {any} */
+const plainObject = value => (value && typeof value === 'object' && !Array.isArray(value) ? value : null)
+
+/**
+ * Episode of a `media` / `invite`: a valid episode, `undefined` when none was sent (older apps may omit it for a
+ * movie), null when it is malformed (the event is dropped).
+ */
+function eventEpisode (value) {
+  if (value == null) return undefined
+  return normalizeQueueEpisode(value)
+}
+
+/** One cleaner per event type: the payload reduced to what the clients use, or null to drop the event. */
+const EVENT_CLEANERS = {
+  init (payload) {
+    const raw = plainObject(payload)
+    const id = raw && (isFiniteNumber(raw.id) ? raw.id : wireId(raw.id))
+    if (id == null) return null
+    /** @type {Record<string, any>} */
+    const user = { id }
+    const name = cleanText(raw.name, MAX_NAME_LENGTH)
+    if (name) user.name = name
+    const displayName = cleanText(raw.displayName, MAX_NAME_LENGTH)
+    if (displayName) user.displayName = displayName
+    const medium = cleanUrl(raw.avatar?.medium)
+    const large = cleanUrl(raw.avatar?.large)
+    if (medium || large) user.avatar = medium && large ? { medium, large } : medium ? { medium } : { large }
+    const picture = cleanUrl(raw.picture)
+    if (picture) user.picture = picture
+    if (typeof raw.client === 'string' && raw.client.length <= 32) user.client = raw.client
+    if (isFiniteNumber(raw.protocol) && raw.protocol >= 1 && raw.protocol <= 99) user.protocol = raw.protocol
+    user.features = normalizeFeatures(raw.features)
+    const sessionId = cleanSessionId(raw.sessionId)
+    if (sessionId) user.sessionId = sessionId
+    return user
+  },
+  media (payload) {
+    const raw = plainObject(payload)
+    const media = raw && cleanMedia(raw.media)
+    const episode = raw && eventEpisode(raw.episode)
+    if (!media || episode === null) return null
+    return { media, episode, key: cleanKey(raw.key) }
+  },
+  index (payload) {
+    const raw = plainObject(payload)
+    if (!raw || !Number.isInteger(raw.index) || raw.index < 0 || raw.index > MAX_INDEX) return null
+    /** @type {{ index: number, kind?: 'file' | 'episode', mediaKey?: string }} */
+    const out = { index: raw.index }
+    if (raw.kind === 'file' || raw.kind === 'episode') out.kind = raw.kind
+    const mediaKey = cleanKey(raw.mediaKey)
+    if (mediaKey) out.mediaKey = mediaKey
+    return out
+  },
+  player (payload) {
+    const raw = plainObject(payload)
+    const time = raw && cleanTime(raw.time)
+    if (time == null) return null
+    /** @type {Record<string, any>} */
+    const out = { time, paused: !!raw.paused }
+    const by = wireId(raw.by)
+    if (by) out.by = by
+    if (ACTIONS.includes(raw.action)) out.action = raw.action
+    if (isFiniteNumber(raw.rate)) out.rate = normalizeRate(raw.rate)
+    const mediaKey = cleanKey(raw.mediaKey)
+    if (mediaKey) out.mediaKey = mediaKey
+    return out
+  },
+  message (payload) {
+    return typeof payload === 'string' && payload ? payload.slice(0, MAX_MESSAGE_LENGTH) : null
+  },
+  host (payload) {
+    const raw = plainObject(payload)
+    const hostId = raw && wireId(raw.hostId)
+    if (!hostId) return null
+    /** @type {{ hostId: string, mode: 'everyone' | 'host', hostSession?: string }} */
+    const out = { hostId, mode: normalizeMode(raw.mode) }
+    const hostSession = cleanSessionId(raw.hostSession)
+    if (hostSession) out.hostSession = hostSession
+    return out
+  },
+  status (payload) {
+    const raw = plainObject(payload)
+    const state = raw && normalizeState(raw.state)
+    const time = raw && cleanTime(raw.time)
+    if (!state || time == null) return null
+    return {
+      state,
+      time,
+      mediaKey: cleanKey(raw.mediaKey),
+      rate: normalizeRate(raw.rate),
+      sentAt: isFiniteNumber(raw.sentAt) ? raw.sentAt : undefined,
+      source: formatSource(raw.source),
+      following: raw.following !== false,
+      nowPlaying: normalizeNowPlaying(raw.nowPlaying)
+    }
+  },
+  ping (payload) {
+    const raw = plainObject(payload)
+    if (!raw || !isFiniteNumber(raw.sentAt)) return null
+    const id = wireId(raw.id)
+    return id ? { id, sentAt: raw.sentAt } : { sentAt: raw.sentAt }
+  },
+  pong (payload) {
+    return EVENT_CLEANERS.ping(payload)
+  },
+  request (payload) {
+    const raw = plainObject(payload)
+    const id = raw && wireId(raw.id)
+    if (!id || !REQUEST_KINDS.includes(raw.kind)) return null
+    if (raw.kind !== 'seek') return { id, kind: raw.kind }
+    const time = cleanTime(raw.time)
+    return time === null ? null : { id, kind: raw.kind, time }
+  },
+  requestReply (payload) {
+    const raw = plainObject(payload)
+    const id = raw && wireId(raw.id)
+    if (!id) return null
+    /** @type {{ id: string, accepted: boolean, by?: string }} */
+    const out = { id, accepted: !!raw.accepted }
+    const by = wireId(raw.by)
+    if (by) out.by = by
+    return out
+  },
+  kick (payload) {
+    const userId = wireId(plainObject(payload)?.userId)
+    return userId ? { userId } : null
+  },
+  reaction (payload) {
+    const emoji = normalizeReaction(plainObject(payload)?.emoji)
+    return emoji ? { emoji } : null
+  },
+  countdown (payload) {
+    const raw = plainObject(payload)
+    const time = raw && cleanTime(raw.time)
+    if (time == null) return null
+    /** @type {{ time: number, seconds: number, startAt?: number, mediaKey?: string }} */
+    const out = { time, seconds: normalizeCountdownSeconds(raw.seconds) }
+    if (isFiniteNumber(raw.startAt)) out.startAt = raw.startAt
+    const mediaKey = cleanKey(raw.mediaKey)
+    if (mediaKey) out.mediaKey = mediaKey
+    return out
+  },
+  invite (payload) {
+    const raw = plainObject(payload)
+    const to = raw && wireId(raw.to)
+    const media = raw && cleanMedia(raw.media)
+    const time = raw && cleanTime(raw.time)
+    const episode = raw && eventEpisode(raw.episode)
+    if (!to || !media || time == null || episode === null) return null
+    /** @type {Record<string, any>} */
+    const out = { to, media, episode, key: cleanKey(raw.key), time, paused: !!raw.paused }
+    const by = wireId(raw.by)
+    if (by) out.by = by
+    const toSession = cleanSessionId(raw.toSession)
+    if (toSession) out.toSession = toSession
+    return out
+  },
+  voice (payload) {
+    return normalizeVoice(plainObject(payload))
+  },
+  voiceSignal (payload) {
+    const raw = plainObject(payload)
+    const id = raw && wireId(raw.id)
+    const sdp = raw && plainObject(raw.sdp)
+    if (!id || !sdp || (sdp.type !== 'offer' && sdp.type !== 'answer')) return null
+    if (typeof sdp.sdp !== 'string' || !sdp.sdp || sdp.sdp.length > MAX_SDP_LENGTH) return null
+    return { id, sdp: { type: sdp.type, sdp: sdp.sdp } }
+  },
+  queue (payload) {
+    return normalizeQueue(plainObject(payload))
+  },
+  queueAdd (payload) {
+    const item = normalizeQueueItem(plainObject(payload)?.item)
+    return item ? { item } : null
+  },
+  queueVote (payload) {
+    const raw = plainObject(payload)
+    const id = raw && wireId(raw.id)
+    return id ? { id, up: raw.up === true } : null
+  },
+  queueRemove (payload) {
+    const id = wireId(plainObject(payload)?.id)
+    return id ? { id } : null
+  }
+}
+
+/**
+ * v2.5 validation of every incoming event (PROTOCOL.md "Limits and validation"): the payload cleaned to the types,
+ * ranges and lengths the clients use, or null to drop the event. Unknown types give null too (they are ignored).
+ * @param {unknown} type
+ * @param {unknown} payload
+ * @returns {any}
+ */
+export function validateEvent (type, payload) {
+  if (typeof type !== 'string' || !Object.prototype.hasOwnProperty.call(EVENT_CLEANERS, type)) return null
+  return EVENT_CLEANERS[type](payload) ?? null
+}
+
+/** Events a member makes by hand: limited to a burst of RATE_BURST, then RATE_PER_S per second, per member. */
+export const USER_EVENTS = /** @type {const} */ (['message', 'reaction', 'request', 'invite', 'queueAdd', 'queueVote', 'queueRemove'])
+export const RATE_BURST = 20
+export const RATE_PER_S = 5
+
+/**
+ * Token bucket of one member for USER_EVENTS.
+ * @param {{ tokens: number, at: number } | null | undefined} bucket
+ * @param {number} now
+ * @returns {{ tokens: number, at: number, allowed: boolean }}
+ */
+export function rateStep (bucket, now) {
+  const refilled = bucket ? bucket.tokens + Math.max(0, now - bucket.at) / 1000 * RATE_PER_S : RATE_BURST
+  const tokens = Math.min(RATE_BURST, refilled)
+  if (tokens < 1) return { tokens, at: now, allowed: false }
+  return { tokens: tokens - 1, at: now, allowed: true }
+}
+
+/**
+ * v2.5 member key: who a member is on this device. Two devices of one account share a `userId`, but each sends its
+ * own `init.sessionId`. An older client sends none: its key is its `userId`. The separator sorts below the
+ * characters of the ids (digits, hex, letters), so keys sort like their userIds and elections stay the same.
+ * @param {unknown} userId
+ * @param {string | null | undefined} [sessionId]
+ */
+export function memberKey (userId, sessionId) {
+  const id = String(userId)
+  return sessionId ? `${id}#${sessionId}` : id
+}
+
+/**
+ * The two ids compared between two members to pick the voice offerer: their keys when both send a session id,
+ * else their userIds (what an older client compares).
+ * @param {{ userId: string, sessionId?: string | null }} self
+ * @param {{ userId: string, sessionId?: string | null }} other
+ * @returns {[string, string]}
+ */
+export function pairIds (self, other) {
+  if (self.sessionId && other.sessionId) return [memberKey(self.userId, self.sessionId), memberKey(other.userId, other.sessionId)]
+  return [String(self.userId), String(other.userId)]
+}
+
+/**
+ * Member key of the host a `host` event names. With `hostSession` (v2.5), that device. Without (older sender): the
+ * sender when it names its own userId, else the smallest key with that userId (ourselves included), else the userId.
+ * @param {{ hostId: string, hostSession?: string | null, sender?: { key: string, userId: string } | null, members: Array<{ key: string, userId: string }> }} input
+ */
+export function resolveHostKey ({ hostId, hostSession, sender, members }) {
+  if (hostSession) return memberKey(hostId, hostSession)
+  if (sender && sameId(sender.userId, hostId)) return sender.key
+  return electHost(members.filter(member => sameId(member.userId, hostId)).map(member => member.key)) ?? String(hostId)
+}
+
+/** A tentative host that did not claim the role this long after the election is skipped, and the election runs again. */
+export const TENTATIVE_HOST_MS = 10_000
+
+/** Round-trip samples above this are dropped (a pong held up by a suspended app or a frozen window)... */
+export const MAX_RTT_MS = 5_000
+/** ... the others are smoothed, with this weight for the new sample. */
+export const RTT_SMOOTHING = 0.3
+
+/**
+ * v2.5 RTT of a member after a `pong`. The sample is dropped when negative, above MAX_RTT_MS, or for a ping sent
+ * before `resumedAt` (the app was suspended in between); otherwise it is smoothed with the previous value.
+ * @param {number | null | undefined} previous
+ * @param {{ sentAt: number, now: number, resumedAt?: number }} pong
+ * @returns {number | null} the new RTT, null to keep the previous one
+ */
+export function nextRtt (previous, { sentAt, now, resumedAt = -Infinity }) {
+  const sample = now - sentAt
+  if (!isFiniteNumber(sample) || sample < 0 || sample > MAX_RTT_MS || sentAt < resumedAt) return null
+  return isFiniteNumber(previous) ? previous + (sample - previous) * RTT_SMOOTHING : sample
+}
+
+/**
+ * Lobby code in a typed code, an invite link (tsumi://w2g/CODE, …/w2g/?c=CODE) or any text: the first run of exactly
+ * 16 hex characters, in lower case (codes are generated in lower case, and P2PT's swarm id is case sensitive).
+ * @param {unknown} text
+ * @returns {string | null}
+ */
+export function parseLobbyCode (text) {
+  if (typeof text !== 'string') return null
+  const match = text.match(/(?:^|[^a-f0-9])([a-f0-9]{16})(?![a-f0-9])/i)
+  return match ? match[1].toLowerCase() : null
+}
+
+/**
+ * v2.5 ICE servers of the data channels and audio links: the STUN servers, plus the optional TURN server of the
+ * settings (`w2gTurnUrl`, `w2gTurnUsername`, `w2gTurnCredential`) for networks where direct links fail (CGNAT,
+ * strict firewalls). The URL may list several `turn:` / `turns:` URLs separated by commas or spaces.
+ * @param {{ url?: unknown, username?: unknown, credential?: unknown }} [turn]
+ * @returns {Array<{ urls: string | string[], username?: string, credential?: string }>}
+ */
+export function iceServers ({ url, username, credential } = {}) {
+  /** @type {Array<{ urls: string | string[], username?: string, credential?: string }>} */
+  const servers = [{ urls: [...VOICE_ICE_SERVERS] }]
+  const urls = (typeof url === 'string' ? url.split(/[\s,]+/) : []).filter(item => item.length <= 500 && /^turns?:\S+$/i.test(item))
+  if (urls.length) {
+    servers.push({
+      urls,
+      username: typeof username === 'string' ? username.trim() : '',
+      credential: typeof credential === 'string' ? credential : ''
+    })
+  }
+  return servers
+}
+
+/**
+ * v2.5 meaning of an `index`: "file" (position in the desktop player's file list) or "episode" (position in the iOS
+ * player's episode list). Without `kind`, what the sender's app meant: "episode" for the iOS app, "file" otherwise.
+ * @param {{ kind?: unknown } | null | undefined} payload
+ * @param {string | undefined} client `init.client` of the sender
+ * @returns {'file' | 'episode'}
+ */
+export function indexKind (payload, client) {
+  if (payload?.kind === 'file' || payload?.kind === 'episode') return payload.kind
+  return client === 'tsumi-ios' ? 'episode' : 'file'
+}
+
+/**
+ * v2.5: a `player`, `countdown` or `index` sent from another episode than ours is not applied. No check when the
+ * sender sent no `mediaKey` (older app) or our player plays nothing.
+ * @param {string | null | undefined} sentKey
+ * @param {string | null | undefined} localKey
+ */
+export function sameEpisode (sentKey, localKey) {
+  return !sentKey || !localKey || sentKey === localKey
 }
 
 /**

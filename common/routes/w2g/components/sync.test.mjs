@@ -12,7 +12,10 @@ import {
   appliesCountdown, normalizeFeatures, normalizeVoice, voiceOffers, voiceLinkAction, acceptsVoiceOffer, voiceRetryDelay,
   voiceTransmitting, speakingStep, duckLevel, VOICE_DUCK_LEVEL, VOICE_SPEAKING_HOLD_MS, VOICE_MAX_RETRIES,
   emptyQueue, normalizeQueueEpisode, normalizeQueueItem, normalizeQueue, queueReduce, queueChanges, queueItemLabel,
-  describeQueueChange, nextEpisodeOf, nextEpisodeTarget, acceptsQueue, QUEUE_MAX_ITEMS, QUEUE_MAX_PENDING, sameQueueEntry
+  describeQueueChange, nextEpisodeOf, nextEpisodeTarget, acceptsQueue, QUEUE_MAX_ITEMS, QUEUE_MAX_PENDING, sameQueueEntry,
+  ChunkAssembler, validateEvent, wireId, cleanMedia, cleanTime, memberKey, pairIds, resolveHostKey, nextRtt, rateStep,
+  parseLobbyCode, iceServers, indexKind, sameEpisode, remoteName, differentRate,
+  MAX_CHUNKS, MAX_EVENT_CHARS, MAX_TIME_S, MAX_RTT_MS, RATE_BURST, CHUNK_TIMEOUT_MS
 } from './sync.js'
 
 let passed = 0
@@ -807,6 +810,254 @@ test('acceptsQueue: from the host, or anyone without a confirmed host', () => {
   assert.equal(acceptsQueue({ senderId: 'x', hostId: 'h', tentative: false }), false)
   assert.equal(acceptsQueue({ senderId: 'x', hostId: 'h', tentative: true }), true)
   assert.equal(acceptsQueue({ senderId: 'x', hostId: null, tentative: false }), true)
+})
+
+// ---------------------------------------------------------------- v2.5
+
+const frame = (id, c, msg, last = false) => ({ id, c, msg, ...(last ? { last: true } : {}) })
+
+test('ChunkAssembler: chunks of one message are joined in order, per peer', () => {
+  const chunks = new ChunkAssembler()
+  assert.equal(chunks.add('p1', frame(7, 0, 'he'), 0), false)
+  // The same message id from another peer is another message.
+  assert.equal(chunks.add('p2', frame(7, 0, 'xx', true), 0), 'xx')
+  assert.equal(chunks.add('p1', frame(7, 1, 'llo', true), 0), 'hello')
+  assert.equal(chunks.pending, 0)
+  assert.equal(chunks.buffered, 0)
+})
+
+test('ChunkAssembler: a huge or invalid chunk index is refused at once (no freeze)', () => {
+  const chunks = new ChunkAssembler()
+  const started = Date.now()
+  assert.equal(chunks.add('p', frame(1, 4294967294, 'x', true), 0), false)
+  assert.equal(chunks.add('p', frame(1, MAX_CHUNKS, 'x', true), 0), false)
+  assert.equal(chunks.add('p', frame(1, -1, 'x', true), 0), false)
+  assert.equal(chunks.add('p', frame(1, 1.5, 'x', true), 0), false)
+  assert.equal(chunks.add('p', { id: 1, c: 0, msg: { not: 'text' }, last: true }, 0), false)
+  assert.equal(chunks.add('p', { id: { bad: true }, c: 0, msg: 'x', last: true }, 0), false)
+  assert.ok(Date.now() - started < 100)
+  assert.equal(chunks.pending, 0)
+})
+
+test('ChunkAssembler: a message with a missing chunk is dropped', () => {
+  const chunks = new ChunkAssembler()
+  chunks.add('p', frame(1, 0, 'a'), 0)
+  assert.equal(chunks.add('p', frame(1, 2, 'c', true), 0), false)
+  assert.equal(chunks.pending, 0)
+})
+
+test('ChunkAssembler: size limits per message and in total', () => {
+  const small = new ChunkAssembler({ maxChars: 10 })
+  assert.equal(small.add('p', frame(1, 0, '123456'), 0), false)
+  assert.equal(small.add('p', frame(1, 1, '123456', true), 0), false)
+  assert.equal(small.pending, 0)
+  const total = new ChunkAssembler({ maxChars: 10, maxBuffered: 15 })
+  total.add('a', frame(1, 0, '1234567890'), 0)
+  assert.equal(total.add('b', frame(1, 0, '1234567890'), 0), false)
+  assert.equal(total.buffered, 10)
+})
+
+test('ChunkAssembler: a few messages in progress per peer, and a timeout', () => {
+  const chunks = new ChunkAssembler({ maxPending: 2 })
+  chunks.add('p', frame(1, 0, 'a'), 0)
+  chunks.add('p', frame(2, 0, 'b'), 1)
+  chunks.add('p', frame(3, 0, 'c'), 2)
+  assert.equal(chunks.pending, 2)
+  // The oldest (1) went.
+  assert.equal(chunks.add('p', frame(1, 1, 'z', true), 3), false)
+  assert.equal(chunks.add('p', frame(3, 1, 'd', true), 3), 'cd')
+  chunks.add('q', frame(9, 0, 'late'), 10)
+  chunks.add('q', frame(10, 0, 'x'), 10 + CHUNK_TIMEOUT_MS + 1)
+  assert.equal(chunks.add('q', frame(9, 1, '!', true), 10 + CHUNK_TIMEOUT_MS + 1), false)
+  chunks.forget('q')
+  chunks.forget('p')
+  assert.equal(chunks.pending, 0)
+  assert.equal(chunks.buffered, 0)
+})
+
+test('validateEvent: unknown or prototype types are dropped', () => {
+  assert.equal(validateEvent('nope', {}), null)
+  assert.equal(validateEvent('__proto__', {}), null)
+  assert.equal(validateEvent('constructor', {}), null)
+  assert.equal(validateEvent(42, {}), null)
+})
+
+test('validateEvent init: a minimal user, names and URLs capped, session id kept', () => {
+  const user = validateEvent('init', {
+    id: 123,
+    name: 'A'.repeat(100),
+    avatar: { medium: 'https://s4.anilist.co/a.png', large: 'javascript:alert(1)' },
+    options: { secret: true },
+    unreadNotificationCount: 4,
+    client: 'tsumi-desktop',
+    protocol: 2,
+    features: ['voice', 'queue'],
+    sessionId: 'abcdef0123456789'
+  })
+  assert.deepEqual(user, { id: 123, name: 'A'.repeat(32), avatar: { medium: 'https://s4.anilist.co/a.png' }, client: 'tsumi-desktop', protocol: 2, features: ['voice', 'queue'], sessionId: 'abcdef0123456789' })
+  assert.equal(validateEvent('init', { id: '' }), null)
+  assert.equal(validateEvent('init', { id: 'x'.repeat(65) }), null)
+  assert.equal(validateEvent('init', { id: 'a', sessionId: 'bad id!' }).sessionId, undefined)
+})
+
+test('validateEvent media / invite: the shared media shape only, safe ids and URLs', () => {
+  const media = cleanMedia({ id: 21, title: { english: 'One Piece', evil: 'x' }, format: 'TV', coverImage: { medium: 'https://img/a.jpg', extraLarge: 'file:///etc/passwd' }, siteUrl: 'x', episodes: 1100 })
+  assert.deepEqual(media, { id: 21, episodes: 1100, format: 'TV', title: { english: 'One Piece' }, coverImage: { medium: 'https://img/a.jpg' } })
+  assert.equal(cleanMedia({ id: '__proto__' }), null)
+  assert.equal(cleanMedia({ id: { nested: 1 } }), null)
+  assert.equal(cleanMedia({ id: 'tmdb-123' }).id, 'tmdb-123')
+  assert.deepEqual(validateEvent('media', { media: { id: 21 }, episode: 5, key: '21:5' }), { media: { id: 21 }, episode: 5, key: '21:5' })
+  assert.equal(validateEvent('media', { media: { id: 21 }, episode: { number: 'x' } }), null)
+  assert.equal(validateEvent('media', { media: { id: 21 }, episode: -1 }), null)
+  assert.equal(validateEvent('invite', { to: 'b', media: { id: 21 }, episode: 5, time: 1e19 }), null)
+  assert.equal(validateEvent('invite', { to: 'b', media: { id: 21 }, episode: 5, time: 10, toSession: 'abcd' }).toSession, 'abcd')
+})
+
+test('validateEvent index: a whole number in range, never an object', () => {
+  assert.deepEqual(validateEvent('index', { index: 3 }), { index: 3 })
+  assert.deepEqual(validateEvent('index', { index: 0, kind: 'episode', mediaKey: '21:5' }), { index: 0, kind: 'episode', mediaKey: '21:5' })
+  assert.equal(validateEvent('index', { index: { name: 'x.mkv', url: 'http://evil' } }), null)
+  assert.equal(validateEvent('index', { index: 1.5 }), null)
+  assert.equal(validateEvent('index', { index: -1 }), null)
+  assert.equal(validateEvent('index', { index: 1e9 }), null)
+  assert.equal(validateEvent('index', { index: 2, kind: 'weird' }).kind, undefined)
+})
+
+test('validateEvent player / status / countdown / request: times in 0…1e7 s', () => {
+  assert.equal(cleanTime(MAX_TIME_S), MAX_TIME_S)
+  assert.equal(cleanTime(1e19), null)
+  assert.equal(validateEvent('player', { time: 1e19, paused: true }), null)
+  assert.equal(validateEvent('player', { time: -5 }), null)
+  assert.deepEqual(validateEvent('player', { time: 12, paused: 1, action: 'jump', by: 'a', rate: 99, mediaKey: '1:2' }), { time: 12, paused: true, by: 'a', rate: 1, mediaKey: '1:2' })
+  assert.equal(validateEvent('status', { state: 'playing', time: 1e300 }), null)
+  assert.equal(validateEvent('status', { state: 'playing', time: 5, mediaKey: 'k'.repeat(500) }).mediaKey, '')
+  assert.equal(validateEvent('countdown', { time: Infinity }), null)
+  assert.equal(validateEvent('countdown', { time: 3, seconds: 1e9 }).seconds, 10)
+  assert.equal(validateEvent('request', { id: 'r', kind: 'seek', time: 1e19 }), null)
+  assert.deepEqual(validateEvent('request', { id: 'r', kind: 'pause', time: 1e19 }), { id: 'r', kind: 'pause' })
+})
+
+test('validateEvent: chat, ping echo, voice signal, queue rev', () => {
+  assert.equal(validateEvent('message', 'x'.repeat(5000)).length, 2048)
+  assert.equal(validateEvent('message', ''), null)
+  assert.equal(validateEvent('message', { text: 'hi' }), null)
+  assert.deepEqual(validateEvent('ping', { id: 'abc', sentAt: 5, junk: 'x'.repeat(1000) }), { id: 'abc', sentAt: 5 })
+  assert.equal(validateEvent('pong', { id: 'abc' }), null)
+  assert.equal(validateEvent('voiceSignal', { id: 'o', sdp: { type: 'offer', sdp: 'x'.repeat(70_000) } }), null)
+  assert.equal(validateEvent('voiceSignal', { id: 'o', sdp: { type: 'pranswer', sdp: 'v=0' } }), null)
+  assert.equal(validateEvent('queue', { items: [], rev: 1e300 }).rev, Number.MAX_SAFE_INTEGER)
+  assert.equal(validateEvent('queue', { items: [], rev: -3.7 }).rev, 0)
+  assert.equal(validateEvent('host', { hostId: 'h', mode: 'host', hostSession: 'abcd1234' }).hostSession, 'abcd1234')
+  assert.equal(validateEvent('kick', { userId: null }), null)
+  assert.equal(wireId(12), '12')
+  assert.equal(wireId(''), null)
+})
+
+test('memberKey / pairIds: devices of one account are told apart, and sort like their ids', () => {
+  assert.equal(memberKey('12', 'abcd'), '12#abcd')
+  assert.equal(memberKey(12), '12')
+  assert.ok(memberKey('12', 'zzzz') < memberKey('123', 'aaaa'))
+  assert.ok(memberKey('5') < memberKey('7', 'abcd'))
+  assert.deepEqual(pairIds({ userId: '7', sessionId: 'a' }, { userId: '7', sessionId: 'b' }), ['7#a', '7#b'])
+  // An older peer compares userIds: so do we with it.
+  assert.deepEqual(pairIds({ userId: '7', sessionId: 'a' }, { userId: '5' }), ['7', '5'])
+})
+
+test('resolveHostKey: hostSession, else the sender naming itself, else the smallest key with that id', () => {
+  const members = [{ key: '7#a', userId: '7' }, { key: '7#b', userId: '7' }, { key: '9', userId: '9' }]
+  assert.equal(resolveHostKey({ hostId: '7', hostSession: 'b', sender: { key: '9', userId: '9' }, members }), '7#b')
+  assert.equal(resolveHostKey({ hostId: '9', sender: { key: '9', userId: '9' }, members }), '9')
+  assert.equal(resolveHostKey({ hostId: '7', sender: { key: '9', userId: '9' }, members }), '7#a')
+  assert.equal(resolveHostKey({ hostId: '42', sender: { key: '9', userId: '9' }, members }), '42')
+})
+
+test('host election never picks a v1 client nor a skipped member', () => {
+  assert.equal(electFollowingHost({ selfId: 'z', selfFollowing: true, peers: [{ userId: 'a', protocol: 1 }, { userId: 'm', protocol: 2 }] }), 'm')
+  assert.equal(electFollowingHost({ selfId: 'z', selfFollowing: true, peers: [{ userId: 'a', protocol: 2 }, { userId: 'm', protocol: 2 }], skip: ['a'] }), 'm')
+  assert.equal(electFollowingHost({ selfId: 'z', selfFollowing: true, peers: [{ userId: 'a', protocol: 1 }] }), 'z')
+})
+
+test('hostReference: a v2 host that is idle or silent has no position (no stale snap-back)', () => {
+  const lastPlayer = { time: 600, paused: false, at: 0 }
+  assert.equal(hostReference({ status: { state: 'idle', time: 0 }, receivedAt: 0, lastPlayer }, 1_000), null)
+  assert.equal(hostReference({ status: { state: 'loading', time: 0, mediaKey: 'k' }, receivedAt: 0, lastPlayer }, 1_000), null)
+  assert.equal(hostReference({ status: { state: 'playing', time: 10, mediaKey: 'k' }, receivedAt: 0, lastPlayer }, 10 * 60_000), null)
+  assert.deepEqual(hostReference({ status: null, lastPlayer }, 1_000), { time: 601, paused: false, mediaKey: null })
+})
+
+test('playback rate: no auto-sync and a "Different speed" badge', () => {
+  assert.equal(differentRate(1, 1.0000001), false)
+  assert.equal(differentRate(1.25, 1), true)
+  const primed = { streak: 3, lastSyncAt: -Infinity }
+  assert.equal(autoSyncStep(primed, syncInput({ hostStatus: { state: 'playing', time: 110, mediaKey: '1:1', rate: 1.25 } })).seekTo, null)
+  const badge = syncBadge(member({}, { rate: 1.25 }), local(), 10_000)
+  assert.equal(badge.kind, 'speed')
+  assert.equal(badge.text, 'Different speed (1.25×)')
+})
+
+test('nextRtt: smoothed, capped, and not from before a suspension', () => {
+  assert.equal(nextRtt(null, { sentAt: 1_000, now: 1_100 }), 100)
+  assert.equal(nextRtt(100, { sentAt: 1_000, now: 1_200 }), 130)
+  assert.equal(nextRtt(100, { sentAt: 0, now: MAX_RTT_MS + 1 }), null)
+  assert.equal(nextRtt(100, { sentAt: 2_000, now: 1_000 }), null)
+  assert.equal(nextRtt(100, { sentAt: 1_000, now: 1_050, resumedAt: 1_010 }), null)
+})
+
+test('rateStep: a burst, then a few per second', () => {
+  let bucket = null
+  for (let index = 0; index < RATE_BURST; index++) {
+    bucket = rateStep(bucket, 0)
+    assert.ok(bucket.allowed)
+  }
+  assert.equal(rateStep(bucket, 0).allowed, false)
+  assert.ok(rateStep(bucket, 1_000).allowed)
+})
+
+test('parseLobbyCode: 16 hex characters from a code or a link, lower case', () => {
+  assert.equal(parseLobbyCode('0123456789ABCDEF'), '0123456789abcdef')
+  assert.equal(parseLobbyCode('tsumi://w2g/0123456789abcdef/'), '0123456789abcdef')
+  assert.equal(parseLobbyCode('https://tsumi.app/w2g/?c=0123456789abcdef&x=1'), '0123456789abcdef')
+  assert.equal(parseLobbyCode('  0123456789abcdef\n'), '0123456789abcdef')
+  assert.equal(parseLobbyCode('[]^_[]^_[]^_[]^_'), null)
+  assert.equal(parseLobbyCode('0123456789abcdef0'), null)
+  assert.equal(parseLobbyCode('nothing here'), null)
+  assert.equal(parseLobbyCode(null), null)
+})
+
+test('iceServers: STUN, plus a valid TURN server when set', () => {
+  assert.equal(iceServers().length, 1)
+  assert.equal(iceServers({ url: 'https://not-turn' }).length, 1)
+  const servers = iceServers({ url: 'turn:relay.example:3478, turns:relay.example:5349', username: ' me ', credential: 'pw' })
+  assert.deepEqual(servers[1], { urls: ['turn:relay.example:3478', 'turns:relay.example:5349'], username: 'me', credential: 'pw' })
+})
+
+test('index kind and episode checks', () => {
+  assert.equal(indexKind({ index: 1 }, 'tsumi-ios'), 'episode')
+  assert.equal(indexKind({ index: 1 }, 'tsumi-desktop'), 'file')
+  assert.equal(indexKind({ index: 1 }, undefined), 'file')
+  assert.equal(indexKind({ index: 1, kind: 'file' }, 'tsumi-ios'), 'file')
+  assert.equal(sameEpisode('1:2', '1:2'), true)
+  assert.equal(sameEpisode('1:2', '1:3'), false)
+  assert.equal(sameEpisode(undefined, '1:3'), true)
+  assert.equal(sameEpisode('1:2', ''), true)
+})
+
+test('acceptsInvite: toSession picks one device of the account', () => {
+  const base = { to: 'b', selfId: 'b', sessionId: 's1', senderId: 'a#x', selfKey: 'b#s1', hostId: null, effectiveMode: 'everyone' }
+  assert.equal(acceptsInvite(base), true)
+  assert.equal(acceptsInvite({ ...base, toSession: 's1' }), true)
+  assert.equal(acceptsInvite({ ...base, toSession: 's2' }), false)
+  // Our other device may invite us.
+  assert.equal(acceptsInvite({ ...base, senderId: 'b#s2' }), true)
+  assert.equal(acceptsInvite({ ...base, senderId: 'b#s1' }), false)
+})
+
+test('names: capped, and a remote member can not pass for "You"', () => {
+  assert.equal(memberName({ name: 'x'.repeat(50) }).length, 32)
+  assert.equal(remoteName({ id: 'abcdef', name: 'You' }), 'You (abcd)')
+  assert.equal(remoteName({ id: 1, name: 'Alice' }), 'Alice')
+  assert.equal(formatClock(1e19), formatClock(MAX_TIME_S))
+  assert.ok(MAX_EVENT_CHARS > 100_000)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

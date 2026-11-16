@@ -4,15 +4,17 @@ import P2PT from 'p2pt'
 
 import Event, { EventTypes, SYSTEM_MESSAGE } from '@/routes/w2g/components/events.js'
 import {
-  PROTOCOL_VERSION, HEARTBEAT_MS, PING_MS, REQUEST_TIMEOUT_MS, IN_SYNC_S, ACTIONS, REQUEST_KINDS,
+  PROTOCOL_VERSION, HEARTBEAT_MS, PING_MS, REQUEST_TIMEOUT_MS, IN_SYNC_S,
   isFiniteNumber, sameId, normalizeMode, normalizeState, normalizeRate, normalizeReaction, normalizeCountdownSeconds,
-  memberName, expectedTime, syncBadge, selfBadge, autoSyncStep, hostReference, inferAction,
+  memberName, remoteName, expectedTime, syncBadge, selfBadge, autoSyncStep, hostReference, inferAction,
   describeAction, describeRequest, presenceOnStatus, presenceOnTick, describePresence, canInvite, acceptsInvite,
   inviteTarget, formatSource, normalizeNowPlaying, episodeLabelFor, pickFollowingHost, electFollowingHost,
   followBackAction, episodeLabelOf, lobbyReference, canJoinPlayback, offeredMedia, invitePosition, autoStartsMedia,
-  appliesCountdown, FEATURES, normalizeFeatures, normalizeVoice, voiceOffers, voiceLinkAction, acceptsVoiceOffer, duckLevel,
-  emptyQueue, normalizeQueue, queueReduce, queueChanges, sameQueueEntry, describeQueueChange, queueItemLabel, nextEpisodeTarget, acceptsQueue,
-  QUEUE_ADVANCE_S, QUEUE_COUNTDOWN_S
+  appliesCountdown, FEATURES, voiceOffers, voiceLinkAction, acceptsVoiceOffer, duckLevel,
+  emptyQueue, queueReduce, queueChanges, sameQueueEntry, describeQueueChange, queueItemLabel, nextEpisodeTarget, acceptsQueue,
+  QUEUE_ADVANCE_S, QUEUE_COUNTDOWN_S,
+  ChunkAssembler, validateEvent, USER_EVENTS, rateStep, memberKey, pairIds, resolveHostKey, nextRtt, iceServers, indexKind,
+  sameEpisode, MAX_EVENT_CHARS, MAX_INDEX, MAX_MESSAGE_LENGTH, MAX_NAME_LENGTH, TENTATIVE_HOST_MS
 } from '@/routes/w2g/components/sync.js'
 import { VoiceEngine, voiceDuck } from '@/routes/w2g/components/voice.js'
 import Helper from '@/modules/helper.js'
@@ -25,15 +27,19 @@ const debug = Debug('ui:w2g')
 
 /**
  * @typedef {import('@/modules/al.d.ts').Viewer | { id: string, displayName?: string }} W2GUser
- * @typedef {Record<string, { user: W2GUser, peer?: import('p2pt').Peer<any>, userId?: string, protocol?: number, client?: string, features?: string[] }>} PeerList
+ * @typedef {{ user: W2GUser, peer?: import('p2pt').Peer<any>, userId: string, sessionId?: string | null, key: string, protocol?: number, client?: string, features?: string[] }} PeerEntry
+ *   userId: `init.id` as a string (the wire identity); key: memberKey(userId, sessionId), who it is on this device
+ * @typedef {Record<string, PeerEntry>} PeerList
  * @typedef {{ media: object, episode: number | { number: number, season?: number, localEpisode?: number }, key: string }} SharedMedia
  * @typedef {{ message: string, user: W2GUser | null, type: 'incoming' | 'outgoing' | 'system', date: Date, emoji?: string }} ChatEntry
  * @typedef {{ status?: import('./sync.js').Status & { sentAt?: number, source?: string }, receivedAt?: number, rtt?: number, pongAt?: number, joinedAt?: number }} Signal
  * @typedef {{ id: string, kind: 'pause' | 'play' | 'seek', time?: number, userId: string, name: string, expiresAt: number }} HostRequest
  * @typedef {{ from: string, name: string, media: any, episode: SharedMedia['episode'], key: string, time: number, paused: boolean, receivedAt: number }} Invite
  * @typedef {{ joined: boolean, muted: boolean, speaking: boolean, link?: 'connecting' | 'connected' | null, localMuted?: boolean, volume?: number }} MemberVoice
- * @typedef {{ userId: string, user: W2GUser, name: string, isSelf: boolean, isHost: boolean, badge: import('./sync.js').Badge, protocol?: number, client?: string, rtt?: number, source?: string, canInvite?: boolean, voice?: MemberVoice, hasVoice?: boolean }} MemberView
+ * @typedef {{ userId: string, wireId: string, user: W2GUser, name: string, isSelf: boolean, isHost: boolean, badge: import('./sync.js').Badge, protocol?: number, client?: string, rtt?: number, source?: string, canInvite?: boolean, voice?: MemberVoice, hasVoice?: boolean }} MemberView
+ *   userId: the member key, what kick / transferHost / invite / setMemberVoice take; wireId: its `init.id`
  * @typedef {{ joined: boolean, starting: boolean, hasMic: boolean, muted: boolean, pushToTalk: boolean, held: boolean, transmitting: boolean, speaking: boolean, error: string | null }} VoiceView
+ * @typedef {{ peer: import('p2pt').Peer<any>, key: string, userId: string, client?: string }} Sender transport peer of an event
  */
 
 /** v2.4 `voice` payload while not in voice. */
@@ -45,9 +51,10 @@ const JOIN_TTL_MS = 120_000
 const FIRST_JOIN_WINDOW_MS = 20_000
 /** v2.3 "Invite everyone not watching": one invite every 200 ms. */
 const INVITE_ALL_GAP_MS = 200
+/** Two presence ticks (every second) further apart than this: the app was frozen or asleep in between. */
+const SUSPENDED_GAP_MS = 5_000
 
 const MAX_MESSAGES = 200
-const MAX_MESSAGE_LENGTH = 2048
 /** Ids of the events that are sent all the time, kept out of the debug log. */
 const QUIET_EVENTS = new Set([EventTypes.StatusEvent, EventTypes.PingEvent, EventTypes.PongEvent])
 
@@ -68,6 +75,9 @@ function mediaKey ({ media, episode }) {
  * JSON events (who is here, what is playing, play/pause/time, chat...) is exchanged.
  * The protocol is described in ../PROTOCOL.md.
  *
+ * Members are told apart by their key (sync.js memberKey): their `init.id` plus the `init.sessionId` of their lobby
+ * instance, so two devices of one account are two members. Events name members by `init.id` on the wire.
+ *
  * Events emitted for the app:
  * - 'media' (SharedMedia), 'index' (number): start the same title / file
  * - 'player' ({ time, paused, action, by, rate }): apply this state to the player, silently when action is 'sync'
@@ -81,6 +91,7 @@ function mediaKey ({ media, episode }) {
  * - 'request' (HostRequest): someone asks the host for a change
  * - 'invite' (Invite) / 'inviteRemoved' (from): someone invites us to watch, the prompt was answered
  * - 'kicked': the host removed us from the lobby
+ * - 'destroyed': we left the lobby (prompts shown for it can go)
  */
 export class W2GClient extends EventEmitter {
   static #signalingServers = [
@@ -101,17 +112,22 @@ export class W2GClient extends EventEmitter {
   media = null
   #p2pt
   code
+  /** v2.5 `init.sessionId`: random id of this lobby instance, tells our devices apart when they share an account. */
+  sessionId = generateRandomHexCode(16)
   /** @type {import('simple-store-svelte').Writable<ChatEntry[]>} */
   messages = writable([])
 
   /** @type {W2GUser} */
   self
-  /** @type {import('simple-store-svelte').Writable<PeerList>} participants that sent `init`, keyed by transport id (self by its id) */
+  /** @type {import('simple-store-svelte').Writable<PeerList>} participants that sent `init`, keyed by transport id (self by its key) */
   peers
 
-  /** @type {import('simple-store-svelte').Writable<{ hostId: string | null, mode: 'everyone' | 'host', tentative: boolean }>} */
-  lobby = writable({ hostId: null, mode: 'everyone', tentative: false })
-  /** @type {import('simple-store-svelte').Writable<Record<string, Signal>>} last status / RTT per userId */
+  /**
+   * hostId: `init.id` of the host (wire); hostKey: its member key.
+   * @type {import('simple-store-svelte').Writable<{ hostId: string | null, hostKey: string | null, mode: 'everyone' | 'host', tentative: boolean }>}
+   */
+  lobby = writable({ hostId: null, hostKey: null, mode: 'everyone', tentative: false })
+  /** @type {import('simple-store-svelte').Writable<Record<string, Signal>>} last status / RTT per member key */
   signals = writable({})
   /** @type {import('./sync.js').LocalStatus} our own player, `time` read at `at` */
   local = { state: 'idle', time: 0, mediaKey: '', rate: 1, source: '', at: Date.now() }
@@ -129,9 +145,9 @@ export class W2GClient extends EventEmitter {
   countdown = writable(null)
   /** @type {import('simple-store-svelte').Writable<VoiceView>} v2.4 our voice state */
   voice = writable({ joined: false, starting: false, hasMic: false, muted: false, pushToTalk: false, held: false, transmitting: false, speaking: false, error: null })
-  /** @type {import('simple-store-svelte').Writable<Record<string, { joined: boolean, muted: boolean, speaking: boolean }>>} last `voice` per userId */
+  /** @type {import('simple-store-svelte').Writable<Record<string, { joined: boolean, muted: boolean, speaking: boolean }>>} last `voice` per member key */
   voiceStates = writable({})
-  /** @type {import('simple-store-svelte').Writable<Record<string, 'connecting' | 'connected'>>} audio link per userId */
+  /** @type {import('simple-store-svelte').Writable<Record<string, 'connecting' | 'connected'>>} audio link per member key */
   voiceLinks = writable({})
   /** @type {import('simple-store-svelte').Writable<import('./sync.js').Queue>} v2.4 "Up next", owned by the host */
   queue = writable(emptyQueue())
@@ -152,11 +168,11 @@ export class W2GClient extends EventEmitter {
 
   /** @type {Map<string, import('p2pt').Peer<any>>} open data channels by transport id */
   #channels = new Map()
-  /** @type {Set<string>} kicked userIds, ignored for the rest of the session */
+  /** @type {Set<string>} kicked userIds (accounts), ignored for the rest of the session */
   #banned = new Set()
   /** @type {Set<string>} transport ids of the kicked users' channels, ignored while they close */
   #bannedPeers = new Set()
-  /** @type {Map<string, number>} last message time per userId */
+  /** @type {Map<string, number>} last message time per member key */
   #lastSeen = new Map()
   /** @type {{ streak: number, lastSyncAt: number } | null} */
   #autoSync = null
@@ -164,11 +180,11 @@ export class W2GClient extends EventEmitter {
   #lastHostPlayer = null
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
   #requestTimers = new Map()
-  /** @type {Map<string, string>} request id -> requester userId */
+  /** @type {Map<string, string>} request id -> requester member key */
   #requestOwners = new Map()
   /** @type {Set<string>} ids of our own pending requests */
   #myRequests = new Set()
-  /** @type {Map<string, import('./sync.js').Presence>} presence announcements state per userId */
+  /** @type {Map<string, import('./sync.js').Presence>} presence announcements state per member key */
   #presence = new Map()
   /** @type {SharedMedia | null} what we started last (lobby media, our own launch, joined invite) */
   #launched = null
@@ -187,17 +203,42 @@ export class W2GClient extends EventEmitter {
   #joinPrompted = false
   /** @type {Set<ReturnType<typeof setTimeout>>} */
   #inviteTimers = new Set()
+  /** v2.5: P2PT messages reassembled with limits, per peer (see #guardTransport). */
+  #chunks = new ChunkAssembler()
+  /** @type {string | null} transport id of the frame P2PT is parsing */
+  #chunkPeer = null
+  /** @type {Map<string, { tokens: number, at: number, allowed: boolean }>} v2.5 rate limit of hand-made events, per member key */
+  #rates = new Map()
+  /** v2.5: the app was frozen until then (pongs of older pings are no RTT samples). */
+  #resumedAt = -Infinity
+  #lastTickAt = 0
+  /** v2.5: a tentative host that does not claim the role is skipped. */
+  #tentativeTimer = null
+  /** @type {Set<string>} member keys elected that never claimed the role, until a host is confirmed */
+  #electionSkip = new Set()
+  #onOnline = () => this.#p2pt?.requestMorePeers?.()
 
   get inviteLink () {
     return `tsumi://w2g/${this.code}`
   }
 
+  /** Our `init.id`, as the others name us in events. */
   get selfId () {
     return String(this.self.id)
   }
 
+  /** Our member key (v2.5): our id plus our session id. */
+  get selfKey () {
+    return memberKey(this.selfId, this.sessionId)
+  }
+
   get hostId () {
     return this.lobby.value.hostId
+  }
+
+  /** Member key of the host. */
+  get hostKey () {
+    return this.lobby.value.hostKey
   }
 
   get mode () {
@@ -205,12 +246,12 @@ export class W2GClient extends EventEmitter {
   }
 
   get isHost () {
-    return sameId(this.hostId, this.selfId)
+    return this.hostKey != null && this.hostKey === this.selfKey
   }
 
   /** While no host is known, everyone controls playback. */
   get effectiveMode () {
-    return this.hostId == null ? 'everyone' : this.mode
+    return this.hostKey == null ? 'everyone' : this.mode
   }
 
   /** Only the host controls playback and we are not the host. */
@@ -242,19 +283,22 @@ export class W2GClient extends EventEmitter {
     super()
     const viewer = Helper.getUser()
     this.self = viewer ? { ...viewer } : { id: anonymousId }
-    if (!viewer && displayName?.trim()) this.self.displayName = displayName.trim().slice(0, 32)
-    this.peers = writable({ [this.selfId]: { user: this.self, userId: this.selfId, protocol: PROTOCOL_VERSION } })
+    if (!viewer && displayName?.trim()) this.self.displayName = displayName.trim().slice(0, MAX_NAME_LENGTH)
+    this.peers = writable({ [this.selfKey]: { user: this.self, userId: this.selfId, sessionId: this.sessionId, key: this.selfKey, protocol: PROTOCOL_VERSION } })
 
     this.code = code ?? generateRandomHexCode(16)
     // The lobby creator is the first host.
-    if (!code) this.lobby.value = { hostId: this.selfId, mode: 'everyone', tentative: false }
+    if (!code) this.lobby.value = { hostId: this.selfId, hostKey: this.selfKey, mode: 'everyone', tentative: false }
     this.#joinPrompted = !code
     this.#queueKnown = !code
 
     // v2.4 voice chat: the engine does the audio, the lobby decides who to link with.
-    this.#voice = new VoiceEngine({ wantsOffer: userId => this.#voice.joined && voiceOffers(this.selfId, userId) && this.#memberInVoice(userId) })
+    this.#voice = new VoiceEngine({
+      wantsOffer: key => this.#voice.joined && this.#selfOffers(key) && this.#memberInVoice(key),
+      iceServers: () => this.#iceServers()
+    })
     this.#voice.on('state', () => this.#onVoiceEngineState())
-    this.#voice.on('signal', ({ userId, payload }) => this.#sendToUser(userId, new Event(EventTypes.VoiceSignalEvent, payload)))
+    this.#voice.on('signal', ({ userId, payload }) => this.#sendToMember(userId, new Event(EventTypes.VoiceSignalEvent, payload)))
     this.#voice.on('links', () => {
       this.voiceLinks.value = this.#voice.linkStates()
       this.#updateDuck()
@@ -269,12 +313,18 @@ export class W2GClient extends EventEmitter {
     debug(`W2GClient: ${this.code}, ${this.isHost}`)
 
     this.#p2pt = new P2PT(W2GClient.#signalingServers, this.code)
+    // v2.5: the optional TURN server of the settings, for the data channels too (bittorrent-tracker passes
+    // `_rtcConfig` to every simple-peer it creates).
+    this.#p2pt._rtcConfig = { iceServers: this.#iceServers() }
+    this.#guardTransport()
 
     this.#wireEvents()
     this.#p2pt.start()
     this.#heartbeat = setInterval(() => this.#sendStatus(), HEARTBEAT_MS)
     this.#pinger = setInterval(() => this.#pingAll(), PING_MS)
     this.#presenceTicker = setInterval(() => this.#tickPresence(), 1000)
+    // v2.5: back online (network change, sleep): announce again instead of waiting for the next interval.
+    if (typeof window !== 'undefined') window.addEventListener('online', this.#onOnline)
   }
 
   // ---------------------------------------------------------------- public API
@@ -294,17 +344,19 @@ export class W2GClient extends EventEmitter {
     this.#launched = { media, episode, key }
     // Watching on our own: never drag the others.
     if (!this.isFollowing) return
-    this.media = { media, episode, key, localKey: key }
+    this.#setMedia({ media, episode, key, localKey: key })
     this.#sendToPeers(new Event(EventTypes.MediaEvent, { media, episode, key }))
   }
 
-  /** @param {{ index: number }} index */
+  /** @param {{ index: number }} index position in the player's file list */
   mediaIndexChanged (index) {
     debug(`mediaIndexChanged: ${JSON.stringify(this.index)} ${JSON.stringify(index)}`)
-    if (!this.isFollowing) return
-    if (this.index?.index !== index?.index) {
-      this.index = index
-      this.#sendToPeers(new Event(EventTypes.MediaIndexEvent, index))
+    const value = index?.index
+    if (!this.isFollowing || !Number.isInteger(value) || value < 0 || value > MAX_INDEX) return
+    if (this.index?.index !== value) {
+      this.index = { index: value }
+      // v2.5: `kind` says it is a file position; `mediaKey` what we played when it changed.
+      this.#sendToPeers(new Event(EventTypes.MediaIndexEvent, { index: value, kind: 'file', mediaKey: this.local.mediaKey || undefined }))
     }
   }
 
@@ -336,7 +388,7 @@ export class W2GClient extends EventEmitter {
     if (this.controlLocked) {
       const target = this.#hostTarget(Date.now())
       if (target && (target.mediaKey === null || target.mediaKey === this.local.mediaKey)) {
-        this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostId })
+        this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostKey })
       }
       this.emit('blocked', { action, time: state.time, paused })
       return false
@@ -344,7 +396,8 @@ export class W2GClient extends EventEmitter {
 
     this.player = { time: state.time, paused }
     const rate = normalizeRate(state.rate)
-    this.#sendToPeers(new Event(EventTypes.PlayerStateEvent, { time: state.time, paused, by: this.selfId, action, rate }))
+    // v2.5 `mediaKey`: the others only apply it on the same episode.
+    this.#sendToPeers(new Event(EventTypes.PlayerStateEvent, { time: state.time, paused, by: this.selfId, action, rate, mediaKey: this.local.mediaKey || undefined }))
     const text = describeAction({ name: 'You', action, time: state.time, delta: state.delta })
     if (text) this.#system(text)
     return true
@@ -421,12 +474,12 @@ export class W2GClient extends EventEmitter {
       if (join.kind === 'lobby') {
         // v2.3 Join: the reference's expected time and play / pause state, read now that we are loaded.
         const reference = this.#lobbyReferenceId()
-        const target = sameId(reference, this.selfId) ? null : this.#memberPosition(reference, now)
+        const target = reference === this.selfKey ? null : this.#memberPosition(reference, now)
         if (target) this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: reference })
         return
       }
       const target = inviteTarget({ invite: join, host: this.isHost ? null : this.#hostTarget(now), now })
-      this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: target.from === 'host' ? this.hostId : join.from })
+      this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: target.from === 'host' ? this.hostKey : join.from })
       return
     }
     if (!this.isFollowing) return
@@ -439,11 +492,11 @@ export class W2GClient extends EventEmitter {
         return
       }
     }
-    if (this.isHost || this.hostId == null) return
+    if (this.isHost || this.hostKey == null) return
     if (this.effectiveMode !== 'host' && settings.value.w2gAutoSync === false) return
     const target = this.#hostTarget(Date.now())
     if (!target || target.mediaKey === null || target.mediaKey !== this.local.mediaKey) return
-    this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostId })
+    this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostKey })
   }
 
   /** Manual "Resync": jump to the host's expected position and state now. */
@@ -458,7 +511,7 @@ export class W2GClient extends EventEmitter {
       this.emit('info', { text: 'The host is on another episode' })
       return false
     }
-    this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostId })
+    this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostKey })
     return true
   }
 
@@ -472,7 +525,7 @@ export class W2GClient extends EventEmitter {
     }
     const paused = this.local.state !== 'playing' && this.local.state !== 'buffering'
     this.player = { time, paused }
-    this.#sendToPeers(new Event(EventTypes.PlayerStateEvent, { time, paused, by: this.selfId, action: 'sync', rate: this.local.rate }))
+    this.#sendToPeers(new Event(EventTypes.PlayerStateEvent, { time, paused, by: this.selfId, action: 'sync', rate: this.local.rate, mediaKey: this.local.mediaKey || undefined }))
     this.emit('info', { text: 'Everyone was resynced' })
     return true
   }
@@ -480,17 +533,19 @@ export class W2GClient extends EventEmitter {
   /**
    * "Invite to watch": ask a member to play what we play, at our position.
    * Anyone in `everyone` mode, the host only in `host` mode.
+   * @param {string} key member key
    */
-  invite (userId) {
-    const target = String(userId)
-    if (target === this.selfId || !this.#hasUser(target)) return false
+  invite (key) {
+    const target = this.#memberOf(String(key))
+    if (!target?.peer) return false
     if (this.effectiveMode === 'host' && !this.isHost) return false
     // v2.3: our own media when we play one, else the lobby media while the lobby is watching.
     const offer = this.#offer(Date.now())
     if (!offer?.position) return false
     const { media, position } = offer
-    this.#sendToPeers(new Event(EventTypes.InviteEvent, { to: target, media: media.media, episode: media.episode, key: media.key, time: position.time, paused: position.paused, by: this.selfId }))
-    this.#system(`You invited ${this.nameOf(target)}`)
+    // v2.5 `toSession`: only that device of the account takes it.
+    this.#sendToPeers(new Event(EventTypes.InviteEvent, { to: target.userId, toSession: target.sessionId || undefined, media: media.media, episode: media.episode, key: media.key, time: position.time, paused: position.paused, by: this.selfId }))
+    this.#system(`You invited ${this.nameOf(target.key)}`)
     return true
   }
 
@@ -498,10 +553,10 @@ export class W2GClient extends EventEmitter {
   inviteAllNotWatching () {
     if (!this.isHost) return 0
     const targets = this.describeMembers().filter(member => member.canInvite).map(member => member.userId)
-    targets.forEach((userId, index) => {
+    targets.forEach((key, index) => {
       const timer = setTimeout(() => {
         this.#inviteTimers.delete(timer)
-        if (!this.#destroyed) this.invite(userId)
+        if (!this.#destroyed) this.invite(key)
       }, index * INVITE_ALL_GAP_MS)
       this.#inviteTimers.add(timer)
     })
@@ -515,7 +570,7 @@ export class W2GClient extends EventEmitter {
   joinOffer () {
     const media = this.media
     const reference = this.#lobbyReferenceId()
-    if (!canJoinPlayback({ reference, selfId: this.selfId, lobbyKey: media?.key, local: this.local, following: this.isFollowing })) return null
+    if (!canJoinPlayback({ reference, selfId: this.selfKey, lobbyKey: media?.key, local: this.local, following: this.isFollowing })) return null
     return { key: media.key, media: media.media, episode: media.episode, referenceId: reference, name: this.nameOf(reference) }
   }
 
@@ -549,7 +604,7 @@ export class W2GClient extends EventEmitter {
     this.#removeInvite(from)
     const shared = { media: invite.media, episode: invite.episode, key: invite.key, localKey: mediaKey(invite) }
     // Following: it becomes the lobby media like a received `media`. On our own: only played here.
-    if (this.isFollowing) this.media = shared
+    if (this.isFollowing) this.#setMedia(shared)
     this.#launched = { media: invite.media, episode: invite.episode, key: invite.key }
     this.#pendingJoin = { ...invite, joinedAt: Date.now() }
     this.emit('media', shared)
@@ -567,7 +622,7 @@ export class W2GClient extends EventEmitter {
     settings.update(current => ({ ...current, w2gWatchOnMyOwn: !next }))
     if (!next) {
       if (this.isHost) {
-        const target = pickFollowingHost(this.#peerSummaries())
+        const target = pickFollowingHost(this.#electionPeers())
         if (target) this.transferHost(target)
       }
       this.#cancelCountdown()
@@ -615,8 +670,8 @@ export class W2GClient extends EventEmitter {
     const startAt = Date.now()
     const time = this.#localTime(startAt) ?? this.player.time ?? 0
     const value = normalizeCountdownSeconds(seconds)
-    this.#sendToPeers(new Event(EventTypes.CountdownEvent, { time, seconds: value, startAt }))
-    this.#runCountdown({ time, seconds: value, endsAt: startAt + value * 1000, by: this.selfId })
+    this.#sendToPeers(new Event(EventTypes.CountdownEvent, { time, seconds: value, startAt, mediaKey: this.local.mediaKey || undefined }))
+    this.#runCountdown({ time, seconds: value, endsAt: startAt + value * 1000, by: this.selfKey })
     this.#system('You started a countdown')
     return true
   }
@@ -625,30 +680,36 @@ export class W2GClient extends EventEmitter {
   setMode (mode) {
     const next = normalizeMode(mode)
     if (!this.isHost || next === this.mode) return false
-    this.#setLobby({ hostId: this.selfId, mode: next, tentative: false })
-    this.#sendToPeers(new Event(EventTypes.HostEvent, { hostId: this.selfId, mode: next }))
+    this.#setLobby({ hostId: this.selfId, hostKey: this.selfKey, mode: next, tentative: false })
+    this.#sendToPeers(this.#hostEvent(this.selfKey, next))
     return true
   }
 
-  /** Host: give the host role to someone else. */
-  transferHost (userId) {
-    const target = String(userId)
-    if (!this.isHost || target === this.selfId || !this.#hasUser(target)) return false
+  /**
+   * Host: give the host role to someone else.
+   * @param {string} key member key
+   */
+  transferHost (key) {
+    const target = this.#memberOf(String(key))
+    if (!this.isHost || !target?.peer) return false
     // A v1 client would not know it is host: it could not change the mode, kick or answer requests.
-    const protocol = Object.values(this.peers.value).find(entry => entry.peer && entry.userId === target)?.protocol ?? 1
-    if (protocol < PROTOCOL_VERSION) return false
+    if ((target.protocol ?? 1) < PROTOCOL_VERSION) return false
     const mode = this.mode
-    this.#sendToPeers(new Event(EventTypes.HostEvent, { hostId: target, mode }))
-    this.#setLobby({ hostId: target, mode, tentative: false })
+    this.#sendToPeers(this.#hostEvent(target.key, mode))
+    this.#setLobby({ hostId: target.userId, hostKey: target.key, mode, tentative: false })
     return true
   }
 
-  /** Host: remove someone from the lobby. */
-  kick (userId) {
-    const target = String(userId)
-    if (!this.isHost || target === this.selfId) return false
-    this.#sendToPeers(new Event(EventTypes.KickEvent, { userId: target }))
-    this.#ban(target)
+  /**
+   * Host: remove someone from the lobby (every device of that account: kicks name accounts).
+   * @param {string} key member key
+   */
+  kick (key) {
+    const target = this.#memberOf(String(key))
+    // Not ourselves, nor another device of our own account (the others would ban us with it).
+    if (!this.isHost || !target?.peer || sameId(target.userId, this.selfId)) return false
+    this.#sendToPeers(new Event(EventTypes.KickEvent, { userId: target.userId }))
+    this.#ban(target.userId)
     return true
   }
 
@@ -658,7 +719,7 @@ export class W2GClient extends EventEmitter {
    * @param {number} [time] for 'seek'
    */
   request (kind, time) {
-    if (!REQUEST_KINDS.includes(kind) || this.isHost) return false
+    if (!['pause', 'play', 'seek'].includes(kind) || this.isHost) return false
     const payload = { id: generateRandomHexCode(12), kind }
     if (kind === 'seek') {
       if (!isFiniteNumber(time)) return false
@@ -693,7 +754,7 @@ export class W2GClient extends EventEmitter {
     const value = normalizeReaction(emoji)
     if (!value) return false
     this.#sendToPeers(new Event(EventTypes.ReactionEvent, { emoji: value }))
-    this.#showReaction(this.selfId, value)
+    this.#showReaction(this.selfKey, value)
     return true
   }
 
@@ -707,7 +768,7 @@ export class W2GClient extends EventEmitter {
   /** Anonymous user: name shown to the others instead of the id. */
   setDisplayName (name) {
     if (Helper.getUser()) return
-    const value = String(name ?? '').trim().slice(0, 32)
+    const value = String(name ?? '').trim().slice(0, MAX_NAME_LENGTH)
     if ((this.self.displayName || '') === value) return
     if (value) this.self.displayName = value
     else delete this.self.displayName
@@ -715,10 +776,15 @@ export class W2GClient extends EventEmitter {
     this.#sendToPeers(new Event(EventTypes.SessionInitEvent, this.#initPayload()))
   }
 
-  /** Display name of a participant ("You" for ourselves). */
-  nameOf (userId) {
-    if (sameId(userId, this.selfId)) return 'You'
-    return memberName(this.#userOf(userId) ?? { id: userId })
+  /**
+   * Display name of a participant ("You" for ourselves).
+   * @param {string | null | undefined} id member key, or `init.id`
+   */
+  nameOf (id) {
+    if (id == null) return remoteName(null)
+    if (id === this.selfKey || sameId(id, this.selfId)) return 'You'
+    const entry = this.#memberOf(String(id)) ?? this.#memberByUserId(id)
+    return remoteName(entry?.user ?? { id })
   }
 
   /** The host's expected play / pause state, for "Request pause" vs "Request play". */
@@ -733,14 +799,15 @@ export class W2GClient extends EventEmitter {
    */
   describeMembers (now = Date.now()) {
     const signals = this.signals.value
-    const hostId = this.hostId
+    const hostKey = this.hostKey
     /** @type {MemberView[]} */
     const list = [{
-      userId: this.selfId,
+      userId: this.selfKey,
+      wireId: this.selfId,
       user: this.self,
       name: memberName(this.self),
       isSelf: true,
-      isHost: sameId(hostId, this.selfId),
+      isHost: this.isHost,
       badge: this.isFollowing || this.local.state === 'idle' ? selfBadge(this.local) : { kind: 'own', text: 'Watching on your own' },
       protocol: PROTOCOL_VERSION,
       source: this.local.source,
@@ -751,7 +818,7 @@ export class W2GClient extends EventEmitter {
     }]
     const voiceStates = this.voiceStates.value
     const links = this.voiceLinks.value
-    const seen = new Set([this.selfId])
+    const seen = new Set([this.selfKey])
     const invite = {
       offeredKey: this.#offered().offered?.key ?? null,
       effectiveMode: this.effectiveMode,
@@ -759,17 +826,18 @@ export class W2GClient extends EventEmitter {
       now
     }
     for (const entry of Object.values(this.peers.value)) {
-      const userId = entry.userId
-      if (!entry.peer || !userId || seen.has(userId) || this.#banned.has(userId)) continue
-      seen.add(userId)
-      const signal = { ...(signals[userId] || {}), protocol: entry.protocol, lastSeen: this.#lastSeen.get(userId) }
+      const key = entry.key
+      if (!entry.peer || !key || seen.has(key) || this.#banned.has(entry.userId)) continue
+      seen.add(key)
+      const signal = { ...(signals[key] || {}), protocol: entry.protocol, lastSeen: this.#lastSeen.get(key) }
       const badge = syncBadge(signal, this.local, now)
       list.push({
-        userId,
+        userId: key,
+        wireId: entry.userId,
         user: entry.user,
-        name: memberName(entry.user),
+        name: remoteName(entry.user),
         isSelf: false,
-        isHost: sameId(hostId, userId),
+        isHost: key === hostKey,
         badge,
         protocol: entry.protocol,
         client: entry.client,
@@ -779,7 +847,7 @@ export class W2GClient extends EventEmitter {
         following: signal.status?.following !== false,
         canInvite: canInvite({ ...invite, member: { isSelf: false, protocol: entry.protocol, badge, status: signal.status, joinedAt: signal.joinedAt } }),
         hasVoice: !!entry.features?.includes('voice'),
-        voice: { ...(voiceStates[userId] ?? VOICE_OFF), link: links[userId] ?? null, localMuted: this.#voice.mixOf(userId).muted, volume: this.#voice.mixOf(userId).volume }
+        voice: { ...(voiceStates[key] ?? VOICE_OFF), link: links[key] ?? null, localMuted: this.#voice.mixOf(key).muted, volume: this.#voice.mixOf(key).volume }
       })
     }
     return list.sort((a, b) => (Number(b.isHost) - Number(a.isHost)) || (Number(b.isSelf) - Number(a.isSelf)) || a.name.localeCompare(b.name))
@@ -819,18 +887,18 @@ export class W2GClient extends EventEmitter {
 
   /**
    * Local mute / volume (0-1) of a member's voice, only for us.
-   * @param {string} userId
+   * @param {string} key member key
    * @param {{ muted?: boolean, volume?: number }} mix
    */
-  setMemberVoice (userId, mix) {
-    this.#voice.setMix(String(userId), mix)
+  setMemberVoice (key, mix) {
+    this.#voice.setMix(String(key), mix)
   }
 
   // ---------------------------------------------------------------- v2.4 shared queue
 
   /** The queue exists: we are the host, or the host's app supports it. */
   get queueAvailable () {
-    return this.isHost || (this.hostId != null && this.#hasFeature(this.hostId, 'queue'))
+    return this.isHost || (this.hostKey != null && this.#hasFeature(this.hostKey, 'queue'))
   }
 
   /**
@@ -854,7 +922,7 @@ export class W2GClient extends EventEmitter {
       addedByName: memberName(this.self)
     }
     if (this.isHost) return this.#hostQueueChange({ type: 'add', item, by: this.selfId, byName: memberName(this.self), byHost: true }) ? 'added' : 'duplicate'
-    if (!this.#sendToUser(this.hostId, new Event(EventTypes.QueueAddEvent, { item }))) return null
+    if (!this.#sendToMember(this.hostKey, new Event(EventTypes.QueueAddEvent, { item }))) return null
     return this.queue.value.policy === 'approval' ? 'suggested' : 'added'
   }
 
@@ -876,7 +944,7 @@ export class W2GClient extends EventEmitter {
     if (!item || !this.queueAvailable) return false
     const up = !item.votes.includes(this.selfId)
     if (this.isHost) return this.#hostQueueChange({ type: 'vote', id, by: this.selfId, up })
-    this.#sendToUser(this.hostId, new Event(EventTypes.QueueVoteEvent, { id, up }))
+    this.#sendToMember(this.hostKey, new Event(EventTypes.QueueVoteEvent, { id, up }))
     return true
   }
 
@@ -886,7 +954,7 @@ export class W2GClient extends EventEmitter {
     const item = [...this.queue.value.items, ...this.queue.value.pending].find(entry => entry.id === id)
     if (!item || !sameId(item.addedBy, this.selfId)) return false
     this.#queueCancelled.add(id)
-    this.#sendToUser(this.hostId, new Event(EventTypes.QueueRemoveEvent, { id }))
+    this.#sendToMember(this.hostKey, new Event(EventTypes.QueueRemoveEvent, { id }))
     return true
   }
 
@@ -913,7 +981,7 @@ export class W2GClient extends EventEmitter {
     this.cancelAdvance()
     this.#hostQueueChange({ type: 'remove', id, by: this.selfId, byHost: true })
     const shared = { media: item.media, episode: item.episode, key: item.key }
-    this.media = { ...shared, localKey: mediaKey(item) }
+    this.#setMedia({ ...shared, localKey: mediaKey(item) })
     this.#launched = { ...shared }
     this.rejoinOffer.value = null
     this.#pendingRejoin = null
@@ -960,6 +1028,8 @@ export class W2GClient extends EventEmitter {
     clearInterval(this.#heartbeat)
     clearInterval(this.#pinger)
     clearInterval(this.#presenceTicker)
+    clearTimeout(this.#tentativeTimer)
+    if (typeof window !== 'undefined') window.removeEventListener('online', this.#onOnline)
     for (const timer of this.#inviteTimers) clearTimeout(timer)
     this.#inviteTimers.clear()
     this.#presence.clear()
@@ -971,6 +1041,9 @@ export class W2GClient extends EventEmitter {
     for (const timer of this.#requestTimers.values()) clearTimeout(timer)
     this.#requestTimers.clear()
     this.#p2pt?.destroy()
+    this.#chunks.clear()
+    // The app dismisses the prompts of this lobby (invite and Join toasts).
+    this.emit('destroyed')
     this.removeAllListeners()
     this.#p2pt = null
     this.#channels.clear()
@@ -985,8 +1058,58 @@ export class W2GClient extends EventEmitter {
     this.#p2pt.on('peerclose', this.#onPeerclose.bind(this))
   }
 
+  /**
+   * v2.5: P2PT reassembles chunked messages in one table shared by every peer, at whatever chunk index a peer sends,
+   * without any limit (one frame with `c: 4294967294` freezes the app). Its handler is replaced at runtime by
+   * ChunkAssembler: bounded index, size limit per message and in total, per peer, with a timeout.
+   */
+  #guardTransport () {
+    const p2pt = this.#p2pt
+    // P2PT emits 'data' (peer, frame) right before parsing that frame and calling _chunkHandler(frame), which gets no
+    // peer: remember whose frame it is.
+    p2pt.on('data', peer => { this.#chunkPeer = peer?.id ?? null })
+    p2pt._chunkHandler = data => {
+      const peerId = this.#chunkPeer
+      this.#chunkPeer = null
+      if (peerId == null || this.#destroyed) return false
+      return this.#chunks.add(peerId, data, Date.now())
+    }
+    // The assembler forgets a message once it returned it.
+    p2pt._destroyChunks = () => {}
+  }
+
+  /** ICE servers of new links: STUN, plus the optional TURN server of the settings. */
+  #iceServers () {
+    const value = settings.value
+    return iceServers({ url: value.w2gTurnUrl, username: value.w2gTurnUsername, credential: value.w2gTurnCredential })
+  }
+
+  /** v2.5 minimal `init`: who we are for the others, not the whole AniList / MyAnimeList viewer. */
   #initPayload () {
-    return { ...this.self, client: SUPPORTS.isAndroid ? 'tsumi-android' : 'tsumi-desktop', protocol: PROTOCOL_VERSION, features: [...FEATURES] }
+    const self = /** @type {any} */ (this.self)
+    /** @type {Record<string, any>} */
+    const payload = { id: self.id }
+    if (typeof self.name === 'string' && self.name) payload.name = self.name
+    if (self.displayName) payload.displayName = self.displayName
+    if (self.avatar?.medium || self.avatar?.large) payload.avatar = { medium: self.avatar.medium, large: self.avatar.large }
+    if (typeof self.picture === 'string' && self.picture) payload.picture = self.picture
+    return {
+      ...payload,
+      client: SUPPORTS.isAndroid ? 'tsumi-android' : 'tsumi-desktop',
+      protocol: PROTOCOL_VERSION,
+      features: [...FEATURES],
+      sessionId: this.sessionId
+    }
+  }
+
+  /**
+   * `host` naming a member: its `init.id`, plus its session id when it has one (v2.5 `hostSession`).
+   * @param {string} key member key
+   * @param {'everyone' | 'host'} mode
+   */
+  #hostEvent (key, mode) {
+    const member = this.#memberOf(key)
+    return new Event(EventTypes.HostEvent, { hostId: member?.userId ?? key, mode, hostSession: member?.sessionId || undefined })
   }
 
   /**
@@ -1027,13 +1150,13 @@ export class W2GClient extends EventEmitter {
       const { media, episode, key } = this.media
       this.#sendEvent(peer, new Event(EventTypes.MediaEvent, { media, episode, key }))
     }
-    this.#sendEvent(peer, new Event(EventTypes.MediaIndexEvent, this.index))
+    this.#sendEvent(peer, new Event(EventTypes.MediaIndexEvent, { index: this.index.index, kind: 'file' }))
     const now = Date.now()
     const time = this.#localTime(now)
     const state = time !== null
       ? { time, paused: this.local.state !== 'playing' && this.local.state !== 'buffering' }
       : this.player
-    this.#sendEvent(peer, new Event(EventTypes.PlayerStateEvent, { ...state, by: this.selfId, action: 'sync', rate: this.local.rate }))
+    this.#sendEvent(peer, new Event(EventTypes.PlayerStateEvent, { ...state, by: this.selfId, action: 'sync', rate: this.local.rate, mediaKey: this.local.mediaKey || undefined }))
   }
 
   #onPeerconnect (peer) {
@@ -1042,7 +1165,7 @@ export class W2GClient extends EventEmitter {
     this.#channels.set(peer.id, peer)
     this.#sendEvent(peer, new Event(EventTypes.SessionInitEvent, this.#initPayload()))
     if (this.isHost) {
-      this.#sendEvent(peer, new Event(EventTypes.HostEvent, { hostId: this.selfId, mode: this.mode }))
+      this.#sendEvent(peer, this.#hostEvent(this.selfKey, this.mode))
       this.#sendInitialSessionState(peer)
       // v2.4: late joiners get the current queue.
       this.#sendEvent(peer, new Event(EventTypes.QueueEvent, this.queue.value))
@@ -1055,6 +1178,7 @@ export class W2GClient extends EventEmitter {
   #onPeerclose (peer) {
     if (this.#destroyed) return
     debug(`#onPeerclose: ${peer.id}`)
+    this.#chunks.forget(peer.id)
     this.#channels.delete(peer.id)
     const entry = this.peers.value[peer.id]
     if (!entry) return
@@ -1062,17 +1186,34 @@ export class W2GClient extends EventEmitter {
       delete peers[peer.id]
       return peers
     })
-    const userId = entry.userId
-    if (!userId || this.#hasUser(userId)) return
+    const key = entry.key
+    if (!key || this.#hasMember(key)) return
+    this.#forgetMember(key)
+    if (!this.#banned.has(entry.userId)) this.#system(`${remoteName(entry.user)} left`)
+    if (key === this.hostKey) this.#migrateHost()
+  }
+
+  /** A member left: its signals, voice, invites and requests go. */
+  #forgetMember (key) {
     this.signals.update(signals => {
-      delete signals[userId]
+      delete signals[key]
       return signals
     })
-    this.#lastSeen.delete(userId)
-    this.#presence.delete(userId)
-    this.#forgetVoice(userId)
-    if (!this.#banned.has(userId)) this.#system(`${memberName(entry.user)} left`)
-    if (sameId(userId, this.hostId)) this.#migrateHost()
+    this.#lastSeen.delete(key)
+    this.#presence.delete(key)
+    this.#rates.delete(key)
+    this.#forgetVoice(key)
+    // v2.5: its invite prompt and its requests can't be answered anymore.
+    this.#removeInvite(key)
+    const requests = this.requests.value.filter(request => request.userId === key)
+    if (requests.length) {
+      for (const request of requests) {
+        clearTimeout(this.#requestTimers.get(request.id))
+        this.#requestTimers.delete(request.id)
+      }
+      this.requests.update(list => list.filter(request => request.userId !== key))
+    }
+    for (const [id, owner] of this.#requestOwners) if (owner === key) this.#requestOwners.delete(id)
   }
 
   /** Closes every data channel of a transport peer. */
@@ -1092,94 +1233,117 @@ export class W2GClient extends EventEmitter {
    * @param {Event | string} data
    */
   #onMsg (peer, data) {
-    if (this.#destroyed) return
-    try {
-      data = typeof data === 'string' ? JSON.parse(data) : data
-    } catch (error) {
-      debug('Ignoring malformed message', error)
-      return
-    }
-    if (!data || typeof data !== 'object' || typeof data.type !== 'string') return
-    if (!QUIET_EVENTS.has(data.type)) debug(`#onMsg: ${peer.id} ${JSON.stringify(data)}`)
-
-    const userId = this.#userIdOf(peer)
-    if (this.#banned.has(userId) || this.#bannedPeers.has(peer.id)) {
+    if (this.#destroyed || !peer) return
+    if (this.#bannedPeers.has(peer.id)) {
       this.#closePeer(peer.id)
       return
     }
-    this.#lastSeen.set(userId, Date.now())
-    const payload = data.payload
+    // v2.5: P2PT emits 'peerconnect' once, when the first channel of a peer opens. If that channel failed and a backup
+    // one opened instead, it never comes: a message on a channel we never saw introduces the peer now (else the
+    // link is one-way: we would never send it anything).
+    if (!this.#channels.has(peer.id) && this.#p2pt?.peers?.[peer.id]) this.#onPeerconnect(peer)
+    if (typeof data === 'string') {
+      // v2.5: nothing longer than MAX_EVENT_CHARS is parsed.
+      if (data.length > MAX_EVENT_CHARS) return
+      try {
+        data = JSON.parse(data)
+      } catch (error) {
+        debug('Ignoring malformed message', error)
+        return
+      }
+    }
+    if (!data || typeof data !== 'object' || typeof data.type !== 'string') return
+    const type = data.type
+    // v2.5: one validation layer, every payload is cleaned (types, ranges, lengths) or the event is dropped.
+    const payload = validateEvent(type, data.payload)
+    if (payload === null) {
+      debug('Ignoring invalid or unknown message', type)
+      return
+    }
+    if (!QUIET_EVENTS.has(type)) debug(`#onMsg: ${peer.id} ${JSON.stringify(data)}`)
 
-    switch (data.type) {
+    const entry = this.peers.value[peer.id]
+    /** @type {Sender} */
+    const sender = { peer, key: entry?.key ?? String(peer.id), userId: entry?.userId ?? String(peer.id), client: entry?.client }
+    if (this.#banned.has(sender.userId)) {
+      this.#closePeer(peer.id)
+      return
+    }
+    const now = Date.now()
+    this.#lastSeen.set(sender.key, now)
+    // v2.5: chat, reactions, requests, invites and queue changes: a burst, then a few per second.
+    if (USER_EVENTS.includes(type)) {
+      const bucket = rateStep(this.#rates.get(sender.key), now)
+      this.#rates.set(sender.key, bucket)
+      if (!bucket.allowed) {
+        debug('Rate limited', sender.key, type)
+        return
+      }
+    }
+
+    switch (type) {
       case EventTypes.SessionInitEvent:
         this.#onInit(peer, payload)
         break
       case EventTypes.MediaEvent:
-        this.#onMedia(userId, payload)
+        this.#onMedia(sender, payload)
         break
-      case EventTypes.MediaIndexEvent: {
-        if (payload?.index == null) break
-        if (this.index?.index !== payload.index) {
-          this.index = payload
-          if (this.#appliesLobbyState(userId) && this.local.mediaKey === this.media?.key) this.emit('index', payload.index)
-        }
+      case EventTypes.MediaIndexEvent:
+        this.#onIndex(sender, payload)
         break
-      }
       case EventTypes.PlayerStateEvent:
-        this.#onPlayer(userId, payload)
+        this.#onPlayer(sender, payload)
         break
       case EventTypes.MessageEvent:
-        this.#onMessage(peer, userId, payload)
+        this.#onMessage(sender, payload)
         break
       case EventTypes.HostEvent:
-        this.#onHost(peer, userId, payload)
+        this.#onHost(sender, payload)
         break
       case EventTypes.StatusEvent:
-        this.#onStatus(userId, payload)
+        this.#onStatus(sender.key, payload)
         break
       case EventTypes.PingEvent:
-        if (payload != null) this.#sendEvent(peer, new Event(EventTypes.PongEvent, payload))
+        this.#sendEvent(peer, new Event(EventTypes.PongEvent, payload))
         break
       case EventTypes.PongEvent:
-        this.#onPong(userId, payload)
+        this.#onPong(sender.key, payload)
         break
       case EventTypes.RequestEvent:
-        this.#onRequest(userId, payload)
+        this.#onRequest(sender.key, payload)
         break
       case EventTypes.RequestReplyEvent:
-        this.#onRequestReply(userId, payload)
+        this.#onRequestReply(sender.key, payload)
         break
       case EventTypes.KickEvent:
-        this.#onKick(userId, payload)
+        this.#onKick(sender.key, payload)
         break
-      case EventTypes.ReactionEvent: {
-        const emoji = normalizeReaction(payload?.emoji)
-        if (emoji) this.#showReaction(userId, emoji)
+      case EventTypes.ReactionEvent:
+        this.#showReaction(sender.key, payload.emoji)
         break
-      }
       case EventTypes.CountdownEvent:
-        this.#onCountdown(userId, payload)
+        this.#onCountdown(sender.key, payload)
         break
       case EventTypes.InviteEvent:
-        this.#onInvite(userId, payload)
+        this.#onInvite(sender.key, payload)
         break
       case EventTypes.VoiceEvent:
-        this.#onVoice(userId, payload)
+        this.#onVoice(sender.key, payload)
         break
       case EventTypes.VoiceSignalEvent:
-        this.#onVoiceSignal(userId, payload)
+        this.#onVoiceSignal(sender.key, payload)
         break
       case EventTypes.QueueEvent:
-        this.#onQueue(userId, payload)
+        this.#onQueue(sender.key, payload)
         break
       case EventTypes.QueueAddEvent:
-        if (this.isHost) this.#hostQueueChange({ type: 'add', item: payload?.item, by: userId, byName: this.nameOf(userId), byHost: false })
+        if (this.isHost) this.#hostQueueChange({ type: 'add', item: payload.item, by: sender.userId, byName: this.nameOf(sender.key), byHost: false })
         break
       case EventTypes.QueueVoteEvent:
-        if (this.isHost && payload?.id != null) this.#hostQueueChange({ type: 'vote', id: String(payload.id), by: userId, up: payload.up === true })
+        if (this.isHost) this.#hostQueueChange({ type: 'vote', id: payload.id, by: sender.userId, up: payload.up })
         break
       case EventTypes.QueueRemoveEvent:
-        if (this.isHost && payload?.id != null) this.#hostQueueChange({ type: 'remove', id: String(payload.id), by: userId, byHost: false })
+        if (this.isHost) this.#hostQueueChange({ type: 'remove', id: payload.id, by: sender.userId, byHost: false })
         break
       default:
         debug('Ignoring unknown message type', data)
@@ -1188,46 +1352,67 @@ export class W2GClient extends EventEmitter {
 
   // ---------------------------------------------------------------- incoming events
 
-  #onInit (peer, payload) {
-    if (!payload || payload.id == null || payload.id === '') return
-    const userId = String(payload.id)
+  /**
+   * @param {import('p2pt').Peer} peer
+   * @param {Record<string, any>} user the cleaned `init` (sync.js validateEvent)
+   */
+  #onInit (peer, user) {
+    const userId = String(user.id)
+    const sessionId = user.sessionId ?? null
+    const key = memberKey(userId, sessionId)
     if (this.#banned.has(userId)) {
       this.#bannedPeers.add(peer.id)
       this.#closePeer(peer.id)
       return
     }
-    const known = this.#hasUser(userId)
+    // Our own instance (a channel back to ourselves, or someone copying our session id).
+    if (key === this.selfKey) return
+    const known = this.#hasMember(key)
+    // Another channel already speaks for that member: an older app (no session id) that came back before its
+    // previous channel closed.
+    const again = Object.entries(this.peers.value).some(([peerId, entry]) => peerId !== peer.id && entry.peer && entry.key === key)
     this.peers.update(peers => {
       peers[peer.id] = {
         peer,
-        user: payload,
+        user,
         userId,
+        sessionId,
+        key,
         // A v1 client sends no `protocol`.
-        protocol: isFiniteNumber(payload.protocol) ? payload.protocol : 1,
-        client: typeof payload.client === 'string' ? payload.client : undefined,
+        protocol: isFiniteNumber(user.protocol) ? user.protocol : 1,
+        client: user.client,
         // v2.4: what the client can do ("voice", "queue").
-        features: normalizeFeatures(payload.features)
+        features: user.features
       }
       return peers
     })
-    this.#lastSeen.set(userId, Date.now())
-    if (this.#firstPeerAt === null) this.#firstPeerAt = Date.now()
+    const now = Date.now()
+    this.#lastSeen.set(key, now)
+    if (this.#firstPeerAt === null) this.#firstPeerAt = now
     if (!known) {
       this.signals.update(signals => {
-        signals[userId] = { ...(signals[userId] || {}), joinedAt: Date.now() }
+        signals[key] = { ...(signals[key] || {}), joinedAt: now }
         return signals
       })
-      this.#system(`${memberName(payload)} joined`)
+      this.#system(`${remoteName(user)} joined`)
     }
+    // That member is the host but came back as a new instance: it does not know it is host (only the host tells
+    // newcomers), tell it.
+    if (again && key === this.hostKey && !this.isHost && !this.lobby.value.tentative) this.#sendEvent(peer, this.#hostEvent(key, this.mode))
   }
 
-  #onMedia (senderId, shared) {
-    if (!shared?.media?.id) return
+  /**
+   * @param {Sender} sender
+   * @param {{ media: any, episode: any, key: string }} shared
+   */
+  #onMedia (sender, shared) {
+    // v2.5: in `host` mode only the host changes the lobby media.
+    if (this.effectiveMode === 'host' && sender.key !== this.hostKey) return
     const localKey = mediaKey(shared)
     // Keep the sender's key so every client of the lobby compares the same string.
-    const key = typeof shared.key === 'string' && shared.key ? shared.key : localKey
+    const key = shared.key || localKey
     if (key === this.media?.key) return
-    this.media = { ...shared, key, localKey }
+    this.#setMedia({ ...shared, key, localKey })
     // Watching on our own: remember the lobby media for "Rejoin", but do not start it.
     if (!this.isFollowing) {
       if (this.rejoinOffer.value) this.rejoinOffer.value = { media: shared.media, episode: shared.episode, key }
@@ -1235,178 +1420,201 @@ export class W2GClient extends EventEmitter {
     }
     // v2.3: nothing starts on its own for a newcomer (the lobby state sent after init) or an idle member:
     // they get the Join card. A follower already watching moves on to the new title.
-    if (!this.#appliesLobbyState(senderId)) return
+    if (!this.#appliesLobbyState(sender.key)) return
     this.#launched = { media: shared.media, episode: shared.episode, key }
     this.emit('media', this.media)
   }
 
-  /** v2.3: a lobby `media` / `index` starts our player only when following, watching, and not the newcomer state. */
-  #appliesLobbyState (senderId) {
-    return autoStartsMedia({ following: this.isFollowing, localState: this.local.state, senderJoinedAt: this.signals.value[senderId]?.joinedAt, now: Date.now() })
+  /**
+   * @param {Sender} sender
+   * @param {{ index: number, kind?: 'file' | 'episode', mediaKey?: string }} payload
+   */
+  #onIndex (sender, payload) {
+    // v2.5: only the host in `host` mode; an episode-list position (iOS) means nothing in our file list; and not
+    // from another episode than ours.
+    if (this.effectiveMode === 'host' && sender.key !== this.hostKey) return
+    if (indexKind(payload, sender.client) !== 'file') return
+    if (!sameEpisode(payload.mediaKey, this.local.mediaKey)) return
+    if (this.index?.index === payload.index) return
+    this.index = { index: payload.index }
+    if (this.#appliesLobbyState(sender.key) && this.local.mediaKey === this.media?.key) this.emit('index', payload.index)
   }
 
-  #onPlayer (senderId, payload) {
-    if (!isFiniteNumber(payload?.time)) return
-    const paused = !!payload.paused
-    const by = payload.by != null && payload.by !== '' ? String(payload.by) : senderId
-    if (this.effectiveMode === 'host' && !sameId(by, this.hostId)) {
-      debug(`Ignoring player event of ${by}: only the host controls playback`)
+  /** v2.3: a lobby `media` / `index` starts our player only when following, watching, and not the newcomer state. */
+  #appliesLobbyState (senderKey) {
+    return autoStartsMedia({ following: this.isFollowing, localState: this.local.state, senderJoinedAt: this.signals.value[senderKey]?.joinedAt, now: Date.now() })
+  }
+
+  /**
+   * @param {Sender} sender
+   * @param {{ time: number, paused: boolean, by?: string, action?: string, rate?: number, mediaKey?: string }} payload
+   */
+  #onPlayer (sender, payload) {
+    // v2.5: in `host` mode only what comes from the host's own channel is applied: `by` is just a name.
+    if (this.effectiveMode === 'host' && sender.key !== this.hostKey) {
+      debug(`Ignoring player event of ${sender.key}: only the host controls playback`)
       return
     }
+    // Who is named: the sender (v1 senders omit `by`), or the member it acts for.
+    const by = payload.by != null && !sameId(payload.by, sender.userId) ? payload.by : sender.key
+    const { time, paused } = payload
     const now = Date.now()
-    const hasAction = ACTIONS.includes(payload.action)
+    const hasAction = !!payload.action
     let action = hasAction ? payload.action : inferAction(this.player, { paused })
     const reference = this.#localTime(now) ?? this.player.time
     // v1 clients echo every state they apply: a "seek" that moves nothing is not announced.
-    if (!hasAction && action === 'seek' && isFiniteNumber(reference) && Math.abs(payload.time - reference) < IN_SYNC_S) action = 'sync'
+    if (!hasAction && action === 'seek' && isFiniteNumber(reference) && Math.abs(time - reference) < IN_SYNC_S) action = 'sync'
     const rate = normalizeRate(payload.rate)
 
-    this.player = { time: payload.time, paused }
-    if (sameId(by, this.hostId)) this.#lastHostPlayer = { time: payload.time, paused, rate, at: now }
-    // Watching on our own: keep track of the lobby, but do not apply nor announce over the video.
-    // v2.3: neither when our player is on another media (e.g. the sync sent to a newcomer).
-    const otherMedia = !!this.local.mediaKey && !!this.media?.key && this.local.mediaKey !== this.media.key
+    this.player = { time, paused }
+    if (sender.key === this.hostKey) this.#lastHostPlayer = { time, paused, rate, at: now }
+    // Watching on our own: keep track of the lobby, but do not apply nor announce over the video. Neither from
+    // another episode: v2.5 senders say which one (`mediaKey`); for older ones, our player on another media than
+    // the lobby's (e.g. the sync sent to a newcomer).
+    const otherMedia = payload.mediaKey
+      ? !sameEpisode(payload.mediaKey, this.local.mediaKey)
+      : !!this.local.mediaKey && !!this.media?.key && this.local.mediaKey !== this.media.key
     const following = this.isFollowing && !otherMedia
     if (following) {
       this.#cancelCountdown()
-      this.emit('player', { time: payload.time, paused, action, by, rate })
+      this.emit('player', { time, paused, action, by, rate })
     }
 
     if (action === 'sync') return
-    const delta = following && action === 'seek' && isFiniteNumber(reference) ? payload.time - reference : null
-    const text = describeAction({ name: this.nameOf(by), action, time: payload.time, delta })
+    const delta = following && action === 'seek' && isFiniteNumber(reference) ? time - reference : null
+    const text = describeAction({ name: this.nameOf(by), action, time, delta })
     if (!text) return
     this.#system(text)
     if (following) this.emit('notice', { text, by, action })
   }
 
-  #onMessage (peer, userId, payload) {
-    if (typeof payload !== 'string' || !payload) return
-    const message = payload.slice(0, MAX_MESSAGE_LENGTH)
+  /**
+   * @param {Sender} sender
+   * @param {string} message
+   */
+  #onMessage (sender, message) {
     // A message can arrive before the sender introduced itself.
-    const user = this.peers.value[peer.id]?.user || { id: peer.id }
+    const user = this.peers.value[sender.peer.id]?.user || { id: sender.peer.id }
     this.#push({ message, user, type: 'incoming', date: new Date() })
-    this.emit('chat', { userId, name: memberName(user), user, message })
+    this.emit('chat', { userId: sender.key, name: remoteName(user), user, message })
   }
 
-  #onHost (peer, senderId, payload) {
-    if (payload?.hostId == null || payload.hostId === '') return
-    const hostId = String(payload.hostId)
-    const mode = normalizeMode(payload.mode)
-    const { hostId: current, tentative } = this.lobby.value
+  /**
+   * @param {Sender} sender
+   * @param {{ hostId: string, mode: 'everyone' | 'host', hostSession?: string }} payload
+   */
+  #onHost (sender, payload) {
+    const hostKey = resolveHostKey({ hostId: payload.hostId, hostSession: payload.hostSession, sender, members: this.#identities() })
+    const next = { hostId: payload.hostId, hostKey, mode: payload.mode, tentative: false }
+    const { hostKey: current, tentative } = this.lobby.value
     // Accept `host` only from the current host, or from anyone while no host is known.
-    if (current != null && !tentative && !sameId(senderId, current)) {
-      // Two hosts (after a split): the smallest userId keeps the role.
-      const rivalClaim = this.isHost && sameId(hostId, senderId)
-      if (!(rivalClaim && senderId < this.selfId)) {
-        if (this.isHost) this.#sendEvent(peer, new Event(EventTypes.HostEvent, { hostId: this.selfId, mode: this.mode }))
+    if (current != null && !tentative && sender.key !== current) {
+      // Two hosts (after a split or a reconnect): the smallest key keeps the role.
+      const rivalClaim = this.isHost && hostKey === sender.key
+      if (!(rivalClaim && sender.key < this.selfKey)) {
+        if (this.isHost) this.#sendEvent(sender.peer, this.#hostEvent(this.selfKey, this.mode))
         return
       }
+      // v2.5: we yield. The members who follow us only take `host` from us: pass the winner on, or they would keep
+      // a host that no longer acts as one.
+      this.#setLobby(next)
+      this.#sendToPeers(this.#hostEvent(hostKey, next.mode))
+      return
     }
-    this.#setLobby({ hostId, mode, tentative: false })
+    this.#setLobby(next)
   }
 
-  #onStatus (userId, payload) {
-    const state = normalizeState(payload?.state)
-    if (!state || !isFiniteNumber(payload.time)) return
+  #onStatus (key, status) {
     const now = Date.now()
-    const status = {
-      state,
-      time: payload.time,
-      mediaKey: payload.mediaKey == null ? '' : String(payload.mediaKey),
-      rate: normalizeRate(payload.rate),
-      sentAt: isFiniteNumber(payload.sentAt) ? payload.sentAt : undefined,
-      // v2.1 / v2.2 optional fields (absent: no source, following).
-      source: formatSource(payload.source),
-      following: payload.following !== false,
-      nowPlaying: normalizeNowPlaying(payload.nowPlaying)
-    }
     this.signals.update(signals => {
-      signals[userId] = { ...(signals[userId] || {}), status, receivedAt: now }
+      signals[key] = { ...(signals[key] || {}), status, receivedAt: now }
       return signals
     })
-    if (!sameId(userId, this.selfId) && !this.#banned.has(userId)) {
-      const { presence, announcements } = presenceOnStatus(this.#presence.get(userId), status, now)
-      this.#presence.set(userId, presence)
-      this.#announce(userId, announcements)
+    if (key !== this.selfKey) {
+      const { presence, announcements } = presenceOnStatus(this.#presence.get(key), status, now)
+      this.#presence.set(key, presence)
+      this.#announce(key, announcements)
     }
-    if (sameId(userId, this.hostId) && !this.isHost) this.#checkAutoSync(now)
+    if (key === this.hostKey && !this.isHost) this.#checkAutoSync(now)
     this.#checkFirstJoin(now)
   }
 
-  #onPong (userId, payload) {
-    if (!isFiniteNumber(payload?.sentAt)) return
-    const rtt = Date.now() - payload.sentAt
-    if (rtt < 0 || rtt > 60_000) return
+  #onPong (key, payload) {
+    const now = Date.now()
+    // v2.5: smoothed, without samples above 5 s or from pings sent before the app was frozen.
+    const rtt = nextRtt(this.signals.value[key]?.rtt, { sentAt: payload.sentAt, now, resumedAt: this.#resumedAt })
     this.signals.update(signals => {
-      signals[userId] = { ...(signals[userId] || {}), rtt, pongAt: Date.now() }
+      signals[key] = { ...(signals[key] || {}), ...(rtt === null ? {} : { rtt }), pongAt: now }
       return signals
     })
   }
 
-  #onRequest (userId, payload) {
-    const kind = payload?.kind
-    if (!REQUEST_KINDS.includes(kind) || payload.id == null || payload.id === '') return
-    if (kind === 'seek' && !isFiniteNumber(payload.time)) return
-    const id = String(payload.id)
-    const name = this.nameOf(userId)
-    this.#requestOwners.set(id, userId)
+  #onRequest (key, payload) {
+    const { id, kind } = payload
+    const name = this.nameOf(key)
+    this.#requestOwners.set(id, key)
     this.#system(describeRequest(name, { kind, time: payload.time }))
     if (!this.isHost || this.#requestTimers.has(id)) return
     /** @type {HostRequest} */
-    const request = { id, kind, time: kind === 'seek' ? payload.time : undefined, userId, name, expiresAt: Date.now() + REQUEST_TIMEOUT_MS }
+    const request = { id, kind, time: kind === 'seek' ? payload.time : undefined, userId: key, name, expiresAt: Date.now() + REQUEST_TIMEOUT_MS }
     this.requests.update(list => [...list.filter(item => item.id !== id), request])
     // No answer within 15 s counts as declined.
     this.#requestTimers.set(id, setTimeout(() => this.answerRequest(id, false, true), REQUEST_TIMEOUT_MS))
     this.emit('request', request)
   }
 
-  #onRequestReply (senderId, payload) {
-    if (!sameId(senderId, this.hostId) || payload?.id == null) return
-    const id = String(payload.id)
+  #onRequestReply (key, payload) {
+    if (key !== this.hostKey) return
+    const id = payload.id
     const mine = this.#myRequests.delete(id)
     const owner = this.#requestOwners.get(id)
     this.#requestOwners.delete(id)
     const whose = mine ? 'your' : owner ? `${this.nameOf(owner)}'s` : 'a'
-    const text = `${this.nameOf(senderId)} ${payload.accepted ? 'accepted' : 'declined'} ${whose} request`
+    const text = `${this.nameOf(key)} ${payload.accepted ? 'accepted' : 'declined'} ${whose} request`
     this.#system(text)
     if (mine) this.emit('info', { text })
   }
 
-  #onKick (senderId, payload) {
-    if (!sameId(senderId, this.hostId) || payload?.userId == null) return
-    const target = String(payload.userId)
-    if (target === this.selfId) {
+  #onKick (key, payload) {
+    if (key !== this.hostKey) return
+    const target = payload.userId
+    if (sameId(target, this.selfId)) {
       this.emit('kicked')
       return
     }
     this.#ban(target)
   }
 
-  #onCountdown (senderId, payload) {
-    if (!sameId(senderId, this.hostId) && this.effectiveMode !== 'everyone') return
-    if (!isFiniteNumber(payload?.time) || payload.time < 0) return
-    const seconds = normalizeCountdownSeconds(payload.seconds)
+  #onCountdown (key, payload) {
+    if (key !== this.hostKey && this.effectiveMode !== 'everyone') return
+    const seconds = payload.seconds
     // startAt is on the sender's clock: count from the reception, minus half the trip.
-    const rtt = this.signals.value[senderId]?.rtt
+    const rtt = this.signals.value[key]?.rtt
     const endsAt = Date.now() + seconds * 1000 - (isFiniteNumber(rtt) ? rtt / 2 : 0)
-    // Watching on our own: not applied. v2.4: nor on another episode than the lobby's.
-    if (this.isFollowing && appliesCountdown({ localKey: this.local.mediaKey, lobbyKey: this.media?.key })) this.#runCountdown({ time: payload.time, seconds, endsAt, by: senderId })
-    this.#system(`${this.nameOf(senderId)} started a countdown`)
+    // Watching on our own: not applied. v2.4: nor on another episode than the lobby's; v2.5: nor than the sender's.
+    const applies = appliesCountdown({ localKey: this.local.mediaKey, lobbyKey: this.media?.key }) && sameEpisode(payload.mediaKey, this.local.mediaKey)
+    if (this.isFollowing && applies) this.#runCountdown({ time: payload.time, seconds, endsAt, by: key })
+    this.#system(`${this.nameOf(key)} started a countdown`)
   }
 
   // ---------------------------------------------------------------- host, sync, helpers
 
-  /** @param {{ hostId: string | null, mode: 'everyone' | 'host', tentative: boolean }} next */
+  /** @param {{ hostId: string | null, hostKey: string | null, mode: 'everyone' | 'host', tentative: boolean }} next */
   #setLobby (next) {
     const previous = this.lobby.value
     this.lobby.value = next
-    const hostChanged = !sameId(previous.hostId, next.hostId)
+    if (!next.tentative) {
+      // A host is confirmed: the next election starts over.
+      clearTimeout(this.#tentativeTimer)
+      this.#tentativeTimer = null
+      this.#electionSkip.clear()
+    }
+    const hostChanged = previous.hostKey !== next.hostKey
     if (hostChanged) {
       this.#autoSync = null
       this.#lastHostPlayer = null
-      if (next.hostId != null) this.#system(sameId(next.hostId, this.selfId) ? 'You are now the host' : `${this.nameOf(next.hostId)} is now the host`)
-      if (sameId(previous.hostId, this.selfId)) {
+      if (next.hostKey != null) this.#system(next.hostKey === this.selfKey ? 'You are now the host' : `${this.nameOf(next.hostKey)} is now the host`)
+      if (previous.hostKey === this.selfKey) {
         // No longer host: pending requests go to the new host.
         for (const timer of this.#requestTimers.values()) clearTimeout(timer)
         this.#requestTimers.clear()
@@ -1415,7 +1623,7 @@ export class W2GClient extends EventEmitter {
         this.#pendingQueueStart = null
       }
       // v2.4: a new host takes over its copy of the queue and shares it at once.
-      if (sameId(next.hostId, this.selfId) && !next.tentative) {
+      if (next.hostKey === this.selfKey && !next.tentative) {
         this.#queueKnown = true
         this.#sendToPeers(new Event(EventTypes.QueueEvent, this.queue.value))
       }
@@ -1423,21 +1631,33 @@ export class W2GClient extends EventEmitter {
     if (previous.mode !== next.mode) this.#system(next.mode === 'host' ? 'Only the host controls playback now' : 'Everyone can control playback now')
   }
 
-  /** The host left: the smallest userId among us and the connected peers takes over. */
+  /**
+   * The host left: the smallest member key among us and the connected v2 peers takes over. v2.5: a v1 client is never
+   * elected, and an elected member that does not claim the role within TENTATIVE_HOST_MS is skipped.
+   */
   #migrateHost () {
+    clearTimeout(this.#tentativeTimer)
+    this.#tentativeTimer = null
     // Independent members are skipped, unless nobody follows.
-    const elected = electFollowingHost({ selfId: this.selfId, selfFollowing: this.isFollowing, peers: this.#peerSummaries() })
-    if (elected === this.selfId) {
-      this.#setLobby({ hostId: this.selfId, mode: this.mode, tentative: false })
-      this.#sendToPeers(new Event(EventTypes.HostEvent, { hostId: this.selfId, mode: this.mode }))
-    } else {
-      // Until the elected client confirms with `host`, accept a claim from anyone.
-      this.#setLobby({ hostId: elected, mode: this.mode, tentative: true })
+    const elected = electFollowingHost({ selfId: this.selfKey, selfFollowing: this.isFollowing, peers: this.#electionPeers(), skip: this.#electionSkip }) ?? this.selfKey
+    if (elected === this.selfKey) {
+      this.#setLobby({ hostId: this.selfId, hostKey: this.selfKey, mode: this.mode, tentative: false })
+      this.#sendToPeers(this.#hostEvent(this.selfKey, this.mode))
+      return
     }
+    // Until the elected client confirms with `host`, accept a claim from anyone.
+    this.#setLobby({ hostId: this.#memberOf(elected)?.userId ?? elected, hostKey: elected, mode: this.mode, tentative: true })
+    this.#tentativeTimer = setTimeout(() => {
+      this.#tentativeTimer = null
+      const { hostKey, tentative } = this.lobby.value
+      if (this.#destroyed || !tentative || hostKey !== elected) return
+      this.#electionSkip.add(elected)
+      this.#migrateHost()
+    }, TENTATIVE_HOST_MS)
   }
 
   #checkAutoSync (now) {
-    const host = this.signals.value[this.hostId]
+    const host = this.signals.value[this.hostKey]
     const result = autoSyncStep(this.#autoSync, {
       enabled: settings.value.w2gAutoSync !== false && this.isFollowing,
       isHost: this.isHost,
@@ -1450,7 +1670,7 @@ export class W2GClient extends EventEmitter {
     this.#autoSync = result
     if (result.seekTo === null) return
     debug(`auto-sync to ${result.seekTo}`)
-    this.#applyLocally({ time: result.seekTo, paused: false, action: 'sync', by: this.hostId })
+    this.#applyLocally({ time: result.seekTo, paused: false, action: 'sync', by: this.hostKey })
   }
 
   /** Applies a state to our player without broadcasting or announcing it. */
@@ -1460,9 +1680,18 @@ export class W2GClient extends EventEmitter {
   }
 
   #hostTarget (now) {
-    if (this.hostId == null || this.isHost) return null
-    const host = this.signals.value[this.hostId]
-    return hostReference({ status: host?.status, receivedAt: host?.receivedAt, rtt: host?.rtt, lastPlayer: this.#lastHostPlayer }, now)
+    if (this.hostKey == null || this.isHost) return null
+    const host = this.signals.value[this.hostKey]
+    // v2.5: the last `player` event only stands for the position of a v1 host, which sends no `status`.
+    const protocol = this.#memberOf(this.hostKey)?.protocol
+    const lastPlayer = protocol != null && protocol < PROTOCOL_VERSION ? this.#lastHostPlayer : null
+    return hostReference({ status: host?.status, receivedAt: host?.receivedAt, rtt: host?.rtt, lastPlayer }, now)
+  }
+
+  /** The lobby media changes: the host's last `player` event was about the previous one. */
+  #setMedia (media) {
+    if (media?.key !== this.media?.key) this.#lastHostPlayer = null
+    this.media = media
   }
 
   /** Our position now, null when we are not watching. */
@@ -1515,12 +1744,15 @@ export class W2GClient extends EventEmitter {
     this.#sendEvent(peer, new Event(EventTypes.PingEvent, { id: generateRandomHexCode(8), sentAt: Date.now() }))
   }
 
+  /** Kicks name accounts: every device of that userId is removed. */
   #ban (userId) {
     if (this.#banned.has(userId)) return
-    const user = this.#userOf(userId)
+    const user = this.#memberByUserId(userId)?.user
     this.#banned.add(userId)
+    const keys = new Set()
     for (const [peerId, entry] of Object.entries(this.peers.value)) {
       if (!entry.peer || entry.userId !== userId) continue
+      keys.add(entry.key)
       this.#bannedPeers.add(peerId)
       this.#closePeer(peerId)
     }
@@ -1528,66 +1760,80 @@ export class W2GClient extends EventEmitter {
       for (const [peerId, entry] of Object.entries(peers)) if (entry.peer && entry.userId === userId) delete peers[peerId]
       return peers
     })
-    this.signals.update(signals => {
-      delete signals[userId]
-      return signals
-    })
-    this.#presence.delete(userId)
-    this.#forgetVoice(userId)
-    this.#system(`${memberName(user ?? { id: userId })} was removed from the lobby`)
+    for (const key of keys) this.#forgetMember(key)
+    this.#system(`${remoteName(user ?? { id: userId })} was removed from the lobby`)
   }
 
-  #showReaction (userId, emoji) {
-    const isSelf = sameId(userId, this.selfId)
-    const name = this.nameOf(userId)
+  #showReaction (key, emoji) {
+    const isSelf = key === this.selfKey
+    const name = this.nameOf(key)
     this.#system(`${name} reacted ${emoji}`, { emoji })
-    this.emit('reaction', { emoji, userId, name, isSelf })
+    this.emit('reaction', { emoji, userId: key, name, isSelf })
   }
 
-  #userIdOf (peer) {
-    return this.peers.value[peer.id]?.userId ?? String(peer.id)
-  }
-
-  #userOf (userId) {
-    if (sameId(userId, this.selfId)) return this.self
-    for (const entry of Object.values(this.peers.value)) if (entry.peer && sameId(entry.userId, userId)) return entry.user
+  /**
+   * A member by key: ourselves, or a connected peer that introduced itself.
+   * @param {string | null | undefined} key
+   * @returns {PeerEntry | null}
+   */
+  #memberOf (key) {
+    if (key == null) return null
+    if (key === this.selfKey) return { user: this.self, userId: this.selfId, sessionId: this.sessionId, key: this.selfKey, protocol: PROTOCOL_VERSION }
+    for (const entry of Object.values(this.peers.value)) if (entry.peer && entry.key === key) return entry
     return null
   }
 
-  #hasUser (userId) {
-    return Object.values(this.peers.value).some(entry => entry.peer && sameId(entry.userId, userId))
+  /** The first connected member with that `init.id` (names of older events, which only carry the id). */
+  #memberByUserId (userId) {
+    for (const entry of Object.values(this.peers.value)) if (entry.peer && sameId(entry.userId, userId)) return entry
+    return null
   }
 
-  /** Connected peers with their protocol and last `following`, for hand-off and election. */
+  #hasMember (key) {
+    return Object.values(this.peers.value).some(entry => entry.peer && entry.key === key)
+  }
+
+  /** Every member we know, ourselves included: key and `init.id`. */
+  #identities () {
+    const list = [{ key: this.selfKey, userId: this.selfId }]
+    for (const entry of Object.values(this.peers.value)) if (entry.peer && entry.key) list.push({ key: entry.key, userId: entry.userId })
+    return list
+  }
+
+  /** Connected peers with their protocol and last `following`, one per member. */
   #peerSummaries () {
     const signals = this.signals.value
     const seen = new Map()
     for (const entry of Object.values(this.peers.value)) {
-      if (!entry.peer || !entry.userId || this.#banned.has(entry.userId) || seen.has(entry.userId)) continue
-      seen.set(entry.userId, { userId: entry.userId, protocol: entry.protocol, following: signals[entry.userId]?.status?.following })
+      if (!entry.peer || !entry.key || this.#banned.has(entry.userId) || seen.has(entry.key)) continue
+      seen.set(entry.key, { key: entry.key, userId: entry.userId, sessionId: entry.sessionId, protocol: entry.protocol, following: signals[entry.key]?.status?.following })
     }
     return [...seen.values()]
+  }
+
+  /** Candidates of a host election or hand-off, named by member key. */
+  #electionPeers () {
+    return this.#peerSummaries().map(({ key, protocol, following }) => ({ userId: key, protocol, following }))
   }
 
   /** Jump to the host's expected position now (resync after following again, "Rejoin"). */
   #syncToHost (now) {
     const target = this.#hostTarget(now)
     if (!target || (target.mediaKey !== null && target.mediaKey !== this.local.mediaKey)) return false
-    this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostId })
+    this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostKey })
     return true
   }
 
   /** Presence lines (v2.1 / v2.2): a system line plus a 3 s notice over the video. */
-  #announce (userId, announcements) {
+  #announce (key, announcements) {
     for (const announcement of announcements) {
-      const text = describePresence(this.nameOf(userId), announcement)
+      const text = describePresence(this.nameOf(key), announcement)
       if (!text) continue
       this.#system(text)
-      this.emit('notice', { text, by: userId, presence: announcement.kind })
+      this.emit('notice', { text, by: key, presence: announcement.kind })
     }
   }
 
-  /** Time-based presence: long buffering, lost connection. */
   /** v2.3: once, when we arrive in a lobby that is already watching, an app-wide Join prompt. */
   #checkFirstJoin (now) {
     if (this.#joinPrompted || this.#firstPeerAt === null) return
@@ -1604,26 +1850,26 @@ export class W2GClient extends EventEmitter {
   /** Members (ourselves included) with their last status, for the lobby reference. */
   #statusMembers () {
     const signals = this.signals.value
-    const members = [{ userId: this.selfId, status: { ...this.local, following: this.isFollowing } }]
-    for (const { userId, protocol } of this.#peerSummaries()) {
-      if (protocol >= 2 || signals[userId]?.status) members.push({ userId, status: signals[userId]?.status ?? null })
+    const members = [{ userId: this.selfKey, status: { ...this.local, following: this.isFollowing } }]
+    for (const { key, protocol } of this.#peerSummaries()) {
+      if (protocol >= 2 || signals[key]?.status) members.push({ userId: key, status: signals[key]?.status ?? null })
     }
     return members
   }
 
-  /** v2.3 reference member of the lobby playback, null when the lobby is not watching. */
+  /** v2.3 reference member of the lobby playback (member key), null when the lobby is not watching. */
   #lobbyReferenceId () {
-    return lobbyReference({ lobbyKey: this.media?.key, hostId: this.hostId, members: this.#statusMembers() })
+    return lobbyReference({ lobbyKey: this.media?.key, hostId: this.hostKey, members: this.#statusMembers() })
   }
 
   /** Expected position of a member: ours, or extrapolated from its last status. */
-  #memberPosition (userId, now) {
-    if (userId == null) return null
-    if (sameId(userId, this.selfId)) {
+  #memberPosition (key, now) {
+    if (key == null) return null
+    if (key === this.selfKey) {
       const time = this.#localTime(now)
       return time === null ? null : { time, paused: this.local.state !== 'playing' && this.local.state !== 'buffering' }
     }
-    const signal = this.signals.value[userId]
+    const signal = this.signals.value[key]
     return hostReference({ status: signal?.status, receivedAt: signal?.receivedAt, rtt: signal?.rtt }, now)
   }
 
@@ -1640,39 +1886,43 @@ export class W2GClient extends EventEmitter {
     const { offered, reference } = this.#offered()
     if (!offered) return null
     const media = offered.from === 'own' ? this.#launched : this.media
-    const position = invitePosition({ offered, own: this.#memberPosition(this.selfId, now), reference: this.#memberPosition(reference, now) })
+    const position = invitePosition({ offered, own: this.#memberPosition(this.selfKey, now), reference: this.#memberPosition(reference, now) })
     return { offered, media, position }
   }
 
+  /** Time-based presence: long buffering, lost connection. */
   #tickPresence () {
     if (this.#destroyed) return
     const now = Date.now()
+    // v2.5: ticks far apart: the app was frozen (sleep, throttled window). Pongs of the pings sent before are no
+    // round-trip samples.
+    if (this.#lastTickAt && now - this.#lastTickAt > SUSPENDED_GAP_MS) this.#resumedAt = now
+    this.#lastTickAt = now
     const signals = this.signals.value
-    for (const [userId, presence] of this.#presence) {
-      const signal = signals[userId]
+    for (const [key, presence] of this.#presence) {
+      const signal = signals[key]
       const result = presenceOnTick(presence, { now, lastStatusAt: signal?.receivedAt, lastPongAt: signal?.pongAt })
-      if (result.presence) this.#presence.set(userId, result.presence)
-      this.#announce(userId, result.announcements)
+      if (result.presence) this.#presence.set(key, result.presence)
+      this.#announce(key, result.announcements)
     }
   }
 
-  #onInvite (senderId, payload) {
-    if (!acceptsInvite({ to: payload?.to, selfId: this.selfId, senderId, hostId: this.hostId, effectiveMode: this.effectiveMode })) return
-    if (!payload.media?.id || !isFiniteNumber(payload.time)) return
-    const key = typeof payload.key === 'string' && payload.key ? payload.key : mediaKey(payload)
+  #onInvite (key, payload) {
+    if (!acceptsInvite({ to: payload.to, toSession: payload.toSession, selfId: this.selfId, sessionId: this.sessionId, senderId: key, selfKey: this.selfKey, hostId: this.hostKey, effectiveMode: this.effectiveMode })) return
+    const invitationKey = payload.key || mediaKey(payload)
     /** @type {Invite} */
     const invite = {
-      from: senderId,
-      name: this.nameOf(senderId),
+      from: key,
+      name: this.nameOf(key),
       media: payload.media,
       episode: payload.episode,
-      key,
-      time: Math.max(0, payload.time),
-      paused: !!payload.paused,
+      key: invitationKey,
+      time: payload.time,
+      paused: payload.paused,
       receivedAt: Date.now()
     }
     // A new invite from the same sender replaces the previous one.
-    this.invites.update(list => [...list.filter(item => item.from !== senderId), invite])
+    this.invites.update(list => [...list.filter(item => item.from !== key), invite])
     this.#system(`${invite.name} invited you to watch`)
     this.emit('invite', invite)
   }
@@ -1686,24 +1936,32 @@ export class W2GClient extends EventEmitter {
 
   // ---------------------------------------------------------------- v2.4 voice and queue internals
 
-  #hasFeature (userId, feature) {
-    return Object.values(this.peers.value).some(entry => entry.peer && sameId(entry.userId, userId) && entry.features?.includes(feature))
+  #hasFeature (key, feature) {
+    return Object.values(this.peers.value).some(entry => entry.peer && entry.key === key && entry.features?.includes(feature))
   }
 
   /** Sends an event to one member (its first open channel). */
-  #sendToUser (userId, event) {
-    if (userId == null) return false
+  #sendToMember (key, event) {
+    if (key == null) return false
     for (const [peerId, entry] of Object.entries(this.peers.value)) {
       const channel = this.#channels.get(peerId)
-      if (!entry.peer || !channel || !sameId(entry.userId, userId) || this.#bannedPeers.has(peerId)) continue
+      if (!entry.peer || !channel || entry.key !== key || this.#bannedPeers.has(peerId)) continue
       this.#sendEvent(channel, event)
       return true
     }
     return false
   }
 
-  #memberInVoice (userId) {
-    return !!this.voiceStates.value[userId]?.joined && this.#hasFeature(userId, 'voice') && this.#hasUser(userId)
+  /** Of us and that member, we offer the audio link (both sides compare the same ids, see sync.js pairIds). */
+  #selfOffers (key) {
+    const member = this.#memberOf(key)
+    if (!member || key === this.selfKey) return false
+    const [self, other] = pairIds({ userId: this.selfId, sessionId: this.sessionId }, member)
+    return voiceOffers(self, other)
+  }
+
+  #memberInVoice (key) {
+    return !!this.voiceStates.value[key]?.joined && this.#hasFeature(key, 'voice') && this.#hasMember(key)
   }
 
   /** Our voice state changed: stores, `voice` to everyone when it differs, links, ducking. */
@@ -1731,70 +1989,75 @@ export class W2GClient extends EventEmitter {
     this.#updateDuck()
   }
 
-  #onVoice (userId, payload) {
-    if (sameId(userId, this.selfId)) return
-    const state = normalizeVoice(payload)
-    const previous = this.voiceStates.value[userId]
+  #onVoice (key, state) {
+    if (key === this.selfKey) return
+    const previous = this.voiceStates.value[key]
     this.voiceStates.update(states => {
-      states[userId] = state
+      states[key] = state
       return states
     })
     if (state.joined !== !!previous?.joined && (previous || state.joined)) {
-      this.#system(`${this.nameOf(userId)} ${state.joined ? 'joined' : 'left'} voice`)
+      this.#system(`${this.nameOf(key)} ${state.joined ? 'joined' : 'left'} voice`)
+      // Joined again: a link that gave up before can be tried at once.
+      if (state.joined) this.#voice.resetRetries(key)
     }
     this.#syncVoiceLinks()
     this.#updateDuck()
   }
 
-  #onVoiceSignal (userId, payload) {
-    if (payload?.sdp?.type === 'offer' && !acceptsVoiceOffer({ selfJoined: this.#voice.joined, memberJoined: this.#memberInVoice(userId), selfId: this.selfId, senderId: userId })) return
-    this.#voice.signal(userId, payload)
+  #onVoiceSignal (key, payload) {
+    if (payload.sdp.type === 'offer') {
+      const member = this.#memberOf(key)
+      if (!member) return
+      const [self, sender] = pairIds({ userId: this.selfId, sessionId: this.sessionId }, member)
+      if (!acceptsVoiceOffer({ selfJoined: this.#voice.joined, memberJoined: this.#memberInVoice(key), selfId: self, senderId: sender })) return
+    }
+    this.#voice.signal(key, payload)
   }
 
   /** Creates the links we offer and closes the ones nobody needs anymore. */
   #syncVoiceLinks () {
-    const members = new Set(this.#peerSummaries().map(peer => peer.userId))
-    for (const userId of members) {
+    const members = new Set(this.#peerSummaries().map(peer => peer.key))
+    for (const key of members) {
       const action = voiceLinkAction({
         selfJoined: this.#voice.joined,
-        memberJoined: !!this.voiceStates.value[userId]?.joined,
-        memberHasVoice: this.#hasFeature(userId, 'voice'),
-        hasLink: this.#voice.hasLink(userId),
-        selfOffers: voiceOffers(this.selfId, userId)
+        memberJoined: !!this.voiceStates.value[key]?.joined,
+        memberHasVoice: this.#hasFeature(key, 'voice'),
+        hasLink: this.#voice.hasLink(key),
+        selfOffers: this.#selfOffers(key)
       })
-      if (action === 'offer') this.#voice.connect(userId)
-      else if (action === 'close') this.#voice.close(userId)
+      if (action === 'offer') this.#voice.connect(key)
+      else if (action === 'close') this.#voice.close(key)
     }
-    for (const userId of Object.keys(this.#voice.linkStates())) if (!members.has(userId)) this.#voice.close(userId)
+    for (const key of Object.keys(this.#voice.linkStates())) if (!members.has(key)) this.#voice.close(key)
   }
 
   /** Lowers the video while a member we hear speaks (setting `w2gVoiceDucking`). */
   #updateDuck () {
     if (this.#destroyed) return
     const states = this.voiceStates.value
-    const members = this.#peerSummaries().map(({ userId }) => {
-      const mix = this.#voice.mixOf(userId)
-      return { ...(states[userId] ?? VOICE_OFF), localMuted: mix.muted, volume: mix.volume }
+    const members = this.#peerSummaries().map(({ key }) => {
+      const mix = this.#voice.mixOf(key)
+      return { ...(states[key] ?? VOICE_OFF), localMuted: mix.muted, volume: mix.volume }
     })
     voiceDuck.value = duckLevel({ enabled: settings.value.w2gVoiceDucking !== false, selfJoined: this.#voice.joined, members })
   }
 
   /** A member left the lobby or was kicked: no more voice with it. */
-  #forgetVoice (userId) {
-    this.#voice.forget(userId)
-    if (this.voiceStates.value[userId]) {
+  #forgetVoice (key) {
+    this.#voice.forget(key)
+    if (this.voiceStates.value[key]) {
       this.voiceStates.update(states => {
-        delete states[userId]
+        delete states[key]
         return states
       })
     }
     this.#updateDuck()
   }
 
-  #onQueue (senderId, payload) {
-    if (this.isHost || !acceptsQueue({ senderId, hostId: this.hostId, tentative: this.lobby.value.tentative })) return
-    const next = normalizeQueue(payload)
-    if (next) this.#applyQueue(next)
+  #onQueue (key, payload) {
+    if (this.isHost || !acceptsQueue({ senderId: key, hostId: this.hostKey, tentative: this.lobby.value.tentative })) return
+    this.#applyQueue(payload)
   }
 
   /**
