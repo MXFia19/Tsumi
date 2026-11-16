@@ -445,7 +445,7 @@ final class MediaListService {
     // MyAnimeList entries come from its list (the AniList media carry none): with the list missing (failed
     // download), an existing entry would look new and be overwritten as "watching" from today.
     if !account.isAniList, !(await hasMALList(account)) {
-      ServiceMessages.shared.post(.error, "Failed to Update Progress", "Your MyAnimeList list could not be loaded, the episode progress was not updated.")
+      ServiceMessages.shared.post(.error, "Failed to Update Progress", "Your MyAnimeList list could not be loaded: the episode progress will be sent later.")
       return false
     }
     let cached = await AniListService.shared.requestMedia(id: anilistId) ?? media
