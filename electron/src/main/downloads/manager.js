@@ -136,7 +136,7 @@ export const hlsJsPath = () => join(app.getPath('userData'), 'Downloads Cache', 
 export default class DownloadManager {
   /** @type {Map<string, any>} */
   items = new Map()
-  /** @type {Map<string, { controller: AbortController }>} */
+  /** @type {Map<string, { controller: AbortController, task?: Promise<void> }>} */
   running = new Map()
   /** @type {Map<string, { resolve: Function, reject: Function, timer: any }>} */
   pending = new Map()
@@ -146,6 +146,10 @@ export default class DownloadManager {
   sendTimer = null
   saveTimer = null
   indexPath = join(app.getPath('userData'), 'downloads.json')
+  /** Writes of downloads.json, one after the other. */
+  saveChain = Promise.resolve()
+  /** Set by the final synchronous save on quit: a write still in flight must not replace it. */
+  indexClosed = false
 
   /**
    * @param {import('electron').BrowserWindow} window
@@ -174,28 +178,43 @@ export default class DownloadManager {
       this.pump()
     })
     ipcMain.on('downloads:resolved', (_event, data) => this.resolved(data))
-    ipcMain.on('downloads:open-folder', (_event, id) => {
+    ipcMain.on('downloads:open-folder', async (_event, id) => {
       const item = id && this.items.get(id)
       const target = item ? item.dir : this.root()
-      fs.mkdirSync(target, { recursive: true })
-      shell.openPath(target)
+      // The folder may be on a drive that is gone or not writable: log it instead of an error dialog.
+      try {
+        await fsp.mkdir(target, { recursive: true })
+        const error = await shell.openPath(target)
+        if (error) log.warn(`[downloads] Could not open the folder: ${error}`)
+      } catch (error) {
+        log.warn(`[downloads] Could not open the folder: ${error?.code || error?.message || error}`)
+      }
     })
     app.on('will-quit', () => this.saveSync())
   }
 
   // ---- Persistence
 
+  /** downloads.json, or its backup when it is missing or unreadable (see writeIndex). */
   load () {
-    try {
-      const stored = JSON.parse(fs.readFileSync(this.indexPath, 'utf8'))
-      for (const item of Array.isArray(stored) ? stored : []) {
+    for (const path of [this.indexPath, `${this.indexPath}.bak`]) {
+      let stored
+      try {
+        stored = JSON.parse(fs.readFileSync(path, 'utf8'))
+      } catch {
+        continue
+      }
+      if (!Array.isArray(stored)) continue
+      if (path !== this.indexPath) log.warn('[downloads] downloads.json was unreadable: list restored from its backup')
+      for (const item of stored) {
         if (!item?.id) continue
         // Interrupted by a quit: continue on this launch (with a fresh link).
         if (ACTIVE.includes(item.status)) item.status = 'queued'
         item.speed = 0
         this.items.set(item.id, item)
       }
-    } catch {}
+      return
+    }
   }
 
   serialize (item) {
@@ -203,19 +222,52 @@ export default class DownloadManager {
     return rest
   }
 
+  indexText () {
+    return JSON.stringify([...this.items.values()].map(item => this.serialize(item)))
+  }
+
   save () {
     clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => {
-      fsp.writeFile(this.indexPath, JSON.stringify([...this.items.values()].map(item => this.serialize(item)))).catch(() => {})
+      this.saveChain = this.saveChain.then(() => this.writeIndex()).catch(error => log.warn(`[downloads] Could not save the list: ${error?.code || error?.message || error}`))
     }, 1000)
     this.saveTimer.unref?.()
   }
 
+  /**
+   * Replaces downloads.json without ever leaving it half written (it is saved about once a second while downloading,
+   * and a crash in the middle of a plain write would empty the list): the new text goes to a temporary file, flushed
+   * to disk, which is then renamed over the old one. The previous version is kept as downloads.json.bak.
+   */
+  async writeIndex () {
+    const temp = `${this.indexPath}.tmp`
+    const handle = await fsp.open(temp, 'w')
+    try {
+      await handle.writeFile(this.indexText())
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    await fsp.copyFile(this.indexPath, `${this.indexPath}.bak`).catch(() => {})
+    // The final save on quit (saveSync) already wrote the latest list.
+    if (this.indexClosed) return fsp.rm(temp, { force: true })
+    await fsp.rename(temp, this.indexPath)
+  }
+
+  /** Last save when the app quits (synchronous, same temporary file + rename as writeIndex). */
   saveSync () {
     clearTimeout(this.saveTimer)
+    this.indexClosed = true
+    const temp = `${this.indexPath}.quit.tmp`
     try {
-      fs.writeFileSync(this.indexPath, JSON.stringify([...this.items.values()].map(item => this.serialize(item))))
-    } catch {}
+      fs.writeFileSync(temp, this.indexText())
+      try {
+        fs.copyFileSync(this.indexPath, `${this.indexPath}.bak`)
+      } catch {}
+      fs.renameSync(temp, this.indexPath)
+    } catch (error) {
+      log.warn(`[downloads] Could not save the list: ${error?.code || error?.message || error}`)
+    }
   }
 
   async writeMetadata (item) {
@@ -365,16 +417,21 @@ export default class DownloadManager {
         item.attempts = 0
         break
       case 'cancel':
-      case 'delete':
-        if (this.running.has(id)) this.running.get(id).controller.abort(new DownloadError('Canceled'))
+      case 'delete': {
+        const running = this.running.get(id)
+        running?.controller.abort(new DownloadError('Canceled'))
         this.rejectPending(id, new DownloadError('Canceled'))
         this.items.delete(id)
         this.dirty.add(id)
         this.save()
-        await this.removeFiles(item)
         this.flush()
+        // The download stops writing (segments, .part file, cover...) before its files are deleted, otherwise files it
+        // was still writing would stay behind.
+        await running?.task?.catch(() => {})
+        await this.removeFiles(item)
         this.pump()
         return true
+      }
       default:
         return false
     }
@@ -416,7 +473,10 @@ export default class DownloadManager {
     const queued = [...this.items.values()].filter(item => item.status === 'queued' && !this.running.has(item.id)).sort((a, b) => a.createdAt - b.createdAt)
     for (const item of queued) {
       if (free-- <= 0) break
-      this.run(item)
+      const task = this.run(item)
+      // run() registers itself in this.running before its first await.
+      const entry = this.running.get(item.id)
+      if (entry) entry.task = task
     }
   }
 
@@ -479,6 +539,8 @@ export default class DownloadManager {
     item.error = null
     item.speed = 0
     this.changed(item, true)
+    /** Cover and subtitles, downloaded next to the video (Promise.allSettled: never rejects). */
+    let extras = null
     try {
       // Not started yet: follow a download folder changed in the meantime.
       if (!item.kind && !(await exists(item.dir))) item.dir = await this.uniqueDir(join(this.root(), sanitizeName(item.title), episodeLabel(item.episode)), item.id)
@@ -490,7 +552,7 @@ export default class DownloadManager {
       this.changed(item, true)
       await fsp.mkdir(item.dir, { recursive: true })
       await this.writeMetadata(item)
-      const extras = Promise.allSettled([this.downloadCover(item, signal), this.downloadSubtitles(item, stream, signal)])
+      extras = Promise.allSettled([this.downloadCover(item, signal), this.downloadSubtitles(item, stream, signal)])
       await this.downloadWithFallback(item, stream, signal)
       await extras
       item.status = 'completed'
@@ -523,6 +585,8 @@ export default class DownloadManager {
         this.changed(item, true)
       }
     } finally {
+      // Nothing of this run may still be writing once it is over (a delete waits for it before removing the files).
+      if (extras) await extras
       this.running.delete(item.id)
       this.save()
       this.pump()
@@ -743,19 +807,31 @@ export default class DownloadManager {
     update()
     this.changed(item, true)
 
+    // One controller for this attempt: the first worker that fails stops the others, and the error only goes up once
+    // every worker has stopped. Otherwise they would go on writing segments while run() retries with a fresh link or
+    // another server (duplicate requests, .part renames racing, segments of two encodes in one "completed" episode).
+    const attempt = new AbortController()
+    const attemptSignal = AbortSignal.any([signal, attempt.signal])
+    let firstError = null
     let next = 0
     const worker = async () => {
-      while (next < remaining.length) {
-        signal.throwIfAborted()
-        const resource = remaining[next++]
-        const size = await this.fetchResource(resource, join(item.dir, resource.file), stream, signal)
-        done++
-        doneBytes += size
-        track(size)
-        update()
+      try {
+        while (next < remaining.length) {
+          attemptSignal.throwIfAborted()
+          const resource = remaining[next++]
+          const size = await this.fetchResource(resource, join(item.dir, resource.file), stream, attemptSignal)
+          done++
+          doneBytes += size
+          track(size)
+          update()
+        }
+      } catch (error) {
+        firstError ??= error
+        attempt.abort(error)
       }
     }
-    await Promise.all(Array.from({ length: Math.min(SEGMENT_WORKERS, remaining.length || 1) }, worker))
+    await Promise.allSettled(Array.from({ length: Math.min(SEGMENT_WORKERS, remaining.length || 1) }, worker))
+    if (firstError) throw firstError
     update()
     item.mediaFile = 'index.m3u8'
   }
@@ -768,19 +844,33 @@ export default class DownloadManager {
     } catch {}
   }
 
-  /** One segment / key / init segment, written to a .part file then renamed (a present file is complete). */
+  /**
+   * One segment / key / init segment, written to a .part file then renamed (a present file is complete). A request
+   * is dropped when no data arrives for STALL_TIMEOUT (not after a fixed total time: a slow server still gets there).
+   */
   async fetchResource (resource, path, stream, signal) {
     for (let attempt = 0; ; attempt++) {
+      const stall = new AbortController()
+      const stallTimer = setTimeout(() => stall.abort(new Error('network: stalled')), STALL_TIMEOUT)
       try {
         const range = resource.range ? { Range: `bytes=${resource.range.start}-${resource.range.end}` } : {}
-        const response = await fetch(resource.url, { headers: this.headers(stream, range), signal: AbortSignal.any([signal, AbortSignal.timeout(STALL_TIMEOUT)]), redirect: 'follow' })
+        const response = await fetch(resource.url, { headers: this.headers(stream, range), signal: AbortSignal.any([signal, stall.signal]), redirect: 'follow' })
+        stallTimer.refresh()
         if (!response.ok) {
           await response.body?.cancel().catch(() => {})
           const error = new DownloadError(httpErrorMessage(response.status))
           error.status = response.status
           throw error
         }
-        let buffer = Buffer.from(await response.arrayBuffer())
+        const chunks = []
+        if (response.body) {
+          for await (const chunk of response.body) {
+            chunks.push(chunk)
+            stallTimer.refresh()
+          }
+        }
+        clearTimeout(stallTimer)
+        let buffer = Buffer.concat(chunks)
         // A server ignoring Range sends the whole file.
         if (resource.range && response.status === 200 && buffer.length > resource.range.end) buffer = buffer.subarray(resource.range.start, resource.range.end + 1)
         if (resource.kind === 'key' && buffer.length !== 16) throw new DownloadError('The stream key could not be downloaded (protected source).', { final: true })
@@ -790,6 +880,8 @@ export default class DownloadManager {
       } catch (error) {
         if (signal.aborted || error?.final || attempt >= 3 || [401, 403, 404, 410].includes(error?.status)) throw error
         await wait(1500 * (attempt + 1), signal)
+      } finally {
+        clearTimeout(stallTimer)
       }
     }
   }
