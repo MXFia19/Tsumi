@@ -40,6 +40,8 @@ struct BrowseListEditor: View {
   @State private var isWorking = false
   private let hasEntry: Bool
   private let maxEpisode: Int
+  /// Progress of the entry when the editor opened (kept as is when the user does not edit it).
+  private let initialProgress: Int
 
   static let statusOrder: [ListStatus] = [.current, .planning, .completed, .paused, .dropped, .repeating]
 
@@ -49,6 +51,7 @@ struct BrowseListEditor: View {
     hasEntry = entry != nil
     maxEpisode = AnimeHelpers.maxEpisode(media)
     _status = State(initialValue: entry?.status)
+    initialProgress = entry?.progress ?? 0
     _progress = State(initialValue: entry?.progress ?? 0)
     _score = State(initialValue: (entry?.score ?? 0).rounded())
     _repeatCount = State(initialValue: entry?.repeatCount ?? 0)
@@ -81,7 +84,10 @@ struct BrowseListEditor: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
+          // Esc closes the editor only: without its own shortcut, the Esc of the details under it (found further
+          // up the responder chain) closed the details as well (DetailsModal checkClose, PC audit).
           Button("Cancel") { dismiss() }
+            .keyboardShortcut(.cancelAction)
         }
         ToolbarItem(placement: .confirmationAction) {
           Button("Save") { save() }
@@ -196,7 +202,10 @@ struct BrowseListEditor: View {
     }
     isWorking = true
     let target = media
-    let values = (progress: min(max(progress, 0), max(progressLimit, 0)), score: score, repeatCount: repeatCount)
+    // Like handleEpisodes, only an edited progress is capped: an untouched one is saved as it is (a finished
+    // title without an episode count has a limit of 0, which turned progress 40 into 0 on a score change).
+    let savedProgress = progress == initialProgress ? progress : min(max(progress, 0), max(progressLimit, 0))
+    let values = (progress: savedProgress, score: score, repeatCount: repeatCount)
     Task { @MainActor in
       await MediaListService.shared.save(target, status: status, progress: values.progress, score: values.score, repeatCount: values.repeatCount)
       isWorking = false
