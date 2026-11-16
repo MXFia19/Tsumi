@@ -466,7 +466,8 @@ func w2gOnMain(_ body: @escaping @MainActor () -> Void) {
 @discardableResult
 func w2gAfter(_ seconds: Double, _ body: @escaping @MainActor () -> Void) -> Task<Void, Never> {
   Task { @MainActor in
-    try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+    // At most about 11 days: UInt64() traps on a delay above 1.8e10 s (a peer-chosen interval, say).
+    try? await Task.sleep(nanoseconds: UInt64(min(max(0, seconds), 1_000_000) * 1_000_000_000))
     if Task.isCancelled { return }
     body()
   }

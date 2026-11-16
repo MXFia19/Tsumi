@@ -12,6 +12,7 @@
     state as sessionState
   } from '@/routes/w2g/components/session.js'
   import { installPushToTalk } from '@/routes/w2g/components/voice.js'
+  import { parseLobbyCode } from '@/routes/w2g/components/sync.js'
   import 'browser-event-target-emitter'
   import Debug from 'debug'
   const debug = Debug('ui:w2g')
@@ -25,6 +26,12 @@
     if (state.value) state.value.destroy()
     const w2g = new W2GClient(code, { displayName: settings.value.w2gDisplayName })
     state.value = w2g
+    // Prompts of this lobby (invites, Join): gone when we leave it, their Join would do nothing.
+    const toastIds = new Set()
+    w2g.on('destroyed', () => {
+      for (const id of toastIds) toast.dismiss(id)
+      toastIds.clear()
+    })
     w2g.on('index', (i) => w2gEmitter.emit('setindex', i))
     // { time, paused, action, by, rate }: applied silently when action is 'sync'.
     w2g.on('player', (playerState) => w2gEmitter.emit('playerupdate', playerState))
@@ -52,19 +59,25 @@
       if (page.value === page.PLAYER) return
       const label = [anilistClient.title(invitation.media) || 'a title', w2g.episodeLabel(invitation.episode)].filter(Boolean).join(' · ')
       // Same id: a new invite from the same sender replaces the previous toast.
+      const id = inviteToastId(invitation.from)
+      toastIds.add(id)
       toast('Watch Together', {
-        id: inviteToastId(invitation.from),
+        id,
         description: `${invitation.name} invites you to watch ${label}`,
         duration: Infinity,
         action: { label: 'Join', onClick: () => w2g.joinInvite(invitation.from) },
         onDismiss: () => w2g.dismissInvite(invitation.from)
       })
     })
-    w2g.on('inviteRemoved', (from) => toast.dismiss(inviteToastId(from)))
+    w2g.on('inviteRemoved', (from) => {
+      toastIds.delete(inviteToastId(from))
+      toast.dismiss(inviteToastId(from))
+    })
     // v2.3: we arrived in a lobby that is already watching: one app-wide prompt, wherever we are.
     const joinToastId = `w2g-join-${w2g.code}`
     w2g.on('joinable', (offer) => {
       const label = [anilistClient.title(offer.media) || 'a title', w2g.episodeLabel(offer.episode)].filter(Boolean).join(' · ')
+      toastIds.add(joinToastId)
       toast('Watch Together', {
         id: joinToastId,
         description: `${offer.name} is watching ${label}`,
@@ -83,8 +96,13 @@
   installPushToTalk(() => state.value)
 
   IPC.on('w2glink', (link) => {
-    joinLobby(link)
+    // tsumi://w2g/CODE (maybe with a trailing slash or a query) and Discord join secrets: the code only.
+    const code = parseLobbyCode(link)
+    if (!code) return
     page.navigateTo(page.WATCH_TOGETHER)
+    // Our own lobby: just show it (joining again would leave it, and the host would lose its role).
+    if (state.value?.code === code) return
+    joinLobby(code)
   })
 
   function invite () {
@@ -100,13 +118,13 @@
 
   let joinText
 
-  const inviteRx = /([A-z0-9]{16})/i
   function checkInvite (invite) {
     if (!invite) return
-    const match = invite?.match(inviteRx)?.[1]
+    // The 16 hex characters of a code or link, in lower case (sync.js parseLobbyCode).
+    const match = parseLobbyCode(invite)
     if (!match) return
     page.navigateTo(page.WATCH_TOGETHER)
-    joinLobby(match)
+    if (state.value?.code !== match) joinLobby(match)
     joinText = ''
   }
 

@@ -28,6 +28,9 @@ struct SettingsValues: Codable, Equatable {
   var w2gWatchOnMyOwn = false        // "Watch on my own" (PROTOCOL.md v2.2), remembered for the next lobby
   var w2gVoiceDucking = true         // voice chat: lower the video while someone speaks (PROTOCOL.md v2.4)
   var w2gPushToTalk = false          // voice chat: the microphone sends only while the talk button is held
+  var w2gTurnUrl = ""                // optional TURN relay (turn: / turns: URL) when links can't connect directly (PROTOCOL.md v2.5)
+  var w2gTurnUsername = ""
+  var w2gTurnCredential = ""
 
   // Interface
   var titleLang: TitleLanguage = .english
@@ -87,6 +90,7 @@ struct SettingsValues: Codable, Equatable {
     case onlineSubtitlesAuto
     case playerHoldSpeedUp, playerHoldSpeed
     case w2gAutoSync, w2gDisplayName, w2gWatchOnMyOwn, w2gVoiceDucking, w2gPushToTalk
+    case w2gTurnUrl, w2gTurnUsername, w2gTurnCredential
     case titleLang, bannerProvider, hideMyAnime, cardPreview, cardAudio, toggleList, uiScale, accentColor
     case adult, hentaiBanner, toasts, homeSections, customSections, westernSections
     case spoilers, spoilerStatus
@@ -108,6 +112,7 @@ struct SettingsValues: Codable, Equatable {
       .onlineSubtitlesAuto,
       .playerHoldSpeedUp, .playerHoldSpeed,
       .w2gAutoSync, .w2gDisplayName, .w2gWatchOnMyOwn, .w2gVoiceDucking, .w2gPushToTalk,
+      .w2gTurnUrl, .w2gTurnUsername, .w2gTurnCredential,
       .titleLang, .bannerProvider, .hideMyAnime, .cardPreview, .cardAudio, .toggleList, .uiScale, .accentColor,
       .adult, .hentaiBanner, .toasts, .homeSections, .customSections, .westernSections,
       .spoilers, .spoilerStatus,
@@ -144,6 +149,9 @@ extension SettingsValues {
     w2gWatchOnMyOwn = container.svcLossyBool(.w2gWatchOnMyOwn) ?? w2gWatchOnMyOwn
     w2gVoiceDucking = container.svcLossyBool(.w2gVoiceDucking) ?? w2gVoiceDucking
     w2gPushToTalk = container.svcLossyBool(.w2gPushToTalk) ?? w2gPushToTalk
+    w2gTurnUrl = container.settingsValue(String.self, .w2gTurnUrl) ?? w2gTurnUrl
+    w2gTurnUsername = container.settingsValue(String.self, .w2gTurnUsername) ?? w2gTurnUsername
+    w2gTurnCredential = container.settingsValue(String.self, .w2gTurnCredential) ?? w2gTurnCredential
 
     titleLang = container.settingsValue(TitleLanguage.self, .titleLang) ?? titleLang
     bannerProvider = container.settingsValue(String.self, .bannerProvider) ?? bannerProvider

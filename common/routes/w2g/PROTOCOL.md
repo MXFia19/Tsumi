@@ -13,6 +13,7 @@ This is the contract shared by the Svelte app (`common/routes/w2g/`, desktop and
 
 - A participant's `userId` is the `id` of its `init` payload: the AniList / MAL viewer id when logged in, otherwise a random 16-character hex id kept for the session. Compare ids as strings (`String(id)`).
 - A data-channel peer is mapped to a `userId` by the `init` it sent. Before that `init` arrives, use the peer's transport id.
+- v2.5: two devices of one account share a `userId`. Each lobby instance also sends a random `init.sessionId`, and clients tell members apart by their member key (see "v2.5 additions"). Events still name members by `userId` on the wire.
 
 ## Events
 
@@ -22,7 +23,7 @@ This is the contract shared by the Svelte app (`common/routes/w2g/`, desktop and
 |---|---|---|
 | `init` | the viewer object (`{ id, name, avatar: { medium } , … }`) or `{ id }` | to each peer on connect |
 | `media` | `{ media, episode, key }` (see `session.js` SHARED_MEDIA_FIELDS) | a title / episode is started; the host also sends it to newcomers |
-| `index` | `{ index }` | the player's file index changes |
+| `index` | `{ index }` | the player's position changes: a file index on desktop, an episode-list index on iOS (see v2.5 `index.kind`) |
 | `player` | `{ time, paused }` | local play, pause or seek |
 | `message` | chat text (string) | chat |
 
@@ -377,3 +378,62 @@ Each client compares each new `queue` with the previous one. It adds "Alice adde
 - **Adding:** members add with "Add to Watch Together queue" on each episode of the episode list and on the details page, while in a lobby whose host supports the queue. The lobby page and the player panel have "Add next episode", which queues the episode after the lobby media (or after the last queued episode of the same title).
 - **Host toggle:** "Members need approval".
 - **Prompt:** while the panel is closed, the host gets a notice for each new suggestion.
+
+## v2.5 additions: limits, validation, devices of one account, host rules
+
+Everything here is additive: the new fields are optional and ignored by older clients, and a v2.5 client keeps working with them.
+
+### Limits and validation
+
+Every incoming event goes through one validation layer before it is used (desktop `sync.js` `validateEvent`, iOS `W2GSyncV25.swift` `validateEvent`). An event that does not fit is dropped, never half-applied. Unknown types are dropped too.
+
+- **Size:** an event is at most 256 000 UTF-16 units of JSON text, checked before parsing.
+- **Transport (P2PT chunks):** a chunk index `c` is a whole number below 64; a message is at most 256 000 units; at most 4 messages per peer are being reassembled at once (the oldest goes), each dropped 30 s after its first chunk; all peers together buffer at most 2 000 000 units. Chunks are reassembled per peer, and a message with a missing chunk is dropped. (P2PT's own handler kept chunks at any index a peer chose: one chunk with `c: 4294967294` froze the app.)
+- **Times** (`player.time`, `status.time`, `countdown.time`, `request.time`, `invite.time`): a number in 0…10 000 000 s. Anything else drops the event.
+- **Episodes** (`media`, `invite`, queue items): a number, or `{ number, season?, localEpisode? }`, each in 0…1 000 000. A missing episode is allowed in `media` and `invite`.
+- **`index.index`:** a whole number in 0…9 999, never an object.
+- **Ids** (`userId`, `hostId`, `by`, `to`, request, item and offer ids): a non-empty string of at most 64 characters, or a finite number. `sessionId`: 4 to 64 letters, digits, `-` or `_`.
+- **Text:** names and display names at most 32 characters; chat messages at most 2048; media keys at most 200 (a longer `mediaKey` counts as none); SDPs at most 64 000; `queue.rev` a whole number (clamped).
+- **Media:** only the shared media shape is kept (session.js SHARED_MEDIA_FIELDS) with the right types; ids are numbers or short text ids (`[A-Za-z0-9:._-]`, e.g. `tmdb-123`); image URLs must be http(s).
+- **`init`** is reduced to `{ id, name?, displayName?, avatar?: { medium?, large? }, picture?, client?, protocol?, features, sessionId? }`, and v2.5 clients only send that (not the whole AniList or MyAnimeList viewer).
+- **Rate limit:** `message`, `reaction`, `request`, `invite`, `queueAdd`, `queueVote` and `queueRemove` from one member: a burst of 20, then 5 per second. The others are dropped.
+- **Names:** another member whose name is "You" is shown as "You (abcd)" (the first characters of its id), so it can't pass for us in system lines.
+
+### Devices of one account: `init.sessionId`
+
+- `init.sessionId`: a random id (16 hex characters) of this lobby instance, new for each lobby joined.
+- **Member key:** `userId + "#" + sessionId`, or the `userId` alone for a client without `sessionId`. Clients key members by it: member list, `status`, RTT, presence, voice, invites, requests. "#" sorts below the characters of the ids, so keys sort like their `userId`s and elections agree with older clients.
+- `host` gains `hostSession`: the `sessionId` of the named host. Without it (older sender), the host is the sender when it names its own `userId`, else the smallest member key with that `userId`.
+- `invite` gains `toSession`: only that device of the account takes it.
+- Voice offerer: of two members that both send a `sessionId`, the smaller member key offers; with an older client, the smaller `userId` (what it compares).
+- `kick` still names a `userId`: every device of that account is removed. A host can't kick another device of its own account.
+- `player.by`, `requestReply.by`, queue `addedBy` and votes stay `userId`s.
+
+### Host rules
+
+- **Authority comes from the sender's data channel**, not from a payload field. In `host` mode, a `player`, `media`, `index` or `countdown` is only applied when it comes from the host's own channel (`player.by` only says whose name to show). `kick`, `requestReply` and `queue` are only taken from the host's channel, as before.
+- **Two hosts:** a host that receives a rival claim and yields (the smaller member key keeps the role) broadcasts `host { hostId: winner }`, so the members who still follow it (they only take `host` from their current host) move to the winner.
+- **Migration:** a v1 client (no `protocol`) is never elected. If the elected client does not claim the role with `host` within 10 s, it is skipped and the election runs again among the others (ourselves included). A confirmed host resets the skipped list.
+- **A host that came back** as a new channel of an older app (same member key while its previous channel is not closed yet) does not know it is host: a member that sees it sends it `host { hostId: it }`.
+- **iOS:** a host that goes to the background while not playing hands the role over first (as "Watch on my own" does), since iOS suspends the app soon after.
+
+### Sync
+
+- `player`, `countdown` and `index` gain `mediaKey`: the sender's `status.mediaKey` when it sent the event. A receiver whose player is on another media key ignores the event (no check when either side has none). Without `mediaKey` (older sender), a receiver whose player is on another media than the lobby's ignores `player`, as before.
+- **`index.kind`:** `"file"` (desktop: position in the player's file list) or `"episode"` (iOS: position in the player's episode list). Without `kind`, it is `"episode"` when the sender's `init.client` is `"tsumi-ios"`, else `"file"`. Each client only applies the kind it uses (desktop `"file"`, iOS `"episode"`) and ignores the other.
+- **Position of the host:** the host's last applied `player` event only stands for its position when the host sends no `status` at all (v1). A v2 host that is idle, loading or silent has no position, so nobody is snapped back to an old time. The last `player` event is also forgotten when the lobby media changes.
+- **Playback rate:** a member on the same episode at another rate shows "Different speed (1.25×)", and auto-sync leaves it alone (each jump would drift again). The rate is still not applied to the local player.
+- **RTT:** a pong sample above 5 s, or for a ping sent before the app was frozen or suspended (two ticks more than 5 s apart), is dropped. The others are smoothed: rtt = rtt + (sample − rtt) × 0.3.
+- **Missed `peerconnect`:** when the first message of a peer arrives on a data channel the client never introduced itself on, it does so then (`init`, `status`, `voice`, ping, and the lobby state when host).
+
+### Voice
+
+- The retry limit (5 offers in a row, 3 s apart) holds whatever asks for a link: only the retry timer offers a failed link again. The count resets when the member joins voice again (its `voice.joined` goes from false to true) or when we join voice again.
+
+### TURN server (optional)
+
+A setting on both apps (`w2gTurnUrl`, `w2gTurnUsername`, `w2gTurnCredential`), empty by default. When it holds `turn:` or `turns:` URLs (several may be separated by commas or spaces), that TURN server is added to the STUN servers of the data channels and of the audio links, from the next lobby. It helps members behind CGNAT or strict firewalls.
+
+### Lobby codes
+
+A code or link is read as its first run of exactly 16 hex characters, in lower case (`tsumi://w2g/CODE/`, `…/w2g/?c=CODE`, a code pasted in capitals). Opening the link of the lobby we are already in only shows it.

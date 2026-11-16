@@ -1,8 +1,8 @@
 import { EventEmitter } from 'events'
 import { writable } from 'simple-store-svelte'
 import {
-  VOICE_ICE_SERVERS, VOICE_GATHER_AFTER_CANDIDATE_MS, VOICE_GATHER_MAX_MS, VOICE_CONNECT_TIMEOUT_MS,
-  voiceRetryDelay, speakingStep, voiceTransmitting
+  VOICE_GATHER_AFTER_CANDIDATE_MS, VOICE_GATHER_MAX_MS, VOICE_CONNECT_TIMEOUT_MS,
+  voiceRetryDelay, speakingStep, voiceTransmitting, iceServers
 } from '@/routes/w2g/components/sync.js'
 import { generateRandomHexCode } from '@/modules/util.js'
 import { IPC } from '@/modules/bridge.js'
@@ -77,12 +77,13 @@ class VoiceLink {
   /**
    * @param {string} userId
    * @param {string} id
-   * @param {{ onConnected: () => void, onFailed: () => void }} handlers
+   * @param {{ onConnected: () => void, onFailed: () => void, servers: RTCIceServer[] }} handlers servers: STUN, and the
+   *   TURN server of the settings when there is one
    */
-  constructor (userId, id, { onConnected, onFailed }) {
+  constructor (userId, id, { onConnected, onFailed, servers }) {
     this.userId = userId
     this.id = id
-    this.pc = new RTCPeerConnection({ iceServers: [{ urls: VOICE_ICE_SERVERS }] })
+    this.pc = new RTCPeerConnection({ iceServers: servers })
     this.audio = new Audio()
     this.audio.autoplay = true
     this.pc.ontrack = ({ track, streams }) => {
@@ -171,11 +172,16 @@ export class VoiceEngine extends EventEmitter {
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
   #retryTimers = new Map()
   #wantsOffer
+  #iceServers
 
-  /** @param {{ wantsOffer: (userId: string) => boolean }} options wantsOffer: we should be offering to that member now */
-  constructor ({ wantsOffer }) {
+  /**
+   * @param {{ wantsOffer: (userId: string) => boolean, iceServers?: () => RTCIceServer[] }} options wantsOffer: we should
+   *   be offering to that member now; iceServers: the ICE servers of a new link (STUN, plus the optional TURN server)
+   */
+  constructor ({ wantsOffer, iceServers: servers }) {
     super()
     this.#wantsOffer = wantsOffer
+    this.#iceServers = servers ?? (() => iceServers())
   }
 
   get pushToTalk () {
@@ -291,9 +297,16 @@ export class VoiceEngine extends EventEmitter {
     return this.#links.has(userId)
   }
 
-  /** We are the offerer: create the link and send the offer. */
-  async connect (userId) {
+  /**
+   * We are the offerer: create the link and send the offer.
+   * @param {string} userId
+   * @param {{ retry?: boolean }} [options] retry: called by the retry timer of a failed link
+   */
+  async connect (userId, { retry = false } = {}) {
     if (!this.joined || this.#links.has(userId)) return
+    // A failed link is offered again by its retry timer only (3 s later, VOICE_MAX_RETRIES times in a row): the
+    // lobby asks for every missing link on each voice change, which would skip the delay and the limit.
+    if (!retry && (this.#retryTimers.has(userId) || voiceRetryDelay(this.#failures.get(userId) ?? 0) === null)) return
     clearTimeout(this.#retryTimers.get(userId))
     this.#retryTimers.delete(userId)
     const link = this.#createLink(userId, generateRandomHexCode(12))
@@ -357,6 +370,11 @@ export class VoiceEngine extends EventEmitter {
     this.emit('links')
   }
 
+  /** The member joined voice again: its failed attempts are forgotten, it can be offered at once. */
+  resetRetries (userId) {
+    this.#failures.delete(userId)
+  }
+
   /** Forget a member that left the lobby (its mix too). */
   forget (userId) {
     this.close(userId)
@@ -375,7 +393,8 @@ export class VoiceEngine extends EventEmitter {
         this.#failures.delete(userId)
         this.emit('links')
       },
-      onFailed: () => this.#failed(userId, link)
+      onFailed: () => this.#failed(userId, link),
+      servers: this.#iceServers()
     })
     link.applyMix(this.mixOf(userId))
     this.#links.set(userId, link)
@@ -397,7 +416,7 @@ export class VoiceEngine extends EventEmitter {
     clearTimeout(this.#retryTimers.get(userId))
     this.#retryTimers.set(userId, setTimeout(() => {
       this.#retryTimers.delete(userId)
-      if (this.joined && this.#wantsOffer(userId)) this.connect(userId)
+      if (this.joined && this.#wantsOffer(userId)) this.connect(userId, { retry: true })
     }, delay))
   }
 

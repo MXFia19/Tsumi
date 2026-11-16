@@ -128,9 +128,13 @@ struct W2GMember: Identifiable, Hashable {
   var introducedAt: Double? = nil
   /// v2.4 `init.features` ("voice", "queue").
   var features: [String] = []
+  /// v2.5 `init.sessionId`: random id of that lobby instance (nil for an older app).
+  var sessionId: String? = nil
 
   /// PROTOCOL "Identity": the `init` id, else the transport id.
   var userId: String { user.id }
+  /// v2.5 member key: the userId plus the session id, so two devices of one account are two members.
+  var memberKey: String { W2GSync.memberKey(userId: user.id, sessionId: sessionId) }
 }
 
 struct W2GChatMessage: Identifiable, Hashable {
@@ -268,6 +272,7 @@ struct W2GPlayerCommand {
 
 /// A member row: host crown, sync badge, ping.
 struct W2GMemberView: Identifiable, Equatable {
+  /// v2.5: the member key (W2GSync.memberKey), what kick / transferHost / invite / setMemberVoice take.
   var userId: String
   var user: W2GUser
   var name: String

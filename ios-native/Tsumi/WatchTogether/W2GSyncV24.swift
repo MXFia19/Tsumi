@@ -130,18 +130,23 @@ extension W2GSync {
   /// Episode of a queue item: a number, or `{ number, season?, localEpisode? }`; nil when unusable.
   static func normalizeQueueEpisode(_ value: W2GJSON?) -> W2GJSON? {
     guard let value else { return nil }
+    // v2.5: episode, season and local episode numbers are within 0…maxEpisode.
+    func valid(_ json: W2GJSON?) -> Double? {
+      guard let number = json?.doubleValue, number >= 0, number <= maxEpisode else { return nil }
+      return number
+    }
     switch value {
-    case .number(let number):
-      return number.isFinite ? value : nil
+    case .number:
+      return valid(value) != nil ? value : nil
     case .string:
-      guard let text = value.stringValue, !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }), let number = Double(text) else { return nil }
+      guard let text = value.stringValue, !text.isEmpty, text.count <= 7, text.allSatisfy({ $0.isASCII && $0.isNumber }), let number = Double(text), number <= maxEpisode else { return nil }
       return .number(number)
     case .object:
-      let number = value["number"]?.doubleValue ?? value["localEpisode"]?.doubleValue
+      let number = valid(value["number"]) ?? valid(value["localEpisode"])
       guard let number else { return nil }
       var fields: [(String, W2GJSON?)] = [("number", .number(number))]
-      if let season = value["season"]?.doubleValue { fields.append(("season", .number(season))) }
-      if let local = value["localEpisode"]?.doubleValue { fields.append(("localEpisode", .number(local))) }
+      if let season = valid(value["season"]) { fields.append(("season", .number(season))) }
+      if let local = valid(value["localEpisode"]) { fields.append(("localEpisode", .number(local))) }
       return W2GJSON.dict(fields)
     default:
       return nil
@@ -180,7 +185,8 @@ extension W2GSync {
     let items = clean(payload["items"], max: queueMaxItems)
     let pending = clean(payload["pending"], max: queueMaxPending)
     let policy: W2GQueuePolicy = payload["policy"]?.stringValue == "approval" ? .approval : .open
-    let rev = payload["rev"]?.doubleValue.map { Int($0) } ?? 0
+    // v2.5: a whole number in range (Int(1e300) trapped and crashed the app).
+    let rev = payload["rev"]?.doubleValue.map { Int(min(max($0, 0), Double(Int32.max)).rounded(.towardZero)) } ?? 0
     return W2GQueue(items: items, pending: pending, policy: policy, rev: rev)
   }
 
@@ -395,7 +401,8 @@ struct W2GQueueItem: Identifiable, Equatable {
   /// Cleaned from a payload; nil without an id, a media with an id, an episode or a key.
   init?(json: W2GJSON) {
     guard json.isObject, let id = W2GSync.queueId(json["id"]) else { return nil }
-    guard let media = json["media"], media.isObject, W2GSync.queueId(media["id"]) != nil else { return nil }
+    // v2.5: the shared media shape only (W2GSync.cleanMedia), like every media a peer sends.
+    guard let media = W2GSync.cleanMedia(json["media"]), W2GSync.queueId(media["id"]) != nil else { return nil }
     guard let episode = W2GSync.normalizeQueueEpisode(json["episode"]) else { return nil }
     let key = W2GSync.queueText(json["key"], max: 200)
     guard !key.isEmpty else { return nil }
