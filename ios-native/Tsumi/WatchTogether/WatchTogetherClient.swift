@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 import UIKit
 
@@ -32,9 +33,6 @@ final class WatchTogetherClient {
     "wss://tracker.webtorrent.dev",
     "wss://tracker.files.fm:7073/announce"
   ]
-
-  /// WatchTogetherPage.svelte inviteRx: /([A-z0-9]{16})/i
-  static let invitePattern = "([A-z0-9]{16})"
 
   /// w2g.js MAX_MESSAGES / MAX_MESSAGE_LENGTH.
   static let maxMessages = 200
@@ -92,8 +90,12 @@ final class WatchTogetherClient {
 
   // MARK: State (v2)
 
-  /// Lobby host (userId); nil until a joiner receives `host`.
+  /// Lobby host (its `init.id`); nil until a joiner receives `host`.
   private(set) var hostId: String?
+  /// v2.5: member key of the host (W2GSync.memberKey), what `isHost` and the sender checks compare.
+  private(set) var hostKey: String?
+  /// v2.5 `init.sessionId`: random id of this lobby instance (two devices of one account are two members).
+  private(set) var sessionId = W2GHex.randomCode(16)
   private(set) var mode: W2GMode = .everyone
   /// Last `status` and RTT per userId.
   private(set) var signals: [String: W2GSignal] = [:]
@@ -188,7 +190,26 @@ final class WatchTogetherClient {
   @ObservationIgnored private var pendingQueueStart: (key: String, at: Double)?
   @ObservationIgnored private var lastDuck: Double = 1
 
-  init() {}
+  // v2.5
+  /// Rate limit of hand-made events (chat, reactions, requests, invites, queue changes), per member key.
+  @ObservationIgnored private var rates: [String: W2GRateBucket] = [:]
+  /// The app was suspended until then: pongs of older pings are no RTT samples.
+  @ObservationIgnored private var resumedAt: Double = -Double.infinity
+  @ObservationIgnored private var lastTickAt: Double = 0
+  /// Elected members that did not claim the host role in time (member keys), until a host is confirmed.
+  @ObservationIgnored private var electionSkip = Set<String>()
+  @ObservationIgnored private var tentativeTask: Task<Void, Never>?
+  /// Network changes: the trackers reconnect and announce at once.
+  @ObservationIgnored private var pathMonitor: NWPathMonitor?
+  @ObservationIgnored private var lastPathSignature: String?
+  @ObservationIgnored private var backgroundObserver: NSObjectProtocol?
+
+  init() {
+    // v2.5: going to the background as host while not playing hands the role over.
+    backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+      MainActor.assumeIsolated { self?.appEnteredBackground() }
+    }
+  }
 
   var isInLobby: Bool { code != nil }
 
@@ -207,13 +228,16 @@ final class WatchTogetherClient {
   /// Our userId (`init.id` as a string).
   var selfId: String { selfUser.id }
 
+  /// Our member key (v2.5): our id plus our session id.
+  var selfKey: String { W2GSync.memberKey(userId: selfId, sessionId: sessionId) }
+
   var isHost: Bool {
-    guard let hostId else { return false }
-    return hostId == selfId
+    guard let hostKey else { return false }
+    return hostKey == selfKey
   }
 
   /// While no host is known, everyone controls playback.
-  var effectiveMode: W2GMode { hostId == nil ? .everyone : mode }
+  var effectiveMode: W2GMode { hostKey == nil ? .everyone : mode }
 
   /// Only the host controls playback and we are not the host.
   var controlLocked: Bool { effectiveMode == .host && !isHost && following }
@@ -229,8 +253,8 @@ final class WatchTogetherClient {
 
   /// Name of the current host, nil when unknown.
   var hostName: String? {
-    guard let hostId else { return nil }
-    return nameOf(hostId)
+    guard let hostKey else { return nil }
+    return nameOf(hostKey)
   }
 
   // MARK: Lobby lifecycle
@@ -243,7 +267,8 @@ final class WatchTogetherClient {
   /// Join by exact code.
   func join(code: String) {
     let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
+    // Our own lobby: nothing to do (joining again would leave it, and the host would lose its role).
+    guard !trimmed.isEmpty, trimmed != self.code else { return }
     start(code: trimmed)
   }
 
@@ -251,7 +276,8 @@ final class WatchTogetherClient {
   @discardableResult
   func join(link: String) -> Bool {
     guard let code = Self.lobbyCode(in: link) else { return false }
-    start(code: code)
+    // The link of the lobby we are in: just show it (joining again would leave it, and the host would lose its role).
+    if code != self.code { start(code: code) }
     onShowLobby?()
     return true
   }
@@ -269,13 +295,9 @@ final class WatchTogetherClient {
     return url.host?.lowercased() == "w2g"
   }
 
-  /// First 16-char [A-z0-9] run, like WatchTogetherPage.svelte checkInvite.
+  /// The 16 hex characters of a code or link, in lower case, like WatchTogetherPage.svelte (sync.js parseLobbyCode).
   static func lobbyCode(in text: String) -> String? {
-    guard let regex = try? NSRegularExpression(pattern: invitePattern, options: [.caseInsensitive]) else { return nil }
-    let range = NSRange(text.startIndex..<text.endIndex, in: text)
-    guard let match = regex.firstMatch(in: text, options: [], range: range),
-          let matchRange = Range(match.range(at: 1), in: text) else { return nil }
-    return String(text[matchRange])
+    W2GSync.parseLobbyCode(text)
   }
 
   /// Leave button (Lobby.svelte cleanup → W2GClient.destroy).
@@ -317,8 +339,18 @@ final class WatchTogetherClient {
     openConnections = 0
     notice = nil
     hostId = nil
+    hostKey = nil
     mode = .everyone
     hostTentative = false
+    rates = [:]
+    electionSkip = []
+    tentativeTask?.cancel()
+    tentativeTask = nil
+    resumedAt = -Double.infinity
+    lastTickAt = 0
+    pathMonitor?.cancel()
+    pathMonitor = nil
+    lastPathSignature = nil
     signals = [:]
     banned = []
     lastSeen = [:]
@@ -355,6 +387,41 @@ final class WatchTogetherClient {
     swarm?.refresh()
   }
 
+  /// v2.5: the app went to the background. iOS suspends it soon, and the lobby would have a host that does not answer
+  /// until its links time out: a host that is not playing (no background playback, no Picture in Picture) hands the
+  /// role to a member that follows first.
+  private func appEnteredBackground() {
+    guard isInLobby, isHost else { return }
+    sampleLocalPlayback()
+    guard local.state != .playing, let target = W2GSync.handOffTarget(electionPeers()) else { return }
+    _ = transferHost(to: target)
+  }
+
+  /// v2.5: watches the network (Wi-Fi to cellular, back online) to reconnect the trackers and announce right away.
+  private func startPathMonitor() {
+    pathMonitor?.cancel()
+    lastPathSignature = nil
+    let monitor = NWPathMonitor()
+    monitor.pathUpdateHandler = { path in
+      let satisfied = path.status == .satisfied
+      let signature = "\(satisfied)-\(path.usesInterfaceType(.wifi))-\(path.usesInterfaceType(.cellular))-\(path.usesInterfaceType(.wiredEthernet))"
+      w2gOnMain {
+        WatchTogetherClient.shared.networkChanged(signature: signature, satisfied: satisfied)
+      }
+    }
+    monitor.start(queue: DispatchQueue(label: "tsumi.w2g.network"))
+    pathMonitor = monitor
+  }
+
+  private func networkChanged(signature: String, satisfied: Bool) {
+    guard isInLobby, pathMonitor != nil else { return }
+    let previous = lastPathSignature
+    lastPathSignature = signature
+    // The first report is the network we started on.
+    guard let previous, previous != signature, satisfied else { return }
+    swarm?.refresh()
+  }
+
   private func start(code requested: String?) {
     leave()
     let lobbyCode = requested ?? W2GHex.randomCode(16)
@@ -364,7 +431,9 @@ final class WatchTogetherClient {
       selfUser = W2GUser(id: w2gAnonymousId, typedName: W2GSync.cleanDisplayName(AppSettings.shared.values.w2gDisplayName))
     }
     code = lobbyCode
-    members = [W2GMember(id: Self.selfMemberId, user: selfUser, isSelf: true, protocolVersion: W2GSync.protocolVersion, client: W2GSync.clientName)]
+    // v2.5: a new session id for each lobby instance.
+    sessionId = W2GHex.randomCode(16)
+    members = [W2GMember(id: Self.selfMemberId, user: selfUser, isSelf: true, protocolVersion: W2GSync.protocolVersion, client: W2GSync.clientName, sessionId: sessionId)]
     // v2.2: the last "Watch on my own" choice is kept for the next lobby.
     following = !AppSettings.shared.values.w2gWatchOnMyOwn
     // v2.3: joining a lobby that is already watching shows the Join prompt once, app-wide.
@@ -372,6 +441,7 @@ final class WatchTogetherClient {
     // The lobby creator is the first host; a joiner has none until it receives `host`.
     if requested == nil {
       hostId = selfUser.id
+      hostKey = selfKey
       mode = .everyone
     }
     queueKnown = requested == nil
@@ -386,6 +456,7 @@ final class WatchTogetherClient {
     refreshStatus()
     sampleLocalPlayback(announce: false)
     startTicker()
+    startPathMonitor()
 
     // WatchTogetherPage.svelte: `if (!code) invite()`
     if requested == nil { copyInvite() }
@@ -434,6 +505,9 @@ final class WatchTogetherClient {
   private func tick() {
     guard isInLobby else { return }
     let now = W2GSync.nowMs()
+    // v2.5: ticks far apart: the app was suspended. Pongs of the pings sent before are no round-trip samples.
+    if lastTickAt > 0 && now - lastTickAt > 5_000 { resumedAt = now }
+    lastTickAt = now
     sampleLocalPlayback(now: now)
     if now - lastHeartbeat >= W2GSync.heartbeatMs {
       lastHeartbeat = now
@@ -577,8 +651,14 @@ final class WatchTogetherClient {
       if current.key == key || current.localKey == key || current.matches(media: media, episode: episode, payloadId: payloadId) { return }
     }
     let shared = W2GSharedMedia(key: key, localKey: key, mediaJSON: mediaJSON, episodeJSON: episodeJSON, media: media, episode: episode)
-    sharedMedia = shared
+    setSharedMedia(shared)
     broadcast(type: "media", payload: shared.payload)
+  }
+
+  /// The lobby media changes: the host's last `player` event was about the previous one.
+  private func setSharedMedia(_ shared: W2GSharedMedia?) {
+    if shared?.key != sharedMedia?.key { lastHostPlayer = nil }
+    sharedMedia = shared
   }
 
   /// v1 entry point, kept for callers: a local play / pause / seek with the action inferred.
@@ -640,7 +720,7 @@ final class WatchTogetherClient {
     if applyPendingInvite(now: now) { return }
     // v2.3 Join: the lobby media is loaded, go to the reference.
     if applyPendingJoin(now: now) { return }
-    guard following, hostId != nil, !isHost else { return }
+    guard following, hostKey != nil, !isHost else { return }
     // v2.2 "Rejoin": the lobby media is loaded, sync to the host now.
     if let rejoinKey = pendingRejoinKey, rejoinKey == local.mediaKey {
       pendingRejoinKey = nil
@@ -701,6 +781,8 @@ final class WatchTogetherClient {
     fields.append(("time", W2GJSON.number(time)))
     fields.append(("seconds", W2GJSON.int(value)))
     fields.append(("startAt", W2GJSON.number(startAt.rounded(.down))))
+    // v2.5: the others only apply it on the same episode.
+    if !local.mediaKey.isEmpty { fields.append(("mediaKey", W2GJSON.text(local.mediaKey))) }
     broadcast(type: "countdown", payload: W2GJSON.dict(fields))
     runCountdown(time: time, seconds: value, endsAt: startAt + Double(value) * 1000, by: selfId)
     system("You started a countdown")
@@ -711,29 +793,29 @@ final class WatchTogetherClient {
   @discardableResult
   func setMode(_ newMode: W2GMode) -> Bool {
     guard isInLobby, isHost, newMode != mode else { return false }
-    setLobby(hostId: selfId, mode: newMode, tentative: false)
-    broadcast(type: "host", payload: hostPayload(hostId: selfId))
+    setLobby(hostId: selfId, hostKey: selfKey, mode: newMode, tentative: false)
+    broadcast(type: "host", payload: hostPayload(key: selfKey))
     return true
   }
 
-  /// Host: give the host role to someone else.
+  /// Host: give the host role to someone else (`key`: member key).
   @discardableResult
-  func transferHost(to userId: String) -> Bool {
-    guard isInLobby, isHost, userId != selfId, hasUser(userId) else { return false }
+  func transferHost(to key: String) -> Bool {
+    guard isInLobby, isHost, key != selfKey, let target = memberOf(key), target.introduced else { return false }
     // A v1 client would not know it is host: it could not change the mode, kick or answer requests.
-    let version = members.first(where: { !$0.isSelf && $0.userId == userId })?.protocolVersion ?? 1
-    guard version >= W2GSync.protocolVersion else { return false }
-    broadcast(type: "host", payload: hostPayload(hostId: userId))
-    setLobby(hostId: userId, mode: mode, tentative: false)
+    guard (target.protocolVersion ?? 1) >= W2GSync.protocolVersion else { return false }
+    broadcast(type: "host", payload: hostPayload(key: key))
+    setLobby(hostId: target.userId, hostKey: key, mode: mode, tentative: false)
     return true
   }
 
-  /// Host: remove someone from the lobby.
+  /// Host: remove someone from the lobby (`key`: member key). Kicks name accounts: every device of it leaves.
   @discardableResult
-  func kick(_ userId: String) -> Bool {
-    guard isInLobby, isHost, userId != selfId else { return false }
-    broadcast(type: "kick", payload: W2GJSON.dict([("userId", W2GJSON.text(userId))]))
-    ban(userId)
+  func kick(_ key: String) -> Bool {
+    // Not another device of our own account either: the others would ban us with it.
+    guard isInLobby, isHost, let target = memberOf(key), target.userId != selfId else { return false }
+    broadcast(type: "kick", payload: W2GJSON.dict([("userId", W2GJSON.text(target.userId))]))
+    ban(target.userId)
     return true
   }
 
@@ -787,7 +869,7 @@ final class WatchTogetherClient {
   func react(_ emoji: String) -> Bool {
     guard isInLobby, let value = W2GSync.normalizeReaction(emoji) else { return false }
     broadcast(type: "reaction", payload: W2GJSON.dict([("emoji", W2GJSON.text(value))]))
-    showReaction(value, from: selfId)
+    showReaction(value, from: selfKey)
     return true
   }
 
@@ -816,11 +898,18 @@ final class WatchTogetherClient {
     broadcast(type: "init", payload: initPayload)
   }
 
-  /// W2GClient.mediaIndexChanged.
+  /// W2GClient.mediaIndexChanged: `index` is a position in our episode list.
   func mediaIndexChanged(_ index: Int) {
-    guard isInLobby, following, index != mediaIndex else { return }
+    guard isInLobby, following, index != mediaIndex, index >= 0, index <= W2GSync.maxIndex else { return }
     mediaIndex = index
-    broadcast(type: "index", payload: W2GJSON.dict([("index", W2GJSON.int(index))]))
+    broadcast(type: "index", payload: indexPayload(index))
+  }
+
+  /// v2.5 `index`: `kind` "episode" (the desktop app's index is a file position), and what we played when it changed.
+  private func indexPayload(_ index: Int) -> W2GJSON {
+    var fields: [(String, W2GJSON?)] = [("index", W2GJSON.int(index)), ("kind", W2GJSON.text("episode"))]
+    if !local.mediaKey.isEmpty { fields.append(("mediaKey", W2GJSON.text(local.mediaKey))) }
+    return W2GJSON.dict(fields)
   }
 
   // MARK: Player overlays
@@ -848,11 +937,11 @@ final class WatchTogetherClient {
     hostTarget(now: W2GSync.nowMs())?.paused ?? player.paused
   }
 
-  /// Display name of a participant ("You" for ourselves).
-  func nameOf(_ userId: String) -> String {
-    if userId == selfId { return "You" }
-    if let user = userOf(userId) { return user.displayName }
-    return W2GSync.memberName(name: nil, typedName: nil, id: userId)
+  /// Display name of a participant ("You" for ourselves); `id`: a member key, or an `init.id`.
+  func nameOf(_ id: String) -> String {
+    if id == selfKey || id == selfId { return "You" }
+    if let member = memberOf(id) ?? members.first(where: { !$0.isSelf && $0.userId == id }) { return W2GSync.remoteName(member.user) }
+    return W2GSync.memberName(name: nil, typedName: nil, id: id)
   }
 
   /// Member list with host crown and sync badges: host first, then us, then by name.
@@ -863,7 +952,7 @@ final class WatchTogetherClient {
     var ownBadge = W2GSync.selfBadge(local)
     if !following && local.state != .idle { ownBadge = W2GBadge(kind: .independent, text: "Watching on your own") }
     list.append(W2GMemberView(
-      userId: selfId,
+      userId: selfKey,
       user: selfUser,
       name: selfUser.displayName,
       isSelf: true,
@@ -878,21 +967,21 @@ final class WatchTogetherClient {
       hasVoice: true,
       voice: W2GMemberVoice(joined: lastVoicePayload.joined, muted: lastVoicePayload.muted, speaking: lastVoicePayload.speaking)
     ))
-    var seen: Set<String> = [selfId]
+    var seen: Set<String> = [selfKey]
     for member in members where !member.isSelf {
-      let userId = member.userId
-      guard !seen.contains(userId), !banned.contains(userId) else { continue }
-      seen.insert(userId)
-      let signal = signals[userId] ?? W2GSignal()
-      let badge = W2GSync.syncBadge(signal: signal, protocolVersion: member.protocolVersion, lastSeen: lastSeen[userId], local: local, now: now, introducedAt: member.introducedAt)
+      let key = member.memberKey
+      guard !seen.contains(key), !banned.contains(member.userId) else { continue }
+      seen.insert(key)
+      let signal = signals[key] ?? W2GSignal()
+      let badge = W2GSync.syncBadge(signal: signal, protocolVersion: member.protocolVersion, lastSeen: lastSeen[key], local: local, now: now, introducedAt: member.introducedAt)
       let status = signal.status
       let watching = status?.state == .idle ? "" : (status?.nowPlaying?.label ?? "")
       list.append(W2GMemberView(
-        userId: userId,
+        userId: key,
         user: member.user,
-        name: member.user.displayName,
+        name: W2GSync.remoteName(member.user),
         isSelf: false,
-        isHost: hostId == userId,
+        isHost: hostKey == key,
         badge: badge,
         protocolVersion: member.protocolVersion,
         client: member.client,
@@ -901,7 +990,7 @@ final class WatchTogetherClient {
         source: status?.state == .idle ? "" : (status?.source ?? ""),
         canInvite: canInvite(member: member, badge: badge, offeredKey: offered, now: now),
         hasVoice: member.features.contains("voice"),
-        voice: memberVoice(userId)
+        voice: memberVoice(key)
       ))
     }
     return list.sorted { lhs, rhs in
@@ -945,13 +1034,19 @@ final class WatchTogetherClient {
     fields.append(W2GJSONMember(key: "protocol", value: W2GJSON.int(W2GSync.protocolVersion)))
     // v2.4: what this client can do.
     fields.append(W2GJSONMember(key: "features", value: W2GJSON.array(W2GSync.features.map { W2GJSON.text($0) })))
+    // v2.5: which instance this is (two devices of one account are two members).
+    fields.append(W2GJSONMember(key: "sessionId", value: W2GJSON.text(sessionId)))
     return W2GJSON.object(fields)
   }
 
-  private func hostPayload(hostId newHost: String) -> W2GJSON {
+  /// `host` naming a member (`key`): its `init.id`, plus its session id when it has one (v2.5 `hostSession`).
+  private func hostPayload(key: String) -> W2GJSON {
+    let member = key == selfKey ? nil : memberOf(key)
     var fields: [(String, W2GJSON?)] = []
-    fields.append(("hostId", W2GJSON.text(newHost)))
+    fields.append(("hostId", W2GJSON.text(key == selfKey ? selfId : (member?.userId ?? key))))
     fields.append(("mode", W2GJSON.text(mode.rawValue)))
+    let session: String? = key == selfKey ? sessionId : member?.sessionId
+    if let session { fields.append(("hostSession", W2GJSON.text(session))) }
     return W2GJSON.dict(fields)
   }
 
@@ -962,6 +1057,8 @@ final class WatchTogetherClient {
     fields.append(("by", W2GJSON.text(selfId)))
     fields.append(("action", W2GJSON.text(action.rawValue)))
     fields.append(("rate", W2GJSON.number(rate)))
+    // v2.5: the others only apply it on the same episode.
+    if !local.mediaKey.isEmpty { fields.append(("mediaKey", W2GJSON.text(local.mediaKey))) }
     return W2GJSON.dict(fields)
   }
 
@@ -970,7 +1067,7 @@ final class WatchTogetherClient {
     peerConnectedAt[peerId] = W2GSync.nowMs()
     sendEvent(to: peerId, type: "init", payload: initPayload)
     if isHost {
-      sendEvent(to: peerId, type: "host", payload: hostPayload(hostId: selfId))
+      sendEvent(to: peerId, type: "host", payload: hostPayload(key: selfKey))
       sendInitialSessionState(to: peerId)
       // v2.4: late joiners get the current queue.
       sendEvent(to: peerId, type: "queue", payload: queue.json)
@@ -994,7 +1091,7 @@ final class WatchTogetherClient {
 
   private func sendInitialSessionState(to peerId: String) {
     if let sharedMedia { sendEvent(to: peerId, type: "media", payload: sharedMedia.payload) }
-    sendEvent(to: peerId, type: "index", payload: W2GJSON.dict([("index", W2GJSON.int(mediaIndex))]))
+    sendEvent(to: peerId, type: "index", payload: indexPayload(mediaIndex))
     let now = W2GSync.nowMs()
     sampleLocalPlayback(now: now, announce: false)
     var state = player
@@ -1010,35 +1107,57 @@ final class WatchTogetherClient {
     refreshStatus()
     guard let index = members.firstIndex(where: { !$0.isSelf && $0.id == peerId }) else { return }
     let member = members.remove(at: index)
-    let userId = member.userId
-    guard !hasUser(userId) else { return }
-    signals[userId] = nil
-    lastSeen[userId] = nil
-    presence[userId] = nil
-    invites.removeAll { $0.from == userId }
-    forgetVoice(userId)
-    if member.introduced && !banned.contains(userId) { system("\(member.user.displayName) left") }
-    if let hostId, userId == hostId { migrateHost() }
+    let key = member.memberKey
+    guard !hasMember(key) else { return }
+    forgetMember(key)
+    if member.introduced && !banned.contains(member.userId) { system("\(W2GSync.remoteName(member.user)) left") }
+    if let hostKey, key == hostKey { migrateHost() }
+  }
+
+  /// A member left: its signals, voice, invites and requests go (they can't be answered anymore).
+  private func forgetMember(_ key: String) {
+    signals[key] = nil
+    lastSeen[key] = nil
+    presence[key] = nil
+    rates[key] = nil
+    invites.removeAll { $0.from == key }
+    for request in pendingRequests where request.userId == key {
+      requestTimers[request.id]?.cancel()
+      requestTimers[request.id] = nil
+    }
+    if pendingRequests.contains(where: { $0.userId == key }) { pendingRequests.removeAll { $0.userId == key } }
+    for (id, owner) in requestOwners where owner == key { requestOwners[id] = nil }
+    forgetVoice(key)
   }
 
   /// #onMsg: malformed or unknown messages are ignored.
   private func received(_ value: W2GJSON, from peerId: String) {
     let event: W2GJSON
     if case .string(let units) = value {
-      guard let parsed = W2GJSONParser.parse(String(decoding: units, as: UTF16.self)) else { return }
+      // v2.5: nothing longer than maxEventUnits is parsed.
+      guard units.count <= W2GSync.maxEventUnits, let parsed = W2GJSONParser.parse(String(decoding: units, as: UTF16.self)) else { return }
       event = parsed
     } else {
       event = value
     }
     guard let type = event["type"]?.stringValue else { return }
-    let payload = event["payload"] ?? W2GJSON.null
+    // v2.5: one validation layer, every payload is cleaned (types, ranges, lengths) or the event is dropped.
+    guard let payload = W2GSync.validateEvent(type: type, payload: event["payload"] ?? W2GJSON.null) else { return }
 
     let userId = userIdOf(peerId)
+    let key = keyOf(peerId)
     if banned.contains(userId) {
       swarm?.block(peerId)
       return
     }
-    lastSeen[userId] = W2GSync.nowMs()
+    let now = W2GSync.nowMs()
+    lastSeen[key] = now
+    // v2.5: chat, reactions, requests, invites and queue changes: a burst, then a few per second.
+    if W2GSync.userEvents.contains(type) {
+      let bucket = W2GSync.rateStep(rates[key], now: now)
+      rates[key] = bucket
+      guard bucket.allowed else { return }
+    }
     // v2.3: what a v2 peer sends right after connecting is its lobby state for us (the host sends it to every
     // newcomer): remembered, never started; the Join card offers it.
     let sessionState = isSessionState(from: peerId)
@@ -1047,49 +1166,44 @@ final class WatchTogetherClient {
     case "init":
       receivedInit(payload, from: peerId)
     case "media":
-      receivedMedia(payload, sessionState: sessionState)
+      receivedMedia(payload, from: key, sessionState: sessionState)
     case "index":
-      guard let index = payload["index"]?.intValue else { return }
-      if index != mediaIndex {
-        mediaIndex = index
-        // v2.2: not applied while watching on our own.
-        if following && !sessionState { onRemoteIndex?(index) }
-      }
+      receivedIndex(payload, from: peerId, senderKey: key, sessionState: sessionState)
     case "player":
-      receivedPlayer(payload, from: userId, sessionState: sessionState)
+      receivedPlayer(payload, from: key, userId: userId, sessionState: sessionState)
     case "message":
       receivedChat(payload, from: peerId)
     case "host":
-      receivedHost(payload, from: userId, peerId: peerId)
+      receivedHost(payload, from: key, userId: userId, peerId: peerId)
     case "status":
-      receivedStatus(payload, from: userId)
+      receivedStatus(payload, from: key)
     case "ping":
-      if !payload.isNull { sendEvent(to: peerId, type: "pong", payload: payload) }
+      sendEvent(to: peerId, type: "pong", payload: payload)
     case "pong":
-      receivedPong(payload, from: userId)
+      receivedPong(payload, from: key)
     case "request":
-      receivedRequest(payload, from: userId)
+      receivedRequest(payload, from: key)
     case "requestReply":
-      receivedRequestReply(payload, from: userId)
+      receivedRequestReply(payload, from: key)
     case "kick":
-      receivedKick(payload, from: userId)
+      receivedKick(payload, from: key)
     case "reaction":
       if let emoji = W2GSync.normalizeReaction(payload["emoji"]?.stringValue) {
-        showReaction(emoji, from: userId)
+        showReaction(emoji, from: key)
       }
     case "countdown":
-      receivedCountdown(payload, from: userId)
+      receivedCountdown(payload, from: key)
     case "invite":
-      receivedInvite(payload, from: userId)
+      receivedInvite(payload, from: key)
     case "voice":
-      receivedVoice(payload, from: userId)
+      receivedVoice(payload, from: key)
     case "voiceSignal":
-      receivedVoiceSignal(payload, from: userId)
+      receivedVoiceSignal(payload, from: key)
     case "queue":
-      receivedQueue(payload, from: userId)
+      receivedQueue(payload, from: key)
     case "queueAdd":
       if isHost {
-        _ = hostQueueChange(.add(item: payload["item"] ?? W2GJSON.null, by: userId, byName: nameOf(userId), byHost: false))
+        _ = hostQueueChange(.add(item: payload["item"] ?? W2GJSON.null, by: userId, byName: nameOf(key), byHost: false))
       }
     case "queueVote":
       if isHost, let id = W2GSync.queueId(payload["id"]) {
@@ -1107,11 +1221,18 @@ final class WatchTogetherClient {
   private func receivedInit(_ payload: W2GJSON, from peerId: String) {
     let user = W2GUser(json: payload, fallbackId: peerId)
     let userId = user.id
+    let sessionId = W2GSync.cleanSessionId(payload["sessionId"])
+    let key = W2GSync.memberKey(userId: userId, sessionId: sessionId)
     if banned.contains(userId) {
       swarm?.block(peerId)
       return
     }
-    let known = hasUser(userId)
+    // Our own instance (a link back to ourselves, or someone copying our session id).
+    guard key != selfKey else { return }
+    let known = hasMember(key)
+    // Another link already speaks for that member: an older app (no session id) that came back before its previous
+    // link closed.
+    let again = members.contains { !$0.isSelf && $0.id != peerId && $0.introduced && $0.memberKey == key }
     // A v1 client sends no `protocol`.
     let version = payload["protocol"]?.intValue ?? 1
     let client = payload["client"]?.stringValue
@@ -1125,18 +1246,24 @@ final class WatchTogetherClient {
       client: client,
       introduced: true,
       introducedAt: introducedAt ?? W2GSync.nowMs(),
-      features: W2GSync.normalizeFeatures(payload["features"])
+      features: W2GSync.normalizeFeatures(payload["features"]),
+      sessionId: sessionId
     )
     if let index = members.firstIndex(where: { !$0.isSelf && $0.id == peerId }) {
       members[index] = member
     } else {
       members.append(member)
     }
-    lastSeen[userId] = W2GSync.nowMs()
-    if !known { system("\(user.displayName) joined") }
+    lastSeen[key] = W2GSync.nowMs()
+    if !known { system("\(W2GSync.remoteName(user)) joined") }
+    // That member is the host but came back as a new instance: it does not know it is host (only the host tells
+    // newcomers), tell it.
+    if again, key == hostKey, !isHost, !hostTentative { sendEvent(to: peerId, type: "host", payload: hostPayload(key: key)) }
   }
 
-  private func receivedMedia(_ payload: W2GJSON, sessionState: Bool = false) {
+  private func receivedMedia(_ payload: W2GJSON, from senderKey: String, sessionState: Bool = false) {
+    // v2.5: in `host` mode only the host changes the lobby media.
+    if effectiveMode == .host && senderKey != hostKey { return }
     guard let mediaJSON = payload["media"], let mediaId = mediaJSON["id"], mediaId.isTruthy else { return }
     let episodeValue = payload["episode"]
     let ownKey = W2GMediaPayload.key(mediaId: mediaId, episode: episodeValue)
@@ -1151,7 +1278,7 @@ final class WatchTogetherClient {
       // v2.2: remembered (for "Rejoin"), not applied while watching on our own.
       // v2.3: a newcomer's lobby state, or any media while we are not in the player, is remembered too: the
       // Join card starts it (nothing starts on its own).
-      sharedMedia = shared
+      setSharedMedia(shared)
       return
     }
     rejoinLabel = nil
@@ -1160,7 +1287,7 @@ final class WatchTogetherClient {
 
   /// A received `media` (or a joined invite): it becomes the lobby title and starts locally.
   private func startShared(_ shared: W2GSharedMedia) {
-    sharedMedia = shared
+    setSharedMedia(shared)
     // WatchTogetherPage.svelte toast: "Starting <anilistClient.title(media) || 'the shared title'> - Episode N"
     let title = Self.sharedTitle(shared.media)
     var episodeNumber: Int?
@@ -1182,12 +1309,28 @@ final class WatchTogetherClient {
     return display.isEmpty ? "the shared title" : display
   }
 
-  private func receivedPlayer(_ payload: W2GJSON, from senderId: String, sessionState: Bool = false) {
+  /// v2.5 `index`: an episode-list position of the host (in `host` mode), on our episode.
+  private func receivedIndex(_ payload: W2GJSON, from peerId: String, senderKey: String, sessionState: Bool) {
+    guard let index = payload["index"]?.intValue else { return }
+    if effectiveMode == .host && senderKey != hostKey { return }
+    // A desktop file position means nothing in our episode list; and not from another episode than ours.
+    let client = members.first(where: { !$0.isSelf && $0.id == peerId })?.client
+    guard W2GSync.indexKind(payload["kind"]?.stringValue, client: client) == "episode" else { return }
+    guard W2GSync.sameEpisode(payload["mediaKey"]?.stringValue, local.mediaKey) else { return }
+    guard index != mediaIndex else { return }
+    mediaIndex = index
+    // v2.2: not applied while watching on our own.
+    if following && !sessionState { onRemoteIndex?(index) }
+  }
+
+  private func receivedPlayer(_ payload: W2GJSON, from senderKey: String, userId senderUserId: String, sessionState: Bool = false) {
     guard let time = payload["time"]?.doubleValue else { return }
     let paused = payload["paused"]?.isTruthy ?? false
-    // v1 senders omit `by`: the sender is the author.
-    let by = Self.idString(payload["by"]) ?? senderId
-    if effectiveMode == .host && by != hostId { return }
+    // v2.5: in `host` mode only what comes from the host's own link is applied: `by` is just a name.
+    if effectiveMode == .host && senderKey != hostKey { return }
+    // Who is named: the sender (v1 senders omit `by`), or the member it acts for.
+    var by = senderKey
+    if let sentBy = Self.idString(payload["by"]), sentBy != senderUserId { by = sentBy }
     let now = W2GSync.nowMs()
     let sentAction = payload["action"]?.stringValue.flatMap { W2GAction(rawValue: $0) }
     var action = sentAction ?? W2GSync.inferAction(previousPaused: player.paused, nextPaused: paused)
@@ -1197,12 +1340,20 @@ final class WatchTogetherClient {
     let rate = W2GSync.normalizeRate(payload["rate"]?.doubleValue)
 
     player = W2GPlayerState(paused: paused, time: time)
-    if let hostId, by == hostId {
+    if let hostKey, senderKey == hostKey {
       lastHostPlayer = W2GHostPlayer(time: time, paused: paused, rate: rate, at: now)
+    }
+    // Not from another episode than ours: v2.5 senders say which one (`mediaKey`); for older ones, our player on
+    // another media than the lobby's.
+    let otherEpisode: Bool
+    if let sentKey = payload["mediaKey"]?.stringValue {
+      otherEpisode = !W2GSync.sameEpisode(sentKey, local.mediaKey)
+    } else {
+      otherEpisode = !local.mediaKey.isEmpty && sharedMedia != nil && local.mediaKey != sharedMedia?.key
     }
     // v2.2: not applied while watching on our own (the chat still tells what happened).
     // v2.3: nor the lobby state a peer sends when it connects.
-    if following && !sessionState {
+    if following && !sessionState && !otherEpisode {
       cancelCountdown()
       apply(W2GPlayerCommand(time: time, paused: paused, action: action, by: by, rate: rate, isPrecise: sentAction != nil))
     }
@@ -1211,7 +1362,7 @@ final class WatchTogetherClient {
     let delta: Double? = action == .seek ? time - reference : nil
     guard let text = W2GSync.describeAction(name: nameOf(by), action: action, time: time, delta: delta) else { return }
     system(text)
-    guard following else { return }
+    guard following, !otherEpisode else { return }
     showNotice(text)
   }
 
@@ -1233,7 +1384,7 @@ final class WatchTogetherClient {
     guard !isPlayerPanelOpen else { return }
     unreadCount += 1
     let short = limited.count > 160 ? String(limited.prefix(160)) + "…" : limited
-    let bubble = W2GChatBubble(name: user.displayName, text: short)
+    let bubble = W2GChatBubble(name: W2GSync.remoteName(user), text: short)
     bubbles = Array((bubbles + [bubble]).suffix(3))
     let bubbleId = bubble.id
     w2gAfter(W2GSync.bubbleSeconds) { [weak self] in
@@ -1241,22 +1392,34 @@ final class WatchTogetherClient {
     }
   }
 
-  private func receivedHost(_ payload: W2GJSON, from senderId: String, peerId: String) {
+  private func receivedHost(_ payload: W2GJSON, from senderKey: String, userId senderUserId: String, peerId: String) {
     guard let newHost = Self.idString(payload["hostId"]) else { return }
     let newMode = W2GMode.normalize(payload["mode"]?.stringValue)
+    let newKey = W2GSync.resolveHostKey(
+      hostId: newHost,
+      hostSession: W2GSync.cleanSessionId(payload["hostSession"]),
+      senderKey: senderKey,
+      senderUserId: senderUserId,
+      members: identities()
+    )
     // Accept `host` only from the current host, or from anyone while no host is known.
-    if let current = hostId, !hostTentative, senderId != current {
-      // Two hosts (after a split): the smallest userId keeps the role.
-      let rivalClaim = isHost && newHost == senderId
-      if !(rivalClaim && W2GSync.jsLess(senderId, selfId)) {
-        if isHost { sendEvent(to: peerId, type: "host", payload: hostPayload(hostId: selfId)) }
+    if let current = hostKey, !hostTentative, senderKey != current {
+      // Two hosts (after a split or a reconnect): the smallest key keeps the role.
+      let rivalClaim = isHost && newKey == senderKey
+      if !(rivalClaim && W2GSync.jsLess(senderKey, selfKey)) {
+        if isHost { sendEvent(to: peerId, type: "host", payload: hostPayload(key: selfKey)) }
         return
       }
+      // v2.5: we yield. The members who follow us only take `host` from us: pass the winner on, or they would keep a
+      // host that no longer acts as one.
+      setLobby(hostId: newHost, hostKey: newKey, mode: newMode, tentative: false)
+      broadcast(type: "host", payload: hostPayload(key: newKey))
+      return
     }
-    setLobby(hostId: newHost, mode: newMode, tentative: false)
+    setLobby(hostId: newHost, hostKey: newKey, mode: newMode, tentative: false)
   }
 
-  private func receivedStatus(_ payload: W2GJSON, from userId: String) {
+  private func receivedStatus(_ payload: W2GJSON, from key: String) {
     guard let state = W2GPlaybackState.normalize(payload["state"]?.stringValue),
           let time = payload["time"]?.doubleValue else { return }
     let now = W2GSync.nowMs()
@@ -1284,26 +1447,27 @@ final class WatchTogetherClient {
       following: followingValue,
       nowPlaying: nowPlaying
     )
-    if userId != selfId {
-      let step = W2GSync.presenceAfterStatus(presence[userId] ?? W2GPresenceMemory(), status: status, now: now)
-      presence[userId] = step.memory
-      announcePresence(step.events, of: userId)
+    if key != selfKey {
+      let step = W2GSync.presenceAfterStatus(presence[key] ?? W2GPresenceMemory(), status: status, now: now)
+      presence[key] = step.memory
+      announcePresence(step.events, of: key)
     }
-    var signal = signals[userId] ?? W2GSignal()
+    var signal = signals[key] ?? W2GSignal()
     signal.status = status
     signal.receivedAt = now
-    signals[userId] = signal
-    if let hostId, userId == hostId, !isHost { checkAutoSync(now: now) }
+    signals[key] = signal
+    if let hostKey, key == hostKey, !isHost { checkAutoSync(now: now) }
   }
 
-  private func receivedPong(_ payload: W2GJSON, from userId: String) {
+  private func receivedPong(_ payload: W2GJSON, from key: String) {
     guard let sentAt = payload["sentAt"]?.doubleValue else { return }
-    let rtt = W2GSync.nowMs() - sentAt
-    guard rtt >= 0, rtt <= 60_000 else { return }
-    var signal = signals[userId] ?? W2GSignal()
-    signal.rtt = rtt
-    signal.pongAt = W2GSync.nowMs()
-    signals[userId] = signal
+    let now = W2GSync.nowMs()
+    var signal = signals[key] ?? W2GSignal()
+    // v2.5: smoothed, without samples above 5 s or from pings sent before the app was suspended (a single 30 s
+    // sample moved the expected time of the host by 15 s).
+    if let rtt = W2GSync.nextRtt(previous: signal.rtt, sentAt: sentAt, now: now, resumedAt: resumedAt) { signal.rtt = rtt }
+    signal.pongAt = now
+    signals[key] = signal
   }
 
   private func receivedRequest(_ payload: W2GJSON, from userId: String) {
@@ -1333,7 +1497,7 @@ final class WatchTogetherClient {
   }
 
   private func receivedRequestReply(_ payload: W2GJSON, from senderId: String) {
-    guard let hostId, senderId == hostId, let id = Self.idString(payload["id"]) else { return }
+    guard let hostKey, senderId == hostKey, let id = Self.idString(payload["id"]) else { return }
     let mine = myRequests.remove(id) != nil
     let owner = requestOwners.removeValue(forKey: id)
     let whose: String
@@ -1351,7 +1515,7 @@ final class WatchTogetherClient {
   }
 
   private func receivedKick(_ payload: W2GJSON, from senderId: String) {
-    guard let hostId, senderId == hostId, let target = Self.idString(payload["userId"]) else { return }
+    guard let hostKey, senderId == hostKey, let target = Self.idString(payload["userId"]) else { return }
     if target == selfId {
       leave()
       post(title: "Watch Together", message: "You were removed from the lobby")
@@ -1361,14 +1525,15 @@ final class WatchTogetherClient {
   }
 
   private func receivedCountdown(_ payload: W2GJSON, from senderId: String) {
-    guard senderId == hostId || effectiveMode == .everyone else { return }
+    guard senderId == hostKey || effectiveMode == .everyone else { return }
     guard let time = payload["time"]?.doubleValue, time >= 0 else { return }
     let seconds = W2GSync.normalizeCountdownSeconds(Self.numberValue(payload["seconds"]))
     // startAt is on the sender's clock: count from the reception, minus half the trip.
     let rtt: Double = signals[senderId]?.rtt ?? 0
     let endsAt = W2GSync.nowMs() + Double(seconds) * 1000 - rtt / 2
-    // v2.2: not applied while watching on our own. v2.4: nor on another episode than the lobby's.
-    if following && W2GSync.appliesCountdown(localKey: local.mediaKey, lobbyKey: sharedMedia?.key) {
+    // v2.2: not applied while watching on our own. v2.4: nor on another episode than the lobby's; v2.5: than the sender's.
+    let sameEpisode = W2GSync.sameEpisode(payload["mediaKey"]?.stringValue, local.mediaKey)
+    if following && sameEpisode && W2GSync.appliesCountdown(localKey: local.mediaKey, lobbyKey: sharedMedia?.key) {
       runCountdown(time: time, seconds: seconds, endsAt: endsAt, by: senderId)
     }
     system("\(nameOf(senderId)) started a countdown")
@@ -1379,7 +1544,7 @@ final class WatchTogetherClient {
   /// Long buffering and lost connection of the other members (once a second).
   private func checkPresence(now: Double) {
     for (userId, memory) in presence {
-      guard userId != selfId, hasUser(userId), !banned.contains(userId) else { continue }
+      guard userId != selfKey, hasMember(userId), !banned.contains(memberOf(userId)?.userId ?? userId) else { continue }
       let signal = signals[userId]
       let step = W2GSync.presenceTick(memory, lastStatusAt: signal?.receivedAt, lastPongAt: signal?.pongAt, now: now)
       if step.memory != memory { presence[userId] = step.memory }
@@ -1416,7 +1581,7 @@ final class WatchTogetherClient {
       isSelf: member.isSelf,
       protocolVersion: member.protocolVersion,
       badge: badge.kind,
-      status: signals[member.userId]?.status,
+      status: signals[member.memberKey]?.status,
       introducedAt: member.introducedAt,
       now: now
     )
@@ -1427,10 +1592,11 @@ final class WatchTogetherClient {
     let key = offeredKey()
     var ids: [String] = []
     for member in members where !member.isSelf && member.introduced && !banned.contains(member.userId) {
-      guard !ids.contains(member.userId) else { continue }
-      let signal = signals[member.userId] ?? W2GSignal()
-      let badge = W2GSync.syncBadge(signal: signal, protocolVersion: member.protocolVersion, lastSeen: lastSeen[member.userId], local: local, now: now, introducedAt: member.introducedAt)
-      if canInvite(member: member, badge: badge, offeredKey: key, now: now) { ids.append(member.userId) }
+      let memberKey = member.memberKey
+      guard !ids.contains(memberKey) else { continue }
+      let signal = signals[memberKey] ?? W2GSignal()
+      let badge = W2GSync.syncBadge(signal: signal, protocolVersion: member.protocolVersion, lastSeen: lastSeen[memberKey], local: local, now: now, introducedAt: member.introducedAt)
+      if canInvite(member: member, badge: badge, offeredKey: key, now: now) { ids.append(memberKey) }
     }
     return ids
   }
@@ -1459,8 +1625,8 @@ final class WatchTogetherClient {
   /// v2.1 `invite`: ask a member to watch our media from our position, or (v2.3, from anywhere) the lobby media
   /// from the reference's position (broadcast; only `to` acts on it).
   @discardableResult
-  func invite(_ userId: String) -> Bool {
-    guard isInLobby, userId != selfId, effectiveMode == .everyone || isHost else { return false }
+  func invite(_ key: String) -> Bool {
+    guard isInLobby, key != selfKey, effectiveMode == .everyone || isHost, let target = memberOf(key), target.introduced else { return false }
     let now = W2GSync.nowMs()
     sampleLocalPlayback(now: now)
     let key: String
@@ -1491,7 +1657,9 @@ final class WatchTogetherClient {
       return false
     }
     var fields: [(String, W2GJSON?)] = []
-    fields.append(("to", W2GJSON.text(userId)))
+    fields.append(("to", W2GJSON.text(target.userId)))
+    // v2.5: only that device of the account takes it.
+    if let session = target.sessionId { fields.append(("toSession", W2GJSON.text(session))) }
     fields.append(("media", mediaJSON))
     fields.append(("episode", episodeJSON))
     fields.append(("key", W2GJSON.text(key)))
@@ -1499,7 +1667,7 @@ final class WatchTogetherClient {
     fields.append(("paused", W2GJSON.bool(paused)))
     fields.append(("by", W2GJSON.text(selfId)))
     broadcast(type: "invite", payload: W2GJSON.dict(fields))
-    system("You invited \(nameOf(userId))")
+    system("You invited \(nameOf(key))")
     return true
   }
 
@@ -1509,16 +1677,16 @@ final class WatchTogetherClient {
   /// userId on it (us included); nil when the lobby is not watching.
   func lobbyReferenceId() -> String? {
     guard let shared = sharedMedia else { return nil }
-    var candidates: [W2GReferenceCandidate] = [W2GReferenceCandidate(userId: selfId, status: localStatus.status)]
+    var candidates: [W2GReferenceCandidate] = [W2GReferenceCandidate(userId: selfKey, status: localStatus.status)]
     for member in members where !member.isSelf && member.introduced && !banned.contains(member.userId) {
-      candidates.append(W2GReferenceCandidate(userId: member.userId, status: signals[member.userId]?.status))
+      candidates.append(W2GReferenceCandidate(userId: member.memberKey, status: signals[member.memberKey]?.status))
     }
-    return W2GSync.lobbyReference(lobbyKey: shared.key, hostId: hostId, candidates: candidates)
+    return W2GSync.lobbyReference(lobbyKey: shared.key, hostId: hostKey, candidates: candidates)
   }
 
   /// Where the reference is expected to be now.
   private func referenceTarget(_ userId: String, now: Double) -> W2GHostTarget? {
-    if userId == selfId {
+    if userId == selfKey {
       guard let time = localTime(now) else { return nil }
       return W2GHostTarget(time: time, paused: local.state == .paused, mediaKey: local.mediaKey)
     }
@@ -1532,7 +1700,7 @@ final class WatchTogetherClient {
     let reference = lobbyReferenceId()
     guard W2GSync.offersJoin(
       referenceId: reference,
-      selfId: selfId,
+      selfId: selfKey,
       localState: localStatus.state,
       localKey: localStatus.mediaKey,
       following: following,
@@ -1591,7 +1759,7 @@ final class WatchTogetherClient {
     pendingJoin = nil
     let reference = lobbyReferenceId()
     var found: W2GHostTarget?
-    if let referenceId = reference, referenceId != selfId { found = referenceTarget(referenceId, now: now) }
+    if let referenceId = reference, referenceId != selfKey { found = referenceTarget(referenceId, now: now) }
     if found == nil { found = hostTarget(now: now) }
     guard let target = found else { return true }
     applyLocally(time: target.time, paused: target.paused, by: reference ?? hostId)
@@ -1655,7 +1823,16 @@ final class WatchTogetherClient {
 
   private func receivedInvite(_ payload: W2GJSON, from senderId: String) {
     // For us, not from us; anyone in `everyone` mode, the host only in `host` mode.
-    guard W2GSync.acceptsInvite(to: Self.idString(payload["to"]), selfId: selfId, senderId: senderId, hostId: hostId, mode: effectiveMode) else { return }
+    guard W2GSync.acceptsInvite(
+      to: Self.idString(payload["to"]),
+      toSession: payload["toSession"]?.stringValue,
+      selfId: selfId,
+      sessionId: sessionId,
+      senderId: senderId,
+      selfKey: selfKey,
+      hostId: hostKey,
+      mode: effectiveMode
+    ) else { return }
     guard let mediaJSON = payload["media"], let mediaId = mediaJSON["id"], mediaId.isTruthy else { return }
     let episodeValue = payload["episode"]
     let ownKey = W2GMediaPayload.key(mediaId: mediaId, episode: episodeValue)
@@ -1756,9 +1933,10 @@ final class WatchTogetherClient {
   private func electionPeers() -> [W2GElectionCandidate] {
     var list: [W2GElectionCandidate] = []
     for member in members where !member.isSelf && member.introduced && !banned.contains(member.userId) {
-      if list.contains(where: { $0.userId == member.userId }) { continue }
-      let followingValue = signals[member.userId]?.status?.following ?? true
-      list.append(W2GElectionCandidate(userId: member.userId, protocolVersion: member.protocolVersion, following: followingValue))
+      let key = member.memberKey
+      if list.contains(where: { $0.userId == key }) { continue }
+      let followingValue = signals[key]?.status?.following ?? true
+      list.append(W2GElectionCandidate(userId: key, protocolVersion: member.protocolVersion, following: followingValue))
     }
     return list
   }
@@ -1772,15 +1950,15 @@ final class WatchTogetherClient {
     if let engine = voiceEngineStorage { return engine }
     let engine = W2GVoiceEngine()
     engine.onStateChange = { [weak self] in self?.voiceEngineChanged() }
-    engine.onSignal = { [weak self] userId, payload in self?.sendToUser(userId, type: "voiceSignal", payload: payload) }
+    engine.onSignal = { [weak self] key, payload in self?.sendToMember(key, type: "voiceSignal", payload: payload) }
     engine.onLinksChange = { [weak self] in
       guard let self, let engine = self.voiceEngineStorage else { return }
       self.voiceLinks = engine.linkStates
       self.updateDuck()
     }
-    engine.wantsOffer = { [weak self] userId in
+    engine.wantsOffer = { [weak self] key in
       guard let self else { return false }
-      return self.voice.joined && W2GSync.voiceOffers(selfId: self.selfId, otherId: userId) && self.memberInVoice(userId)
+      return self.voice.joined && self.selfOffers(key) && self.memberInVoice(key)
     }
     voiceEngineStorage = engine
     return engine
@@ -1828,7 +2006,7 @@ final class WatchTogetherClient {
   /// Names of the other members speaking (player overlay while the panel is closed).
   var speakingNames: [(userId: String, name: String)] {
     guard voice.joined else { return [] }
-    return voiceStates.filter { $0.value.joined && $0.value.speaking && hasUser($0.key) }
+    return voiceStates.filter { $0.value.joined && $0.value.speaking && hasMember($0.key) }
       .map { (userId: $0.key, name: nameOf($0.key)) }
       .sorted { $0.name < $1.name }
   }
@@ -1838,19 +2016,27 @@ final class WatchTogetherClient {
     return W2GMemberVoice(joined: state.joined, muted: state.muted, speaking: state.speaking, connected: voiceLinks[userId], mix: voiceMixes[userId] ?? W2GVoiceMix())
   }
 
-  private func hasFeature(_ userId: String, _ feature: String) -> Bool {
-    members.contains { !$0.isSelf && $0.userId == userId && $0.features.contains(feature) }
+  private func hasFeature(_ key: String, _ feature: String) -> Bool {
+    members.contains { !$0.isSelf && $0.memberKey == key && $0.features.contains(feature) }
   }
 
-  private func memberInVoice(_ userId: String) -> Bool {
-    (voiceStates[userId]?.joined ?? false) && hasFeature(userId, "voice") && !banned.contains(userId)
+  private func memberInVoice(_ key: String) -> Bool {
+    guard let member = memberOf(key) else { return false }
+    return (voiceStates[key]?.joined ?? false) && member.features.contains("voice") && !banned.contains(member.userId)
   }
 
-  /// Sends an event to one member (its first open link).
+  /// Of us and that member, we offer the audio link (both sides compare the same ids, W2GSync.pairIds).
+  private func selfOffers(_ key: String) -> Bool {
+    guard key != selfKey, let member = memberOf(key) else { return false }
+    let ids = W2GSync.pairIds(selfId: selfId, selfSession: sessionId, otherId: member.userId, otherSession: member.sessionId)
+    return W2GSync.voiceOffers(selfId: ids.0, otherId: ids.1)
+  }
+
+  /// Sends an event to one member (`key`: member key), on its first open link.
   @discardableResult
-  private func sendToUser(_ userId: String?, type: String, payload: W2GJSON) -> Bool {
-    guard let userId, let swarm else { return false }
-    for member in members where !member.isSelf && member.userId == userId && swarm.isPeerConnected(member.id) {
+  private func sendToMember(_ key: String?, type: String, payload: W2GJSON) -> Bool {
+    guard let key, let swarm else { return false }
+    for member in members where !member.isSelf && member.memberKey == key && swarm.isPeerConnected(member.id) {
       sendEvent(to: member.id, type: type, payload: payload)
       return true
     }
@@ -1871,12 +2057,14 @@ final class WatchTogetherClient {
   }
 
   private func receivedVoice(_ payload: W2GJSON, from userId: String) {
-    guard userId != selfId else { return }
+    guard userId != selfKey else { return }
     let state = W2GSync.normalizeVoice(payload)
     let previous = voiceStates[userId]
     voiceStates[userId] = state
     if state.joined != (previous?.joined ?? false) && (previous != nil || state.joined) {
       system("\(nameOf(userId)) \(state.joined ? "joined" : "left") voice")
+      // Joined again: a link that gave up before can be tried at once.
+      if state.joined { voiceEngineStorage?.resetRetries(userId) }
     }
     syncVoiceLinks()
     updateDuck()
@@ -1885,7 +2073,9 @@ final class WatchTogetherClient {
   private func receivedVoiceSignal(_ payload: W2GJSON, from userId: String) {
     guard let engine = voiceEngineStorage, engine.joined else { return }
     if payload["sdp"]?["type"]?.stringValue == "offer" {
-      guard W2GSync.acceptsVoiceOffer(selfJoined: engine.joined, memberJoined: memberInVoice(userId), selfId: selfId, senderId: userId) else { return }
+      guard let member = memberOf(userId) else { return }
+      let ids = W2GSync.pairIds(selfId: selfId, selfSession: sessionId, otherId: member.userId, otherSession: member.sessionId)
+      guard W2GSync.acceptsVoiceOffer(selfJoined: engine.joined, memberJoined: memberInVoice(userId), selfId: ids.0, senderId: ids.1) else { return }
     }
     engine.signal(from: userId, payload: payload)
   }
@@ -1893,14 +2083,14 @@ final class WatchTogetherClient {
   /// Creates the links we offer and closes the ones nobody needs anymore.
   private func syncVoiceLinks() {
     guard let engine = voiceEngineStorage else { return }
-    let ids = connectedUserIds()
+    let ids = connectedKeys()
     for userId in ids {
       let action = W2GSync.voiceLinkAction(
         selfJoined: engine.joined,
         memberJoined: voiceStates[userId]?.joined ?? false,
         memberHasVoice: hasFeature(userId, "voice"),
         hasLink: engine.hasLink(userId),
-        selfOffers: W2GSync.voiceOffers(selfId: selfId, otherId: userId)
+        selfOffers: selfOffers(userId)
       )
       switch action {
       case .offer: engine.connect(userId)
@@ -1913,7 +2103,7 @@ final class WatchTogetherClient {
 
   /// Lowers the video while a member we hear speaks (setting `w2gVoiceDucking`).
   private func updateDuck() {
-    let candidates = connectedUserIds().map { userId -> W2GDuckCandidate in
+    let candidates = connectedKeys().map { userId -> W2GDuckCandidate in
       let state = voiceStates[userId] ?? W2GVoiceState()
       let mix = voiceMixes[userId] ?? W2GVoiceMix()
       return W2GDuckCandidate(joined: state.joined, speaking: state.speaking, localMuted: mix.muted, volume: mix.volume)
@@ -1937,8 +2127,8 @@ final class WatchTogetherClient {
 
   /// The queue exists: we are the host, or the host's app supports it.
   var queueAvailable: Bool {
-    guard isInLobby, let hostId else { return false }
-    return hostId == selfId || hasFeature(hostId, "queue")
+    guard isInLobby, let hostKey else { return false }
+    return hostKey == selfKey || hasFeature(hostKey, "queue")
   }
 
   /// "Add to Watch Together queue": the host adds it at once, a member sends it to the host (a suggestion when the
@@ -1971,7 +2161,7 @@ final class WatchTogetherClient {
       let item = W2GJSON.dict(fields)
       if isHost {
         result = hostQueueChange(.add(item: item, by: selfId, byName: selfUser.displayName, byHost: true)) ? .added : .duplicate
-      } else if sendToUser(hostId, type: "queueAdd", payload: W2GJSON.dict([("item", item)])) {
+      } else if sendToMember(hostKey, type: "queueAdd", payload: W2GJSON.dict([("item", item)])) {
         result = queue.policy == .approval ? .suggested : .added
       } else {
         result = .unavailable
@@ -2002,7 +2192,7 @@ final class WatchTogetherClient {
     if isHost {
       _ = hostQueueChange(.vote(id: id, by: selfId, up: up))
     } else {
-      sendToUser(hostId, type: "queueVote", payload: W2GJSON.dict([("id", .text(id)), ("up", .bool(up))]))
+      sendToMember(hostKey, type: "queueVote", payload: W2GJSON.dict([("id", .text(id)), ("up", .bool(up))]))
     }
   }
 
@@ -2014,7 +2204,7 @@ final class WatchTogetherClient {
     }
     guard let item = (queue.items + queue.pending).first(where: { $0.id == id }), item.addedBy == selfId else { return }
     queueCancelled.insert(id)
-    sendToUser(hostId, type: "queueRemove", payload: W2GJSON.dict([("id", .text(id))]))
+    sendToMember(hostKey, type: "queueRemove", payload: W2GJSON.dict([("id", .text(id))]))
   }
 
   /// Host: move an item up (-1) or down (+1).
@@ -2044,7 +2234,7 @@ final class WatchTogetherClient {
     pendingJoin = nil
     pendingInvite = nil
     pendingQueueStart = (key: item.key, at: W2GSync.nowMs())
-    sharedMedia = shared
+    setSharedMedia(shared)
     broadcast(type: "media", payload: shared.payload)
     system("You started \(item.label) from Up next")
     startShared(shared)
@@ -2074,7 +2264,7 @@ final class WatchTogetherClient {
   }
 
   private func receivedQueue(_ payload: W2GJSON, from senderId: String) {
-    guard !isHost, W2GSync.acceptsQueue(senderId: senderId, hostId: hostId, tentative: hostTentative) else { return }
+    guard !isHost, W2GSync.acceptsQueue(senderId: senderId, hostId: hostKey, tentative: hostTentative) else { return }
     guard let next = W2GSync.normalizeQueue(payload) else { return }
     applyQueue(next)
   }
@@ -2102,19 +2292,26 @@ final class WatchTogetherClient {
 
   // MARK: Host, sync, helpers
 
-  private func setLobby(hostId newHost: String?, mode newMode: W2GMode, tentative: Bool) {
-    let previousHost = hostId
+  private func setLobby(hostId newHost: String?, hostKey newKey: String?, mode newMode: W2GMode, tentative: Bool) {
+    let previousHost = hostKey
     let previousMode = mode
     hostId = newHost
+    hostKey = newKey
     mode = newMode
     hostTentative = tentative
-    if previousHost != newHost {
+    if !tentative {
+      // A host is confirmed: the next election starts over.
+      tentativeTask?.cancel()
+      tentativeTask = nil
+      electionSkip = []
+    }
+    if previousHost != newKey {
       autoSync = W2GAutoSyncMemory()
       lastHostPlayer = nil
-      if let newHost {
-        system(newHost == selfId ? "You are now the host" : "\(nameOf(newHost)) is now the host")
+      if let newKey {
+        system(newKey == selfKey ? "You are now the host" : "\(nameOf(newKey)) is now the host")
       }
-      if let previousHost, previousHost == selfId {
+      if let previousHost, previousHost == selfKey {
         // No longer host: pending requests go to the new host.
         for task in requestTimers.values { task.cancel() }
         requestTimers = [:]
@@ -2123,7 +2320,7 @@ final class WatchTogetherClient {
         pendingQueueStart = nil
       }
       // v2.4: a new host takes over its copy of the queue and shares it at once.
-      if let newHost, newHost == selfId, !tentative {
+      if let newKey, newKey == selfKey, !tentative {
         queueKnown = true
         broadcast(type: "queue", payload: queue.json)
       }
@@ -2133,24 +2330,32 @@ final class WatchTogetherClient {
     }
   }
 
-  /// The host left: the smallest userId among us and the connected peers takes over.
+  /// The host left: the smallest member key among us and the connected v2 peers takes over. v2.5: never a v1 client,
+  /// and an elected member that does not claim the role within tentativeHostMs is skipped (the election runs again).
   private func migrateHost() {
+    tentativeTask?.cancel()
+    tentativeTask = nil
     // v2.2: members watching on their own are skipped unless nobody follows.
-    let candidates = W2GSync.migrationCandidates(selfId: selfId, selfFollowing: following, peers: electionPeers())
-    let elected = W2GSync.electHost(candidates) ?? selfId
-    if elected == selfId {
-      setLobby(hostId: selfId, mode: mode, tentative: false)
-      broadcast(type: "host", payload: hostPayload(hostId: selfId))
-    } else {
-      // Until the elected client confirms with `host`, accept a claim from anyone.
-      setLobby(hostId: elected, mode: mode, tentative: true)
+    let candidates = W2GSync.migrationCandidates(selfId: selfKey, selfFollowing: following, peers: electionPeers(), skip: electionSkip)
+    let elected = W2GSync.electHost(candidates) ?? selfKey
+    if elected == selfKey {
+      setLobby(hostId: selfId, hostKey: selfKey, mode: mode, tentative: false)
+      broadcast(type: "host", payload: hostPayload(key: selfKey))
+      return
+    }
+    // Until the elected client confirms with `host`, accept a claim from anyone.
+    setLobby(hostId: memberOf(elected)?.userId ?? elected, hostKey: elected, mode: mode, tentative: true)
+    tentativeTask = w2gAfter(W2GSync.tentativeHostMs / 1000) { [weak self] in
+      guard let self, self.hostTentative, self.hostKey == elected else { return }
+      self.electionSkip.insert(elected)
+      self.migrateHost()
     }
   }
 
   private func checkAutoSync(now: Double) {
-    guard following, let hostId else { return }
+    guard following, let hostKey else { return }
     sampleLocalPlayback(now: now)
-    let host = signals[hostId]
+    let host = signals[hostKey]
     let result = W2GSync.autoSyncStep(
       autoSync,
       enabled: AppSettings.shared.values.w2gAutoSync,
@@ -2163,7 +2368,7 @@ final class WatchTogetherClient {
     )
     autoSync = result.memory
     guard let seekTo = result.seekTo else { return }
-    applyLocally(time: seekTo, paused: false, by: hostId)
+    applyLocally(time: seekTo, paused: false, by: hostKey)
   }
 
   private func apply(_ command: W2GPlayerCommand) {
@@ -2181,9 +2386,12 @@ final class WatchTogetherClient {
   }
 
   private func hostTarget(now: Double) -> W2GHostTarget? {
-    guard let hostId, !isHost else { return nil }
-    let host = signals[hostId]
-    return W2GSync.hostReference(status: host?.status, receivedAt: host?.receivedAt, rttMs: host?.rtt, lastPlayer: lastHostPlayer, now: now)
+    guard let hostKey, !isHost else { return nil }
+    let host = signals[hostKey]
+    // v2.5: the last `player` event only stands for the position of a v1 host, which sends no `status`.
+    let hostVersion = memberOf(hostKey)?.protocolVersion
+    let lastPlayer = (hostVersion ?? W2GSync.protocolVersion) < W2GSync.protocolVersion ? lastHostPlayer : nil
+    return W2GSync.hostReference(status: host?.status, receivedAt: host?.receivedAt, rttMs: host?.rtt, lastPlayer: lastPlayer, now: now)
   }
 
   /// Our position now, nil when we are not watching.
@@ -2213,19 +2421,16 @@ final class WatchTogetherClient {
     if countdown != nil { countdown = nil }
   }
 
+  /// Kicks name accounts: every device of that userId is removed.
   private func ban(_ userId: String) {
     guard !banned.contains(userId) else { return }
-    let user = userOf(userId)
+    let user = members.first(where: { !$0.isSelf && $0.userId == userId })?.user
     banned.insert(userId)
-    let peerIds = members.filter { !$0.isSelf && $0.userId == userId }.map { $0.id }
+    let removed = members.filter { !$0.isSelf && $0.userId == userId }
     members.removeAll { !$0.isSelf && $0.userId == userId }
-    signals[userId] = nil
-    lastSeen[userId] = nil
-    presence[userId] = nil
-    invites.removeAll { $0.from == userId }
-    forgetVoice(userId)
-    for peerId in peerIds { swarm?.block(peerId) }
-    let name = user?.displayName ?? W2GSync.memberName(name: nil, typedName: nil, id: userId)
+    for key in Set(removed.map { $0.memberKey }) { forgetMember(key) }
+    for member in removed { swarm?.block(member.id) }
+    let name = user.map { W2GSync.remoteName($0) } ?? W2GSync.memberName(name: nil, typedName: nil, id: userId)
     system("\(name) was removed from the lobby")
   }
 
@@ -2278,24 +2483,37 @@ final class WatchTogetherClient {
     showNotice("Only the host controls playback", request: request, seconds: W2GSync.blockedNoticeSeconds)
   }
 
+  /// `init.id` of a transport peer (its transport id before its `init`).
   private func userIdOf(_ peerId: String) -> String {
     members.first(where: { !$0.isSelf && $0.id == peerId })?.userId ?? peerId
   }
 
-  private func userOf(_ userId: String) -> W2GUser? {
-    if userId == selfId { return selfUser }
-    return members.first(where: { !$0.isSelf && $0.userId == userId })?.user
+  /// v2.5 member key of a transport peer (its transport id before its `init`).
+  private func keyOf(_ peerId: String) -> String {
+    members.first(where: { !$0.isSelf && $0.id == peerId })?.memberKey ?? peerId
   }
 
-  private func hasUser(_ userId: String) -> Bool {
-    members.contains { !$0.isSelf && $0.userId == userId }
+  /// A remote member by member key.
+  private func memberOf(_ key: String) -> W2GMember? {
+    members.first { !$0.isSelf && $0.memberKey == key }
   }
 
-  /// Remote participants that introduced themselves (host election).
-  private func connectedUserIds() -> [String] {
+  private func hasMember(_ key: String) -> Bool {
+    members.contains { !$0.isSelf && $0.memberKey == key }
+  }
+
+  /// Every member we know, ourselves included: member key and `init.id`.
+  private func identities() -> [(key: String, userId: String)] {
+    var list: [(key: String, userId: String)] = [(key: selfKey, userId: selfId)]
+    for member in members where !member.isSelf { list.append((key: member.memberKey, userId: member.userId)) }
+    return list
+  }
+
+  /// Remote participants that introduced themselves (host election, voice), by member key.
+  private func connectedKeys() -> [String] {
     var ids: [String] = []
     for member in members where !member.isSelf && member.introduced && !banned.contains(member.userId) {
-      if !ids.contains(member.userId) { ids.append(member.userId) }
+      if !ids.contains(member.memberKey) { ids.append(member.memberKey) }
     }
     return ids
   }

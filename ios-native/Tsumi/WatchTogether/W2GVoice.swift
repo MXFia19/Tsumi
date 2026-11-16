@@ -23,7 +23,9 @@ enum W2GVoiceAudio {
     configuration.category = AVAudioSession.Category.playAndRecord.rawValue
     // videoChat: speaker by default, voice processing on; the video keeps playing through the same session.
     configuration.mode = AVAudioSession.Mode.videoChat.rawValue
-    configuration.categoryOptions = [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
+    // No `.allowBluetooth` (hands-free profile): AirPods would switch to the call codec and the video would sound
+    // like a phone call. With A2DP only they keep their quality, and the phone's microphone is used.
+    configuration.categoryOptions = [.defaultToSpeaker, .allowBluetoothA2DP]
     RTCAudioSessionConfiguration.setWebRTC(configuration)
     let session = RTCAudioSession.sharedInstance()
     session.useManualAudio = true
@@ -41,6 +43,7 @@ enum W2GVoiceAudio {
   /// Back to what the player uses (`.playback` / `.moviePlayback`), or released without a player.
   static func deactivate(playerOpen: Bool) {
     guard isActive else { return }
+    setInputMuted(false)
     let session = RTCAudioSession.sharedInstance()
     session.isAudioEnabled = false
     isActive = false
@@ -49,6 +52,16 @@ enum W2GVoiceAudio {
     } else {
       PlayerAudioSession.deactivate()
     }
+  }
+}
+
+extension W2GVoiceAudio {
+  /// Hardware mute of the microphone (iOS 17 app input mute) while we don't transmit: nothing is captured at all, not
+  /// only a disabled track. Undone when leaving voice.
+  static func setInputMuted(_ muted: Bool) {
+    let application = AVAudioApplication.shared
+    guard application.isInputMuted != muted else { return }
+    try? application.setInputMuted(muted)
   }
 }
 
@@ -100,6 +113,8 @@ final class W2GVoiceLink {
   private(set) var isConnected = false
   private(set) var isClosed = false
   private(set) var connection: RTCPeerConnection?
+  /// Sender of our microphone track (its stats give our level).
+  private var micSender: RTCRtpSender?
   var onConnected: (() -> Void)?
   var onFailed: (() -> Void)?
 
@@ -114,7 +129,8 @@ final class W2GVoiceLink {
 
   init?(userId: String, id: String) {
     let configuration = RTCConfiguration()
-    configuration.iceServers = [RTCIceServer(urlStrings: W2GRTC.iceServerURLs)]
+    // STUN, plus the optional TURN server of the settings (v2.5).
+    configuration.iceServers = W2GRTC.iceServers()
     let created: RTCPeerConnection? = W2GRTC.factory.peerConnection(with: configuration, constraints: W2GRTC.makeConstraints(), delegate: nil)
     guard let pc = created else { return nil }
     self.userId = userId
@@ -132,7 +148,7 @@ final class W2GVoiceLink {
   func attach(_ track: RTCAudioTrack?) {
     guard let pc = connection else { return }
     if let track {
-      _ = pc.add(track, streamIds: ["w2g-voice"])
+      micSender = pc.add(track, streamIds: ["w2g-voice"])
     } else if !pc.transceivers.contains(where: { $0.mediaType == .audio }) {
       _ = pc.addTransceiver(of: .audio)
     }
@@ -263,19 +279,21 @@ final class W2GVoiceLink {
       pc.close()
     }
     connection = nil
+    micSender = nil
     proxy.link = nil
     onConnected = nil
     onFailed = nil
     onDescription = nil
   }
 
-  /// Peak level (0-1) of our microphone from the `media-source` stats, nil when unknown.
+  /// Peak level (0-1) of our microphone from the `media-source` stats, nil when unknown. Only the stats of our
+  /// microphone's sender are gathered, not the whole connection's (read 10 times a second).
   func readMicLevel(_ completion: @escaping @MainActor (Double?) -> Void) {
-    guard let pc = connection else {
+    guard let pc = connection, let sender = micSender else {
       completion(nil)
       return
     }
-    pc.statistics { @Sendable report in
+    pc.statistics(for: sender) { @Sendable report in
       var level: Double?
       for statistic in report.statistics.values where statistic.type == "media-source" {
         if let kind = statistic.values["kind"] as? String, kind != "audio" { continue }
@@ -438,9 +456,12 @@ final class W2GVoiceEngine {
     links.mapValues { $0.isConnected }
   }
 
-  /// Offerer: create the link and send the offer.
-  func connect(_ userId: String) {
+  /// Offerer: create the link and send the offer. `retry`: called by the retry timer of a failed link.
+  func connect(_ userId: String, retry: Bool = false) {
     guard joined, links[userId] == nil else { return }
+    // A failed link is offered again by its retry timer only (3 s later, voiceMaxRetries times in a row): the lobby
+    // asks for every missing link on each voice change, which would skip the delay and the limit.
+    if !retry, retryTasks[userId] != nil || W2GSync.voiceRetryDelay(failures: failures[userId] ?? 0) == nil { return }
     retryTasks[userId]?.cancel()
     retryTasks[userId] = nil
     guard let link = makeLink(userId: userId, id: W2GHex.randomCode(12)) else { return }
@@ -477,6 +498,11 @@ final class W2GVoiceEngine {
     guard let link = links.removeValue(forKey: userId) else { return }
     link.close()
     onLinksChange?()
+  }
+
+  /// The member joined voice again: its failed attempts are forgotten, it can be offered at once.
+  func resetRetries(_ userId: String) {
+    failures[userId] = nil
   }
 
   /// A member left the lobby: its mix is forgotten too.
@@ -519,12 +545,14 @@ final class W2GVoiceEngine {
     retryTasks[userId] = w2gAfter(delay) { [weak self] in
       guard let self else { return }
       self.retryTasks[userId] = nil
-      if self.joined, self.wantsOffer?(userId) == true { self.connect(userId) }
+      if self.joined, self.wantsOffer?(userId) == true { self.connect(userId, retry: true) }
     }
   }
 
   private func applyTransmit() {
     track?.isEnabled = transmitting
+    // Muted or push-to-talk released: the microphone itself is muted too.
+    if joined && hasMic { W2GVoiceAudio.setInputMuted(!transmitting) }
     if !transmitting && speaking {
       speaking = false
       speakingMemory = W2GSpeakingMemory()

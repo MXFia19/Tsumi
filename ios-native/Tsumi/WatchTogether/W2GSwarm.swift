@@ -19,8 +19,11 @@ final class W2GSwarm {
   static let messagePrefix = "^"
   /// Backup links kept per remote peer (P2PT keeps them all; capped here to save resources).
   static let maxLinksPerPeer = 3
-  /// Chunks kept per message before giving up on it (16000 units each).
-  static let maxChunksPerMessage = 256
+  /// v2.5 (W2GSync limits, sync.js ChunkAssembler): chunk index `c` below maxChunks, at most maxEventUnits per message
+  /// and maxBufferedUnits in total, maxPendingMessages in progress per peer, each dropped after chunkTimeoutMs.
+  static let maxChunksPerMessage = W2GSync.maxChunks
+  /// A frame carries at most 16000 units of message (escaped at worst six times): anything bigger is not P2PT.
+  static let maxFrameUnits = 128_000
 
   let identifier: String
   let infoHash: [UInt8]
@@ -39,8 +42,10 @@ final class W2GSwarm {
   private var openLinks: [String: [W2GPeerLink]] = [:]
   /// Links whose remote peer is known but that are not open yet.
   private var connectingLinks: [ObjectIdentifier: W2GPeerLink] = [:]
-  /// Partial messages: "<peer id>:<msg id>" → chunk index → UTF-16 units.
-  private var chunkBuffers: [String: [Int: [UInt16]]] = [:]
+  /// Partial messages: "<peer id>:<msg id>" → chunks received so far.
+  private var chunkBuffers: [String: W2GPartialMessage] = [:]
+  /// UTF-16 units held by `chunkBuffers`.
+  private var bufferedUnits = 0
   /// P2PT message ids each peer sent us (see send(_:to:)).
   private var receivedMessageIds: [String: Set<Int>] = [:]
   /// Peers removed from the lobby (Watch Together `kick`): their links are closed and refused.
@@ -138,7 +143,7 @@ final class W2GSwarm {
       openLinks[id] = nil
       receivedMessageIds[id] = nil // P2PT forgets responseWaiting[id] on peerclose too
       let prefix = id + ":"
-      for key in chunkBuffers.keys where key.hasPrefix(prefix) { chunkBuffers[key] = nil }
+      for key in Array(chunkBuffers.keys) where key.hasPrefix(prefix) { dropChunks(key) }
       onStatusChange?()
       onPeerClose?(id)
     } else {
@@ -149,29 +154,58 @@ final class W2GSwarm {
 
   // MARK: Messages
 
-  /// P2PT 'data' handler: unwraps "^{...}" envelopes and reassembles chunks.
+  /// P2PT 'data' handler: unwraps "^{...}" envelopes and reassembles chunks, within the v2.5 limits.
   private func linkReceived(_ link: W2GPeerLink, _ text: String) {
-    guard let id = link.remotePeerId, text.hasPrefix(Self.messagePrefix) else { return }
+    guard let id = link.remotePeerId, text.hasPrefix(Self.messagePrefix), text.utf16.count <= Self.maxFrameUnits else { return }
     guard let envelope = W2GJSONParser.parse(String(text.dropFirst())) else { return }
     guard let messageId = envelope["id"], let units = envelope["msg"]?.utf16Value else { return }
-    if let number = messageId.intValue { receivedMessageIds[id, default: []].insert(number) }
-    let key = id + ":" + W2GJSONWriter.string(messageId)
-    let index = envelope["c"]?.intValue ?? 0
-    var parts = chunkBuffers[key] ?? [:]
-    guard index >= 0, parts.count < Self.maxChunksPerMessage else {
-      chunkBuffers[key] = nil
+    // Only ids we could pick ourselves can collide (send(_:to:)): the others are not kept (a peer could send millions).
+    if let number = messageId.intValue, (100000...199999).contains(number) { receivedMessageIds[id, default: []].insert(number) }
+    let now = W2GSync.nowMs()
+    expireChunks(now: now)
+    let idText = W2GJSONWriter.string(messageId)
+    guard idText.utf16.count <= 64 else { return }
+    let key = id + ":" + idText
+    // The chunk index a peer sends is bounded (an index of 4e9 made a reassembly walk billions of slots).
+    var index = 0
+    if let value = envelope["c"] {
+      guard let number = value.doubleValue, number == number.rounded(), number >= 0, number < Double(Self.maxChunksPerMessage) else {
+        dropChunks(key)
+        return
+      }
+      index = Int(number)
+    }
+    var entry: W2GPartialMessage
+    if let existing = chunkBuffers[key] {
+      entry = existing
+    } else {
+      // Too many messages in progress from this peer: its oldest one goes.
+      let prefix = id + ":"
+      let mine = chunkBuffers.filter { $0.key.hasPrefix(prefix) }
+      if mine.count >= W2GSync.maxPendingMessages, let oldest = mine.min(by: { $0.value.startedAt < $1.value.startedAt })?.key {
+        dropChunks(oldest)
+      }
+      entry = W2GPartialMessage(startedAt: now)
+    }
+    let growth = units.count - (entry.parts[index]?.count ?? 0)
+    guard entry.size + growth <= W2GSync.maxEventUnits, bufferedUnits + growth <= W2GSync.maxBufferedUnits else {
+      dropChunks(key)
       return
     }
-    parts[index] = units
+    entry.parts[index] = units
+    entry.size += growth
+    bufferedUnits += growth
+    chunkBuffers[key] = entry
 
-    guard envelope["last"]?.isTruthy == true else {
-      chunkBuffers[key] = parts
-      return
-    }
-    chunkBuffers[key] = nil
+    guard envelope["last"]?.isTruthy == true else { return }
+    dropChunks(key)
+    // Complete: every chunk up to the last one, none after it.
+    guard entry.parts.count == index + 1 else { return }
     var joined: [UInt16] = []
-    for chunkIndex in parts.keys.sorted() {
-      if let chunk = parts[chunkIndex] { joined.append(contentsOf: chunk) }
+    joined.reserveCapacity(entry.size)
+    for chunkIndex in 0...index {
+      guard let chunk = entry.parts[chunkIndex] else { return }
+      joined.append(contentsOf: chunk)
     }
     if envelope["o"]?.isTruthy == true {
       guard let object = W2GJSONParser.parse(String(decoding: joined, as: UTF16.self)) else { return }
@@ -179,6 +213,16 @@ final class W2GSwarm {
     } else {
       onMessage?(id, .string(joined))
     }
+  }
+
+  private func dropChunks(_ key: String) {
+    guard let entry = chunkBuffers.removeValue(forKey: key) else { return }
+    bufferedUnits -= entry.size
+  }
+
+  /// Partial messages whose last chunk did not come in time.
+  private func expireChunks(now: Double) {
+    for (key, entry) in chunkBuffers where now - entry.startedAt > W2GSync.chunkTimeoutMs { dropChunks(key) }
   }
 
   /// P2PT send(peer, string): uses any open link of that peer, chunked by 16000 UTF-16 units.
@@ -235,6 +279,7 @@ final class W2GSwarm {
     connectingLinks.removeAll()
     openLinks.removeAll()
     chunkBuffers.removeAll()
+    bufferedUnits = 0
     receivedMessageIds.removeAll()
     for link in links {
       link.onClose = nil
@@ -245,4 +290,14 @@ final class W2GSwarm {
     onPeerClose = nil
     onStatusChange = nil
   }
+}
+
+/// A message being reassembled (W2GSwarm.linkReceived).
+struct W2GPartialMessage {
+  /// Chunk index → UTF-16 units.
+  var parts: [Int: [UInt16]] = [:]
+  /// Units held.
+  var size = 0
+  /// When its first chunk came (ms).
+  var startedAt: Double
 }

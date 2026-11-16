@@ -58,9 +58,13 @@ final class W2GTrackerConnection {
   static let offersPerAnnounce = 5
   /// OFFER_TIMEOUT
   static let offerTimeout: Double = 50
-  /// RECONNECT_MINIMUM / RECONNECT_MAXIMUM
+  /// RECONNECT_MINIMUM / RECONNECT_MAXIMUM (an hour in JS; a minute here: a phone that changed network should not
+  /// wait long, and the app re-announces on network changes anyway).
   static let reconnectMinimum: Double = 10
-  static let reconnectMaximum: Double = 60 * 60
+  static let reconnectMaximum: Double = 60
+  /// The announce interval a tracker asks for is kept within these bounds (a huge one trapped in UInt64()).
+  static let minAnnounceInterval: Double = 10
+  static let maxAnnounceInterval: Double = 3600
   /// RECONNECT_VARIANCE is 5 minutes in JS; kept short here (mobile apps lose sockets often).
   static let reconnectVariance: Double = 5
   /// Offers whose ICE gathering hangs are dropped from the announce after this delay.
@@ -306,7 +310,7 @@ final class W2GTrackerConnection {
 
   private func setAnnounceInterval(_ seconds: Double) {
     intervalTask?.cancel()
-    let period = max(seconds, 10)
+    let period = min(max(seconds, Self.minAnnounceInterval), Self.maxAnnounceInterval)
     intervalTask = Task { [weak self] in
       while !Task.isCancelled {
         try? await Task.sleep(nanoseconds: UInt64(period * 1_000_000_000))

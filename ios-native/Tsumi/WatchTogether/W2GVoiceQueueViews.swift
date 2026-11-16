@@ -100,6 +100,11 @@ struct W2GHoldToTalkButton: View {
       .onChange(of: pressing) { _, value in
         client.setPushToTalkHeld(value)
       }
+      // The button can go away mid-press (overlay hidden, panel closed): the gesture never ends, release it here or
+      // the microphone keeps sending.
+      .onDisappear {
+        client.setPushToTalkHeld(false)
+      }
       .accessibilityLabel("Hold to talk")
       .accessibilityAddTraits(.isButton)
   }

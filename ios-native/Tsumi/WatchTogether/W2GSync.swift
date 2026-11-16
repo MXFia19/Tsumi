@@ -90,7 +90,8 @@ enum W2GSync {
   static func memberName(name: String?, typedName: String?, id: String?) -> String {
     if let name {
       let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !trimmed.isEmpty { return trimmed }
+      // v2.5: at most 32 characters (AniList names have 20 at most, MyAnimeList 16).
+      if !trimmed.isEmpty { return String(trimmed.prefix(maxNameLength)) }
     }
     if let typed = cleanDisplayName(typedName) { return typed }
     if let id, !id.isEmpty { return "Guest \(String(id.prefix(4)))" }
@@ -137,8 +138,9 @@ enum W2GSync {
 
   /// "12:34", or "1:02:03" past an hour.
   static func formatClock(_ seconds: Double) -> String {
-    let value = seconds.isFinite ? seconds : 0
-    let total = Int(max(0, value.rounded(.down)))
+    // v2.5: clamped before Int() (a peer's time of 1e19 trapped here and crashed the app).
+    let value = seconds.isFinite ? min(max(seconds, 0), maxTimeSeconds) : 0
+    let total = Int(value.rounded(.down))
     let hours = total / 3600
     let minutes = (total % 3600) / 60
     let secs = total % 60
@@ -152,7 +154,7 @@ enum W2GSync {
 
   /// "+1:30" / "-0:05"
   static func formatDelta(_ seconds: Double) -> String {
-    let value = seconds.isFinite ? seconds : 0
+    let value = seconds.isFinite ? min(max(seconds, -maxTimeSeconds), maxTimeSeconds) : 0
     let rounded = (value + 0.5).rounded(.down)
     return (rounded < 0 ? "-" : "+") + formatClock(abs(rounded))
   }
@@ -257,6 +259,10 @@ enum W2GSync {
     let expected = expectedTime(status, receivedAt: signal.receivedAt ?? now, now: now, rttMs: signal.rtt)
     let localTime = expectedTime(local.status, receivedAt: local.at, now: now, rttMs: 0)
     let value = drift(expected: expected, localTime: localTime)
+    // v2.5: another playback rate drifts by itself; auto-sync leaves it alone, the badge says why.
+    if differentRate(status.rate, local.rate) {
+      return W2GBadge(kind: .speed, text: "Different speed (\(formatRate(status.rate)))", drift: value)
+    }
     let samePlayState = (status.state == .playing) == (local.state == .playing)
     if samePlayState && abs(value) <= inSyncSeconds {
       return W2GBadge(kind: .sync, text: "In sync", drift: value)
@@ -286,6 +292,8 @@ enum W2GSync {
     guard hostStatus.following, local.following else { return idle }
     guard hostStatus.state == .playing, local.state == .playing else { return idle }
     guard hostStatus.mediaKey == local.mediaKey else { return idle }
+    // v2.5: at another playback rate the drift grows again right after each jump.
+    guard !differentRate(hostStatus.rate, local.rate) else { return idle }
 
     let expected = expectedTime(hostStatus, receivedAt: hostReceivedAt, now: now, rttMs: hostRtt)
     let localTime = expectedTime(local.status, receivedAt: local.at, now: now, rttMs: 0)
@@ -300,6 +308,8 @@ enum W2GSync {
 
   /// Where a non-host should be to follow the host: from its last `status`, else from its last applied `player`
   /// event (v1 host). nil when nothing usable is known. `mediaKey` is nil when it comes from a `player` event.
+  /// v2.5: the `player` event is only used for a host that sends no `status` at all (v1). A v2 host that is idle,
+  /// loading or silent has no position: snapping back to its last `player` event would jump to a stale time.
   static func hostReference(status: W2GStatus?, receivedAt: Double?, rttMs: Double?, lastPlayer: W2GHostPlayer?, now: Double) -> W2GHostTarget? {
     if let status {
       // A paused status stays true until the next one; a playing one is only extrapolated for a while.
@@ -312,6 +322,7 @@ enum W2GSync {
           mediaKey: status.mediaKey
         )
       }
+      return nil
     }
     if let lastPlayer, lastPlayer.time.isFinite {
       let elapsed = lastPlayer.paused ? 0 : max(0, now - lastPlayer.at) / 1000 * normalizeRate(lastPlayer.rate)
@@ -545,9 +556,11 @@ enum W2GSync {
 
   private static let protocolVersion2 = 2
 
-  /// sync.js acceptsInvite: for us, not from us; anyone in `everyone` mode, the host only in `host` mode.
-  static func acceptsInvite(to: String?, selfId: String, senderId: String, hostId: String?, mode: W2GMode) -> Bool {
-    guard let to, to == selfId, senderId != selfId else { return false }
+  /// sync.js acceptsInvite: for us, not from us; anyone in `everyone` mode, the host only in `host` mode. v2.5: with
+  /// `toSession`, only that device of the account takes it; `senderId` / `hostId` are member keys, `selfKey` ours.
+  static func acceptsInvite(to: String?, toSession: String? = nil, selfId: String, sessionId: String? = nil, senderId: String, selfKey: String? = nil, hostId: String?, mode: W2GMode) -> Bool {
+    guard let to, to == selfId, senderId != (selfKey ?? selfId) else { return false }
+    if let toSession, let sessionId, toSession != sessionId { return false }
     return mode != .host || senderId == hostId
   }
 
@@ -573,12 +586,14 @@ enum W2GSync {
     electHost(peers.filter { ($0.protocolVersion ?? 1) >= protocolVersion2 && $0.following }.map { $0.userId })
   }
 
-  /// v2.2 host migration: members that follow first; everyone when nobody follows.
-  static func migrationCandidates(selfId: String, selfFollowing: Bool, peers: [W2GElectionCandidate]) -> [String] {
+  /// v2.2 host migration: members that follow first; everyone when nobody follows. v2.5: never a v1 client (it would
+  /// never claim the role), nor a member in `skip` (elected before, it did not claim the role in time).
+  static func migrationCandidates(selfId: String, selfFollowing: Bool, peers: [W2GElectionCandidate], skip: Set<String> = []) -> [String] {
+    let eligible = peers.filter { ($0.protocolVersion ?? protocolVersion2) >= protocolVersion2 && !skip.contains($0.userId) }
     var following: [String] = selfFollowing ? [selfId] : []
-    following += peers.filter { $0.following }.map { $0.userId }
+    following += eligible.filter { $0.following }.map { $0.userId }
     if !following.isEmpty { return following }
-    return [selfId] + peers.map { $0.userId }
+    return [selfId] + eligible.map { $0.userId }
   }
 }
 
@@ -673,6 +688,8 @@ struct W2GSignal: Equatable {
 struct W2GBadge: Equatable {
   enum Kind: String {
     case old, nosignal, connecting, idle, loading, buffering, other, sync, ahead, behind, playing, paused, independent
+    /// v2.5: same episode at another playback rate.
+    case speed
   }
 
   var kind: Kind

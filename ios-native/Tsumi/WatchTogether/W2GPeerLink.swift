@@ -25,8 +25,21 @@ enum W2GRTC {
 
   static func makeConfiguration() -> RTCConfiguration {
     let configuration = RTCConfiguration()
-    configuration.iceServers = [RTCIceServer(urlStrings: iceServerURLs)]
+    configuration.iceServers = iceServers()
     return configuration
+  }
+
+  /// v2.5 (sync.js iceServers): the STUN servers, plus the optional TURN server of the settings (`w2gTurnUrl`,
+  /// `w2gTurnUsername`, `w2gTurnCredential`) for networks where direct links fail (CGNAT on cellular, strict firewalls).
+  static func iceServers() -> [RTCIceServer] {
+    var servers = [RTCIceServer(urlStrings: iceServerURLs)]
+    let values = AppSettings.shared.values
+    let turn = W2GSync.turnURLs(values.w2gTurnUrl)
+    if !turn.isEmpty {
+      let username = values.w2gTurnUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+      servers.append(RTCIceServer(urlStrings: turn, username: username, credential: values.w2gTurnCredential))
+    }
+    return servers
   }
 
   static func makeConstraints() -> RTCMediaConstraints {

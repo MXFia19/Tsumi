@@ -182,6 +182,24 @@ struct ShellWatchTogetherSettingsSection: View {
         description: "In Watch Together voice chat, your microphone only sends sound while you hold the talk button.",
         isOn: ShellBind.value(\.w2gPushToTalk)
       )
+      // PlayerTab.svelte w2gTurnUrl / w2gTurnUsername / w2gTurnCredential (PROTOCOL.md v2.5, optional, empty by default).
+      VStack(alignment: .leading, spacing: 6) {
+        Text("TURN Server")
+        Text("Optional relay for Watch Together when members cannot connect directly (mobile networks, strict firewalls): a turn: or turns: URL, with its username and credential. Leave empty to connect directly. Used from the next lobby.")
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+        TextField("turn:example.com:3478", text: ShellBind.value(\.w2gTurnUrl))
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .keyboardType(.URL)
+          .textFieldStyle(.roundedBorder)
+        TextField("Username", text: ShellBind.value(\.w2gTurnUsername))
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .textFieldStyle(.roundedBorder)
+        SecureField("Credential", text: ShellBind.value(\.w2gTurnCredential))
+          .textFieldStyle(.roundedBorder)
+      }
     } header: {
       Text("Watch Together Settings")
     }

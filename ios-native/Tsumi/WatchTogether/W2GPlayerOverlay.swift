@@ -511,7 +511,8 @@ struct W2GPlayerPanel: View {
       }
       .defaultScrollAnchor(.bottom)
       .scrollDismissesKeyboard(.interactively)
-      .onChange(of: client.messages.count) { _, _ in
+      // The last message id: the count stops changing once the 200 kept messages are reached.
+      .onChange(of: client.messages.last?.id) { _, _ in
         withAnimation(.easeOut(duration: 0.2)) {
           proxy.scrollTo(Self.bottomId, anchor: .bottom)
         }

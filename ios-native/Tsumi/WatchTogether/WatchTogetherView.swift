@@ -183,7 +183,8 @@ struct W2GLobbyView: View {
       }
     }
     .onAppear { markRead() }
-    .onChange(of: client.messages.count) { _, _ in markRead() }
+    // The last message id: the count stops changing once the 200 kept messages are reached.
+    .onChange(of: client.messages.last?.id) { _, _ in markRead() }
   }
 
   /// The chat is on screen (not under the full screen player): nothing unread.
@@ -193,7 +194,7 @@ struct W2GLobbyView: View {
 
   private var chat: some View {
     VStack(spacing: 0) {
-      W2GChatList(groups: client.messageGroups, messageCount: client.messages.count)
+      W2GChatList(groups: client.messageGroups, lastMessageId: client.messages.last?.id)
       Divider()
       inputBar
     }
@@ -717,7 +718,7 @@ struct W2GBadgeChip: View {
   private var color: Color {
     switch badge.kind {
     case .sync: return .green
-    case .ahead, .behind: return .orange
+    case .ahead, .behind, .speed: return .orange
     case .buffering, .loading: return .yellow
     case .other: return .purple
     case .independent: return .teal
@@ -798,7 +799,8 @@ struct W2GAvatarView: View {
 @MainActor
 struct W2GChatList: View {
   let groups: [W2GMessageGroup]
-  let messageCount: Int
+  /// Id of the last message: scrolls down on each new one (the count stops changing at 200 kept messages).
+  let lastMessageId: UUID?
   private static let bottomId = "w2g-chat-bottom"
 
   var body: some View {
@@ -823,7 +825,7 @@ struct W2GChatList: View {
       }
       .defaultScrollAnchor(.bottom)
       .scrollDismissesKeyboard(.interactively)
-      .onChange(of: messageCount) { _, _ in
+      .onChange(of: lastMessageId) { _, _ in
         withAnimation(.easeOut(duration: 0.2)) {
           proxy.scrollTo(Self.bottomId, anchor: .bottom)
         }
