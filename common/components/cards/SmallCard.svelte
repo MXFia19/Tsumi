@@ -22,7 +22,11 @@
   let media
   $: media = mediaCache.value[data?.id] || data
   // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data.
-  mediaCache.subscribe((value) => { if (value && media?.id && value[media.id] && (JSON.stringify(value[media.id]) !== JSON.stringify(media))) media = value[media.id] })
+  // Unsubscribed with the card: cards that left the page kept comparing their media on every cache update.
+  onDestroy(mediaCache.subscribe((value) => {
+    const cached = value?.[media?.id]
+    if (cached && cached !== media && JSON.stringify(cached) !== JSON.stringify(media)) media = cached
+  }))
   function viewMedia () {
     if (_variables?.fileEdit) _variables.fileEdit(media)
     else modal.open(modal.ANIME_DETAILS, media)

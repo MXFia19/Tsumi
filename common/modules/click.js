@@ -1,4 +1,5 @@
 import { SUPPORTS } from '@/modules/support.js'
+import { topLayer } from '@/modules/modalstack.js'
 
 let lastTapElement = null
 let lastTapTarget = null
@@ -7,6 +8,26 @@ let lastHoverElement = null
 let lastInteractionMethod = 'mouse'
 
 const noop = _ => {}
+
+// Enter on these fires a click by itself (their activation behavior).
+const NATIVE_ENTER_CLICK = 'button, a[href], input[type=button], input[type=submit], input[type=reset], input[type=image], summary'
+
+/**
+ * Enter on a node handled by an action: whether the action runs its callback for it.
+ * A native button or link fires a click on Enter, which the action also handles: the keydown cancels that click (the
+ * callback ran twice, toggles cancelled out). Enter on another native control inside the node is left to its own
+ * click, which bubbles up to the node.
+ * @param {HTMLElement} node
+ * @param {KeyboardEvent} e
+ */
+function handlesEnter (node, e) {
+  const target = /** @type {Element} */ (e.target)
+  if (target === node) {
+    if (node.matches(NATIVE_ENTER_CLICK)) e.preventDefault()
+    return true
+  }
+  return !target?.matches?.(NATIVE_ENTER_CLICK)
+}
 
 document.addEventListener('mousedown', () => lastInteractionMethod = 'mouse')
 document.addEventListener('touchstart', () => lastInteractionMethod = 'touch', { passive: true })
@@ -75,7 +96,7 @@ export function click (node, cb = noop) {
     node.addEventListener('keydown', e => {
       if (e.key === 'Enter') {
         e.stopPropagation()
-        cb(e)
+        if (handlesEnter(node, e)) cb(e)
       }
     })
   }
@@ -177,6 +198,7 @@ export function hover (node, hoverUpdate = noop) {
   node.addEventListener('keydown', e => {
     if (e.key === 'Enter') {
       e.stopPropagation()
+      if (!handlesEnter(node, e)) return
       lastTapElement?.(false)
       if (lastTapElement === hoverUpdate) {
         lastTapElement = null
@@ -265,6 +287,7 @@ export function hoverClick (node, [cb = noop, hoverUpdate = noop, rcb = noop]) {
   node.addEventListener('keydown', e => {
     if (e.key === 'Enter') {
       e.stopPropagation()
+      if (!handlesEnter(node, e)) return
       lastTapElement?.(false)
       if (lastTapElement === hoverUpdate) {
         lastTapElement = null
@@ -465,11 +488,12 @@ function getElementPosition (element) {
 
 /**
  * Gets the positions of all focusable elements.
+ * @param {Element} scope - The element to search within.
  * @returns {ElementPosition[]} - An array of element positions.
  */
-function getFocusableElementPositions () {
+function getFocusableElementPositions (scope) {
   const elements = []
-  for (const element of getKeyboardFocusableElements(document.querySelector('.modal.show') ?? document.body)) {
+  for (const element of getKeyboardFocusableElements(scope)) {
     const position = getElementPosition(element)
     if (position) elements.push(position)
   }
@@ -505,8 +529,8 @@ function getElementsInDesiredDirection (keyboardFocusable, currentElement, direc
     if (position.element === currentElement.element) return false
     if (getDirection(currentElement, position) !== Directions[direction]) return false
 
-    // filters out elements which are in the viewport, but are overlayed by other elements like a modal
-    if (position.inViewport && !position.element.checkVisibility()) return false
+    // filters out hidden elements (closed soft modals and their content are visibility: hidden)
+    if (!position.element.checkVisibility({ visibilityProperty: true })) return false
     if (!position.inViewport && direction === 'right') return false // HACK: prevent right navigation from going to offscreen elements, but allow vertical elements!
     return true
   })
@@ -517,8 +541,12 @@ function getElementsInDesiredDirection (keyboardFocusable, currentElement, direc
  * @param {string} [direction='up'] - The direction to navigate.
  */
 function navigateDPad (direction = 'up') {
-  const keyboardFocusable = getFocusableElementPositions()
-  const currentElement = !document.activeElement || document.activeElement === document.body ? keyboardFocusable[0] : getElementPosition(document.activeElement)
+  // The top modal layer (details, soft modals, Year in Review: modules/modalstack.js), else the page.
+  const scope = topLayer() ?? document.body
+  const keyboardFocusable = getFocusableElementPositions(scope)
+  const active = document.activeElement
+  const currentElement = !active || active === document.body || !scope.contains(active) ? keyboardFocusable[0] : getElementPosition(active)
+  if (!currentElement) return
 
   const elementsInDesiredDirection = getElementsInDesiredDirection(keyboardFocusable, currentElement, direction)
 

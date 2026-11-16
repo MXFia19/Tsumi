@@ -1,4 +1,5 @@
 <script>
+  import { onDestroy } from 'svelte'
   import { formatMap, playMedia } from '@/modules/anime/anime.js'
   import { bannerImages, hideBanner } from '@/modules/bannerStore.js'
   import { anilistClient } from '@/modules/anilist.js'
@@ -14,6 +15,7 @@
   import { Play, Heart } from 'lucide-svelte'
   import { modal } from '@/modules/navigation.js'
   import { hidesMedia, SPOILER_TEXT } from '@/modules/spoilers.js'
+  /** Never empty (Banner.svelte shows an error card instead). */
   export let mediaList
 
   let currentStatic = mediaList[0]
@@ -40,14 +42,11 @@
   // Check current scroll position instead of blindly resetting
     // This is handled by the scroll container in HomePage
   }
-  mediaCache.subscribe((value) => {
-    if (
-      current?.id &&
-      value &&
-      value[current?.id]?.id &&
-      JSON.stringify(value[current?.id]) !== JSON.stringify(current)
-    ) {
-      current = value[current?.id]
+  // Unsubscribed with the banner (a new banner is created on each Home visit).
+  const unsubscribeCache = mediaCache.subscribe((value) => {
+    const cached = value?.[current?.id]
+    if (cached?.id && cached !== current && JSON.stringify(cached) !== JSON.stringify(current)) {
+      current = cached
       currentStatic = current
     }
   })
@@ -82,6 +81,11 @@
     currentStatic = current
     timeout = schedule(currentIndex() + 1)
   }
+
+  onDestroy(() => {
+    clearTimeout(timeout)
+    unsubscribeCache()
+  })
 
   function swipeMedia (deltaX) {
     if (deltaX < 0) { setCurrent(mediaList[(currentIndex() + 1) % mediaList.length]) } else {
@@ -239,7 +243,8 @@
         {@const disabled = active || null}
         <div
           class='pt-10 pb-10 badge-wrapper'
-          aria-hidden='true'
+          aria-label={`Show ${anilistClient.title(media)}`}
+          aria-current={active || undefined}
           {disabled}
           class:pointer={!active}
           class:default-cursor={active}

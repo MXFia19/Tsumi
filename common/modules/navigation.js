@@ -32,6 +32,7 @@ const debug = Debug('ui:history')
  * @property {function(): void} clear Clear all modals
  * @property {function(string): boolean} exists Check if modal exists
  * @property {string|null} focused Get the highest priority open modal
+ * @property {function(string): number} priority Drawing priority of a modal (lower is drawn higher)
  * @property {number} length Number of open modals
  * @property {Object} value Current modal state object
  * @property {string} MINIMIZE_PROMPT
@@ -216,6 +217,12 @@ export const modal = (() => {
       return keys.reduce((highest, current) => (Object.values(MODALS).find(modal => modal.id === current)?.priority || 100) < (Object.values(MODALS).find(modal => modal.id === highest)?.priority || 100) ? current : highest)
     },
     /**
+     * Drawing priority of a modal, lower is drawn higher (the modal stack of modalstack.js)
+     * @param {string} type Modal ID
+     * @returns {number}
+     */
+    priority: (type) => Object.values(MODALS).find(modal => modal.id === type)?.priority || 100,
+    /**
      * Get the number of currently open modals
      * @returns {number} Number of open modals
      */
@@ -259,6 +266,8 @@ class HistoryManager {
   isNavigating = false
   /** @type {boolean} */
   navigationLocked = false
+  /** @type {boolean} The last page change came from back / forward (keepScroll gives the scroll position back) */
+  lastPageFromHistory = false
   /** @type {Writable<boolean>} */
   canGoBack = writable(false)
   /** @type {Writable<boolean>} */
@@ -476,6 +485,8 @@ class HistoryManager {
   handleChange (type, value) {
     if (type === 'page') {
       debug('Page change detected, adding history entry', JSON.stringify(value))
+      // Restores (restorePage, restoreParents) set the page while ignoring the history entry it would add.
+      this.lastPageFromHistory = this.ignoreNext || this.isNavigating
       this.addHistoryEntry(type, value)
     } else if (type === 'modal') {
       const filteredValue = { ...value }
@@ -611,3 +622,47 @@ export const destroyHistory = () => historyManager.destroy()
 export const goBack = () => historyManager.goBack()
 /** @type {() => void} Navigates forward one step in history. */
 export const goForward = () => historyManager.goForward()
+
+/** @type {Map<string, number>} Scroll positions of the pages (keepScroll) */
+const scrollPositions = new Map()
+
+/**
+ * Svelte action of a page scroll container: `use:keepScroll={'home'}`. The position is remembered and given back when
+ * the page is reached through back / forward; a page opened another way starts at the top.
+ * @param {HTMLElement} node
+ * @param {string | null} key Name of the position, null to not remember it
+ */
+export function keepScroll (node, key) {
+  let frame = null
+  const stop = () => {
+    cancelAnimationFrame(frame)
+    frame = null
+  }
+  const save = () => { if (key && !frame) scrollPositions.set(key, node.scrollTop) }
+  const target = key && historyManager.lastPageFromHistory ? scrollPositions.get(key) || 0 : 0
+  if (key) scrollPositions.set(key, target)
+  if (target) {
+    let tries = 0
+    // Rows and cards are still rendering: try again for a short while, until the page is tall enough.
+    const apply = () => {
+      node.scrollTop = target
+      frame = Math.abs(node.scrollTop - target) > 1 && ++tries < 60 ? requestAnimationFrame(apply) : null
+    }
+    frame = requestAnimationFrame(apply)
+  }
+  // The user scrolling first wins.
+  const inputs = ['wheel', 'pointerdown', 'keydown', 'touchstart']
+  for (const type of inputs) node.addEventListener(type, stop, { passive: true })
+  node.addEventListener('scroll', save, { passive: true })
+  return {
+    update (next) { key = next },
+    destroy () {
+      stop()
+      for (const type of inputs) node.removeEventListener(type, stop)
+      node.removeEventListener('scroll', save)
+    }
+  }
+}
+
+/** @returns {boolean} The current page was reached through back / forward */
+export const pageFromHistory = () => historyManager.lastPageFromHistory

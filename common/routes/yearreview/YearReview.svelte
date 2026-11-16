@@ -5,6 +5,7 @@
   import { renderShareImage, saveShareImage, copyShareImage } from '@/modules/yearreview/shareImage.js'
   import { modal } from '@/modules/navigation.js'
   import { click } from '@/modules/click.js'
+  import { modalLayer } from '@/modules/modalstack.js'
   import ReviewContent from '@/routes/yearreview/components/ReviewContent.svelte'
   import { X, RefreshCw, Download, Copy, LogIn } from 'lucide-svelte'
 
@@ -108,13 +109,6 @@
     modal.open(modal.PROFILE, true)
   }
 
-  function keydown (event) {
-    if (open && event.key === 'Escape') {
-      event.stopPropagation()
-      closeYearReview()
-    }
-  }
-
   // Mouse "back" closes the review instead of navigating the page underneath.
   function mouseup (event) {
     if (open && event.button === 3) {
@@ -132,10 +126,11 @@
   })
 </script>
 
-<svelte:window on:keydown={keydown} />
-
 {#if open}
-  <div class='year-review position-fixed d-flex flex-column' transition:fade={{ duration: 150 }} role='dialog' aria-modal='true' aria-label='Year in Review'>
+  <!-- A layer of the modal stack (modules/modalstack.js): Esc closes it when on top, focus moves in and back.
+       Drawn above the soft modals (z-index 100), below the update and quit prompts. -->
+  <div class='year-review position-fixed d-flex flex-column' transition:fade={{ duration: 150 }} role='dialog' aria-modal='true' aria-label='Year in Review'
+    use:modalLayer={{ open, close: closeYearReview, priority: 3 }}>
     <div class='toolbar d-flex align-items-center flex-wrap'>
       <div class='toolbar-title font-weight-very-bold mr-auto'>Year in Review</div>
       {#if account.kind === 'anilist'}

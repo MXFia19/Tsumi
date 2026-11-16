@@ -51,10 +51,31 @@
     }
   })
 
-  const updateProgress = writable(0)
-  IPC.on('update-progress', progress => updateProgress.set(progress))
+  // Download progress in percent (0 to 100, 100 once downloaded), sent by the main process.
+  export const updateProgress = writable(0)
+  IPC.on('update-progress', progress => updateProgress.set(Math.max(0, Math.min(100, Number(progress) || 0))))
   setTimeout(() => IPC.emit('update'), 2_500).unref?.()
   setInterval(() => IPC.emit('update'), 300_000).unref?.()
+
+  /** Shows the update prompt again ("Update Available!" of the sidebar and of the App settings). */
+  export function showUpdatePrompt () {
+    updateState.value = 'ready'
+    // The state may already be 'ready' with the prompt closed (a page change closes the modals): open it directly.
+    modal.open(modal.UPDATE_PROMPT)
+  }
+
+  // "Install on quit" (App settings): the main process lets electron-updater install a downloaded update when the app
+  // quits (autoUpdater.autoInstallOnAppQuit, electron/src/main/updater.js), sent at launch and on change.
+  // The main process side is wired with the electron changes (IPC 'updater:install-on-quit', boolean).
+  if (!SUPPORTS.isAndroid) {
+    let installOnQuit
+    settings.subscribe(value => {
+      const next = !!value?.updateInstallOnQuit
+      if (next === installOnQuit) return
+      installOnQuit = next
+      IPC.emit('updater:install-on-quit', next)
+    })
+  }
 </script>
 <script>
   $: $updateState === 'ready' && modal.open(modal.UPDATE_PROMPT)
@@ -106,7 +127,7 @@
   })
 </script>
 
-<SoftModal class='m-0 pt-0 d-flex flex-column rounded bg-very-dark scrollbar-none viewport-md-4-3 border-md w-full h-full rounded-10' css='z-105 m-0 p-0 modal-soft-ellipse' innerCss='m-0 p-0' showModal={$modal[modal.UPDATE_PROMPT]} close={() => {}} id={modal.UPDATE_PROMPT}>
+<SoftModal class='m-0 pt-0 d-flex flex-column rounded bg-very-dark scrollbar-none viewport-md-4-3 border-md w-full h-full rounded-10' css='z-105 m-0 p-0 modal-soft-ellipse' innerCss='m-0 p-0' showModal={$modal[modal.UPDATE_PROMPT]} close={() => {}} id={modal.UPDATE_PROMPT} label='Update available'>
   <p class='mt-20 px-20 px-md-40 overflow-y-auto'>
     {#await getChangelog($updateVersion)}
       <ChangelogSk />

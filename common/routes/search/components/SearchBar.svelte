@@ -120,7 +120,7 @@
   }
 
   function toggleHideMyAnime () {
-    if (search.disableHide || search.disableSearch || !Helper.isAuthorized()) return
+    if (search.disableHide || search.disableSearch || catalogMode || !Helper.isAuthorized()) return
     search.hideMyAnime = !search.hideMyAnime
     search.hideStatus = search.hideMyAnime ? ['CURRENT', 'COMPLETED', 'DROPPED', 'PAUSED', 'REPEATING'] : ''
     search.showMyAnime = false
@@ -129,7 +129,7 @@
   }
 
   function toggleShowMyAnime () {
-    if (search.disableHide || search.disableSearch || !Helper.isAuthorized()) return
+    if (search.disableHide || search.disableSearch || catalogMode || !Helper.isAuthorized()) return
     search.showMyAnime = !search.showMyAnime
     search.showStatus = search.showMyAnime ? ['CURRENT', 'COMPLETED', 'DROPPED', 'PAUSED', 'REPEATING'] : ''
     search.hideMyAnime = false
@@ -138,6 +138,7 @@
   }
 
   function toggleSubs () {
+    if (catalogMode) return
     search.hideSubs = !search.hideSubs
     form.dispatchEvent(new Event('input', { bubbles: true }))
   }
@@ -173,6 +174,10 @@
   const unsubscribeAddons = manager.subscribe(() => { catalogAddonList = catalogAddons() })
   onDestroy(unsubscribeAddons)
   $: catalogOptions = listCatalogOptions(catalogAddonList, search.scheduleList, search.catalogKey, search.title)
+  // A Stremio catalog ignores the filters of the search page: they are disabled. The title goes to the search catalog
+  // of the addon when it has one (routes/catalogs/sections.js, catalogSearch).
+  $: catalogMode = !!search.catalogKey
+  $: titleDisabled = search.disableSearch || (catalogMode && !search.catalogSearch)
   $: sourceValue = search.catalogKey ? `catalog:${search.catalogKey}` : search.western === true ? 'western' : search.western === false ? 'anime' : 'both'
 
   function listCatalogOptions (addons, scheduleList, currentKey, currentTitle) {
@@ -271,8 +276,9 @@
           spellcheck='false'
           bind:value={search.search}
           data-option='search'
-          disabled={search.disableSearch}
-          placeholder='Any' />
+          disabled={titleDisabled}
+          title={catalogMode && !search.catalogSearch ? 'This catalog cannot search' : ''}
+          placeholder={catalogMode ? (search.catalogSearch ? 'Search the addon' : 'Not searchable') : 'Any'} />
       </div>
     </div>
     <div class='col-lg col-4 p-10 z-4 d-flex {advancedSearch} flex-column justify-content-end'>
@@ -281,7 +287,7 @@
         <div>Genres</div>
       </div>
       <div class='input-group' title={(!Helper.isAniAuth() && Helper.isUserSort(search)) ? 'Cannot use with sort: ' + sortOptions[search.sort] : ''}>
-        <CustomDropdown id='tags-input' bind:form headers={searchTags.headers} options={[...genreList, ...tmdbGenreList, ...tagList]} bind:value={searchTags.tags} bind:altValue={searchTags.tags_not} constrainAlt={false} disabled={search.disableSearch || (!Helper.isAniAuth() && Helper.isUserSort(search))} />
+        <CustomDropdown id='tags-input' bind:form headers={searchTags.headers} options={[...genreList, ...tmdbGenreList, ...tagList]} bind:value={searchTags.tags} bind:altValue={searchTags.tags_not} constrainAlt={false} disabled={search.disableSearch || catalogMode || (!Helper.isAniAuth() && Helper.isUserSort(search))} />
       </div>
     </div>
     <div class='col-lg col-4 p-10 z-4 d-none {advancedSearch} flex-column justify-content-end' class:d-flex={!search.scheduleList}>
@@ -291,7 +297,7 @@
       </div>
       <div class='d-flex align-items-center'>
         <div class='input-group'>
-          <select class='form-control bg-dark-light border-right-dark radius-right-0' required bind:value={search.season} disabled={search.disableSearch}>
+          <select class='form-control bg-dark-light border-right-dark radius-right-0' required bind:value={search.season} disabled={search.disableSearch || catalogMode}>
             <option value selected>Any</option>
             <option value='WINTER'>Winter</option>
             <option value='SPRING'>Spring</option>
@@ -300,7 +306,7 @@
           </select>
         </div>
         <div class='input-group'>
-          <CustomDropdown id='year-input' class='radius-left-0' bind:form options={Array.from({ length: currentYear - 1940 + 2 }, (_, i) => currentYear + 1 - i)} bind:value={search.year} arrayValue={false} bind:disabled={search.disableSearch} />
+          <CustomDropdown id='year-input' class='radius-left-0' bind:form options={Array.from({ length: currentYear - 1940 + 2 }, (_, i) => currentYear + 1 - i)} bind:value={search.year} arrayValue={false} disabled={search.disableSearch || catalogMode} />
         </div>
       </div>
     </div>
@@ -310,7 +316,7 @@
         <div>Format</div>
       </div>
       <div class='input-group'>
-        <CustomDropdown id='format-input' bind:form options={{ TV: 'TV Show', MOVIE: 'Movie', TV_SHORT: 'TV Short', SPECIAL: 'Special', OVA: 'OVA', ONA: 'ONA' }} bind:value={search.format} bind:altValue={search.format_not} bind:disabled={search.disableSearch} />
+        <CustomDropdown id='format-input' bind:form options={{ TV: 'TV Show', MOVIE: 'Movie', TV_SHORT: 'TV Short', SPECIAL: 'Special', OVA: 'OVA', ONA: 'ONA' }} bind:value={search.format} bind:altValue={search.format_not} disabled={search.disableSearch || catalogMode} />
       </div>
     </div>
     <div class='col p-10 z-2 d-none {advancedSearch} flex-column justify-content-end' class:d-flex={!search.scheduleList}>
@@ -319,7 +325,7 @@
         <div>Status</div>
       </div>
       <div class='input-group'>
-        <CustomDropdown id='status-input' bind:form options={{ RELEASING: 'Releasing', FINISHED: 'Finished', NOT_YET_RELEASED: 'Not Yet Released', CANCELLED: 'Cancelled' }} bind:value={search.status} bind:altValue={search.status_not} bind:disabled={search.disableSearch} />
+        <CustomDropdown id='status-input' bind:form options={{ RELEASING: 'Releasing', FINISHED: 'Finished', NOT_YET_RELEASED: 'Not Yet Released', CANCELLED: 'Cancelled' }} bind:value={search.status} bind:altValue={search.status_not} disabled={search.disableSearch || catalogMode} />
       </div>
     </div>
     <div class='col p-10 d-none {advancedSearch} flex-column justify-content-end' class:d-flex={!search.scheduleList}>
@@ -328,7 +334,7 @@
         <div>Sort</div>
       </div>
       <div class='input-group'>
-        <select class='form-control bg-dark-light' required bind:value={search.sort} on:change={clearTags} disabled={search.disableSearch}>
+        <select class='form-control bg-dark-light' required bind:value={search.sort} on:change={clearTags} disabled={search.disableSearch || catalogMode}>
           {#if search.search?.trim() && !search.load && !search.scheduleList}
             <!-- A text query sorts by relevance by default (search/relevance.js), Trending stays available. -->
             <option value selected={!search.sort || search.sort === 'SEARCH_MATCH'}>Relevance</option>
@@ -372,7 +378,7 @@
     {#if !search.fileEdit}
       <div class='col-auto p-10 d-flex'>
         <div class='align-self-end'>
-          <button class='btn btn-square bg-dark-light px-5 align-self-end border-0 z-1' type='button' data-toggle='tooltip' data-placement='bottom' data-target-breakpoint='md' data-title={search.showMyAnime ? 'Show My Anime' : 'Hide My Anime'} use:click={toggleHideMyAnime} on:contextmenu|preventDefault={toggleShowMyAnime} disabled={search.disableHide || search.disableSearch || !Helper.isAuthorized()} class:text-primary={search.hideMyAnime} class:text-octonary={search.showMyAnime}>
+          <button class='btn btn-square bg-dark-light px-5 align-self-end border-0 z-1' type='button' data-toggle='tooltip' data-placement='bottom' data-target-breakpoint='md' data-title={search.showMyAnime ? 'Show My Anime' : 'Hide My Anime'} use:click={toggleHideMyAnime} on:contextmenu|preventDefault={toggleShowMyAnime} disabled={search.disableHide || search.disableSearch || catalogMode || !Helper.isAuthorized()} class:text-primary={search.hideMyAnime} class:text-octonary={search.showMyAnime}>
             <label for='hide-my-anime' class='pointer mb-0 d-flex align-items-center justify-content-center'>
               <svelte:component this={search.showMyAnime ? badgeDisplayNames.showMyAnime : badgeDisplayNames.hideMyAnime} size='1.625rem' />
             </label>
@@ -381,7 +387,7 @@
       </div>
       <div class='col-auto p-10 d-flex'>
         <div class='align-self-end'>
-          <button class='btn btn-square bg-dark-light px-5 align-self-end border-0 z-1' type='button' data-toggle='tooltip' data-placement='bottom' data-target-breakpoint='md' data-title='Dubbed Audio' use:click={toggleSubs} disabled={search.disableSearch} class:text-primary={search.hideSubs}>
+          <button class='btn btn-square bg-dark-light px-5 align-self-end border-0 z-1' type='button' data-toggle='tooltip' data-placement='bottom' data-target-breakpoint='md' data-title='Dubbed Audio' use:click={toggleSubs} disabled={search.disableSearch || catalogMode} class:text-primary={search.hideSubs}>
             <label for='hide-subs' class='pointer mb-0 d-flex align-items-center justify-content-center'>
               <Mic size='1.625rem' />
             </label>

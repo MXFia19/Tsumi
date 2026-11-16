@@ -12,10 +12,37 @@
   import CustomDropdown from '@/components/CustomDropdown.svelte'
   import Helper from '@/modules/helper.js'
   import { onDestroy } from 'svelte'
+  import { sections } from '@/modules/sections.js'
+  import { uniqueSectionTitle, renameHomeSection, removeHomeSection } from '@/modules/homesections.js'
   function updateAngle () {
     IPC.emit('set:angle', settings.angle)
   }
   export let settings
+
+  // Custom sections (Anime / Western): Home lists them by title (settings.homeSections), so a rename follows there, a
+  // deleted section leaves it, and titles stay unique (two sections with one title collide on Home).
+  function takenTitles (except) {
+    const titles = [...$sections.map(({ title }) => title), ...settings.customSections.map(([title]) => title), ...(settings.westernSections || []).map(([title]) => title)]
+    return titles.filter(title => title !== except)
+  }
+  function addSection (key, entry) {
+    settings[key] = [...(settings[key] || []), [uniqueSectionTitle('New Section', takenTitles()), ...entry]]
+  }
+  function renameSection (key, index, event) {
+    const from = settings[key][index][0]
+    const to = uniqueSectionTitle(event.currentTarget.value, takenTitles(from), from)
+    event.currentTarget.value = to
+    if (to === from) return
+    settings[key][index][0] = to
+    settings[key] = settings[key]
+    settings.homeSections = renameHomeSection(settings.homeSections, from, to)
+  }
+  function removeSection (key, index) {
+    const [title] = settings[key][index]
+    settings[key].splice(index, 1)
+    settings[key] = settings[key]
+    if (![...settings.customSections, ...(settings.westernSections || [])].some(([other]) => other === title)) settings.homeSections = removeHomeSection(settings.homeSections, title)
+  }
   const listStatus = [['Watching', 'CURRENT'], ['Planning', 'PLANNING'], ['Paused', 'PAUSED'], ['Completed', 'COMPLETED'], ['Dropped', 'DROPPED'], ['Rewatching', 'REPEATING'], ['Not on List', 'NOTONLIST']]
 
   // Discord account linked through the Discord Social SDK (Electron main process, see electron/src/main/discordSocial.js).
@@ -252,7 +279,8 @@
             class='form-control bg-dark fix-border-right text-capitalize text-truncate'
             placeholder='Name'
             autocomplete='off'
-            bind:value={settings.customSections[i][0]}
+            value={settings.customSections[i][0]}
+            on:change={(event) => renameSection('customSections', i, event)}
           />
         </div>
         <div class='position-relative flex-shrink-1 w-150'>
@@ -262,11 +290,11 @@
           <CustomDropdown id={`tag-is-${i}`} options={tagList} bind:value={settings.customSections[i][2]} disabled={settings.customSections[i][2]?.includes('N/A')} />
         </div>
         <div class='input-group-append'>
-          <button type='button' use:click={() => { settings.customSections.splice(i, 1); settings.customSections = settings.customSections }} class='btn btn-danger btn-square input-group-append px-5 d-flex align-items-center'><Trash2 size='1.8rem' /></button>
+          <button type='button' use:click={() => removeSection('customSections', i)} class='btn btn-danger btn-square input-group-append px-5 d-flex align-items-center'><Trash2 size='1.8rem' /></button>
         </div>
       </div>
     {/each}
-    <button type='button' use:click={() => { settings.customSections[settings.customSections.length] = ['New Section', [], [], [], []] }} class='btn btn-primary mb-10 d-flex align-items-center justify-content-center'><span>Add Section</span></button>
+    <button type='button' use:click={() => addSection('customSections', [[], [], [], []])} class='btn btn-primary mb-10 d-flex align-items-center justify-content-center'><span>Add Section</span></button>
   </div>
 </SettingCard>
 <SettingCard title='Western Sections (TMDB)' description='Create custom western media sections powered by TMDB. These filter out anime and use TMDB genres.'>
@@ -287,7 +315,8 @@
             class='form-control bg-dark fix-border-right text-capitalize text-truncate'
             placeholder='Name'
             autocomplete='off'
-            bind:value={settings.westernSections[i][0]}
+            value={settings.westernSections[i][0]}
+            on:change={(event) => renameSection('westernSections', i, event)}
           />
         </div>
         <div class='position-relative flex-shrink-1 w-200'>
@@ -301,11 +330,11 @@
           </select>
         </div>
         <div class='input-group-append'>
-          <button type='button' use:click={() => { settings.westernSections.splice(i, 1); settings.westernSections = settings.westernSections }} class='btn btn-danger btn-square input-group-append px-5 d-flex align-items-center'><Trash2 size='1.8rem' /></button>
+          <button type='button' use:click={() => removeSection('westernSections', i)} class='btn btn-danger btn-square input-group-append px-5 d-flex align-items-center'><Trash2 size='1.8rem' /></button>
         </div>
       </div>
     {/each}
-    <button type='button' use:click={() => { if (!settings.westernSections) settings.westernSections = []; settings.westernSections[settings.westernSections.length] = ['New Section', [], 'Both'] }} class='btn btn-primary mb-10 d-flex align-items-center justify-content-center'><span>Add Section</span></button>
+    <button type='button' use:click={() => addSection('westernSections', [[], 'Both'])} class='btn btn-primary mb-10 d-flex align-items-center justify-content-center'><span>Add Section</span></button>
   </div>
 </SettingCard>
 <SettingCard title='Sections And Order' description='Sections and their order on the home screen. Custom Anime and Western sections created above can be added here. Drag/drop these sections to re-order them.'>

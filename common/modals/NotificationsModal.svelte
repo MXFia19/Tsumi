@@ -21,7 +21,8 @@
   let debounceNotify = false
   const debounceBatch = debounce(() => {
     if (debounceNotify) {
-      cache.setEntry(caches.NOTIFICATIONS, 'notifications', notifications.value)
+      // Without the "continue anyway?" prompt state (UI only).
+      cache.setEntry(caches.NOTIFICATIONS, 'notifications', notifications.value.map(({ prompt, ...notification }) => notification))
       setTimeout(() => IPC.emit('notification-unread', hasUnreadNotifications.value), 50)
       debounceNotify = false
     }
@@ -42,7 +43,7 @@
 
   window.addEventListener('notification-app', (event) => queueNotification(event.detail, settings.value.systemNotify && (event.detail.button?.length || event.detail.activation)))
   window.addEventListener('notification-read', (event) => markRead(event.detail))
-  window.addEventListener('notification-reset', () => { notifications.set([]); incomingNotifications.length = 0 })
+  window.addEventListener('notification-reset', () => { notifications.set([]); incomingNotifications.length = 0; currentNotifications = [] })
 
   const incomingNotifications = []
   const debounceNotification = debounce(processNotifications, 15_000)
@@ -115,7 +116,19 @@
   }
 
   function markAll (read) {
-    notifications.update(items => items.map(notification => ({ ...notification, read })))
+    notifications.update(items => items.map(notification => ({ ...notification, read, prompt: false })))
+    // The list shows the notifications of the store: show the new ones (the later toggles act on them).
+    currentNotifications = filterResults(notifications.value, searchText).slice(0, Math.max(currentNotifications.length, notificationCount))
+  }
+
+  /**
+   * Changes a shown notification: the list shows the objects of the store, the store is told so that the change is
+   * saved and the unread count follows.
+   */
+  function updateNotification (notification, changes) {
+    Object.assign(notification, changes)
+    notifications.update(items => items)
+    currentNotifications = currentNotifications
   }
 
   function markRead (media) {
@@ -197,7 +210,7 @@
   IPC.emit('notification-unread', hasUnreadNotifications.value)
 </script>
 
-<SoftModal class='m-0 w-1000 mw-0 mh-full d-flex flex-column rounded bg-very-dark pt-0 py-30 pl-md-20 pr-md-30 mx-20 scrollbar-none' bind:showModal={$modal[modal.NOTIFICATIONS]} {close} id={modal.NOTIFICATIONS}>
+<SoftModal class='m-0 w-1000 mw-0 mh-full d-flex flex-column rounded bg-very-dark pt-0 py-30 pl-md-20 pr-md-30 mx-20 scrollbar-none' showModal={$modal[modal.NOTIFICATIONS]} {close} id={modal.NOTIFICATIONS} label='Notifications'>
   <div class='d-flex mt-30'>
     <h3 class='mb-0 font-weight-bold text-white title mr-5 font-size-24 ml-20'>Notifications</h3>
     <button type='button' class='btn btn-square ml-auto d-flex align-items-center justify-content-center rounded-2 flex-shrink-0 mr-20 mr-md-0' use:click={close}><X size='1.7rem' strokeWidth='3' /></button>
@@ -226,13 +239,13 @@
         {@const behind = Helper.isAuthorized() && !announcement && !delayed && isValidNumber(notification.episode) && (notification.episode - 1) >= 1 && (media?.mediaListEntry?.status !== 'COMPLETED' && ((media?.mediaListEntry?.progress || -1) < ((!isValidNumber(notification.season) ? notification.episode : media?.episodes) - 1)))}
         {@const completed = !announcement && !delayed && !notWatching && !behind && isValidNumber(notification.episode) && (media?.mediaListEntry?.status === 'COMPLETED' || (media?.mediaListEntry?.progress >= (!isValidNumber(notification.season) ? notification.episode : media?.episodes)))}
         <div class='notification-item shadow-lg position-relative d-flex align-items-center mx-20 my-5 p-5 scale pointer' class:mt-10={index === 0} role='button' tabindex='0' class:not-reactive={!$reactive} class:read={notification.read} class:behind={(behind && !notWatching) || delayed} class:current={!behind && !notWatching && !repeating} class:repeating={!behind && !notWatching && repeating} class:not-watching={notWatching} class:completed={completed} class:announcement={announcement}
-          use:blurExit={ () => { if (notification.prompt) setTimeout(() => preventScroll(container.scrollTop, () => delete notification.prompt)) }}
-          use:hoverExit={() => { if (notification.prompt) setTimeout(() => preventScroll(container.scrollTop, () => delete notification.prompt)) }}
+          use:blurExit={ () => { if (notification.prompt) setTimeout(() => preventScroll(container.scrollTop, () => { notification.prompt = false })) }}
+          use:hoverExit={() => { if (notification.prompt) setTimeout(() => preventScroll(container.scrollTop, () => { notification.prompt = false })) }}
           use:click={() => {
-            if (!behind || notification.prompt) preventScroll(container.scrollTop, () => { notification.read = true; delete notification.prompt; onclick(notification) })
-            else preventScroll(container.scrollTop, () => notification.prompt = true)
+            if (!behind || notification.prompt) preventScroll(container.scrollTop, () => { updateNotification(notification, { read: true, prompt: false }); onclick(notification) })
+            else preventScroll(container.scrollTop, () => { notification.prompt = true })
           }}
-          on:contextmenu|preventDefault={() => { notification.read = true; onclick(notification, true) }}>
+          on:contextmenu|preventDefault={() => { updateNotification(notification, { read: true }); onclick(notification, true) }}>
           {#if notification.heroImg}
             <div class='position-absolute top-0 left-0 w-full h-full'>
               <img src={notification.heroImg} alt='bannerImage' class='hero-img img-cover w-full h-full' />
@@ -254,7 +267,7 @@
                     <Play size='1.7rem' strokeWidth='3' />
                   </button>
                 {/if}
-                <button type='button' class='read-button btn btn-square d-flex align-items-center justify-content-center z-1' class:not-allowed={completed} class:not-reactive={completed} use:click={() => { preventScroll(container.scrollTop, () => { notification.read = !notification.read; delete notification.prompt }) }}>
+                <button type='button' class='read-button btn btn-square d-flex align-items-center justify-content-center z-1' class:not-allowed={completed} class:not-reactive={completed} use:click={() => { preventScroll(container.scrollTop, () => updateNotification(notification, { read: !notification.read, prompt: false })) }}>
                   {#if notification.read}
                     <MailOpen size='1.7rem' strokeWidth='3' />
                   {:else}
@@ -294,7 +307,7 @@
                 Your Current Progress Is At <b>Episode {media?.mediaListEntry?.progress}</b>
               {/if}
             </p>
-            <button type='button' class='continue-button btn btn-lg btn-secondary w-230 h-33 text-dark font-scale-16 font-weight-bold shadow-none border-0 d-flex align-items-center mt-10 mb-auto' use:click={() => { delete notification.prompt; notification.read = true; onclick(notification) } }>
+            <button type='button' class='continue-button btn btn-lg btn-secondary w-230 h-33 text-dark font-scale-16 font-weight-bold shadow-none border-0 d-flex align-items-center mt-10 mb-auto' use:click={() => { updateNotification(notification, { read: true, prompt: false }); onclick(notification) } }>
               <Play class='mr-10' fill='currentColor' size='1.4rem' />
               Continue Anyway?
             </button>

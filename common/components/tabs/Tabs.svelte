@@ -6,6 +6,11 @@
   import { setContext, onDestroy } from 'svelte'
   import { writable } from 'simple-store-svelte'
 
+  /** Index of the tab selected first (SettingsPage: the last one opened) */
+  export let initial = 0
+  /** @type {((index: number) => void) | null} Called when a tab is selected */
+  export let onSelect = null
+
   const tabs = []
   const panels = []
   const selectedTab = writable(null)
@@ -14,7 +19,7 @@
   setContext(TABS, {
     registerTab: tab => {
       tabs.push(tab)
-      selectedTab.update(current => current || tab)
+      selectedTab.update(current => (tabs.length - 1 === initial ? tab : current || tab))
 
       onDestroy(() => {
         const i = tabs.indexOf(tab)
@@ -25,7 +30,7 @@
 
     registerPanel: panel => {
       panels.push(panel)
-      selectedPanel.update(current => current || panel)
+      selectedPanel.update(current => (panels.length - 1 === initial ? panel : current || panel))
 
       onDestroy(() => {
         const i = panels.indexOf(panel)
@@ -38,6 +43,7 @@
       const i = tabs.indexOf(tab)
       selectedTab.set(tab)
       selectedPanel.set(panels[i])
+      onSelect?.(i)
     },
 
     selectedTab,

@@ -416,7 +416,7 @@ option:not([disabled]):active,
 select:not([disabled]):active,
 textarea:not([disabled]):active,
 details:active,
-[tabindex]:not([disabled], [tabindex="-1"], [aria-hidden="true"], .seekbar, .dropdown, .scoring, .not-reactive):active,
+[tabindex]:not([disabled], [tabindex="-1"], [aria-hidden="true"], [data-sonner-toast], .seekbar, .dropdown, .scoring, .not-reactive):active,
 [contenteditable]:active,
 [controls]:active {
   transition: box-shadow 0.1s ease, filter 0.1s ease !important;

@@ -1,6 +1,6 @@
 import SectionsManager from '@/modules/sections.js'
 import { extensionManager } from '@/modules/extension.js'
-import { listCatalogs, loadCatalogPage } from '@/modules/stremio.js'
+import { listCatalogs, loadCatalogPage, catalogSupports } from '@/modules/stremio.js'
 import { writable } from 'simple-store-svelte'
 
 // Sections of the Stremio addon catalogs: the rows of the Catalogs page (CatalogPage.svelte) and the catalogs of
@@ -15,13 +15,20 @@ export function catalogAddons () {
 
 function makeSection (ext, catalog, extra, title) {
   const key = `${ext.key}|${catalog.type}|${catalog.id}|${extra.search || ''}`
+  // Title field of the search page: searched in the catalog itself when it can search, else in a search catalog of
+  // the addon for the same type (none: the field is disabled, SearchBar.svelte).
+  const searchCatalog = catalogSupports(catalog, 'search') ? catalog : listCatalogs(ext, { search: true }).find(other => other.type === catalog.type)
   return {
     key,
     title,
-    load: (pageNumber = 1, perPage = 50) => SectionsManager.wrapResponse(loadCatalogPage(ext, catalog, pageNumber, perPage, extra), perPage),
+    load: (pageNumber = 1, perPage = 50, variables = null) => {
+      const query = typeof variables?.search === 'string' ? variables.search.trim() : ''
+      if (query && searchCatalog) return SectionsManager.wrapResponse(loadCatalogPage(ext, searchCatalog, pageNumber, perPage, { ...extra, search: query }), perPage)
+      return SectionsManager.wrapResponse(loadCatalogPage(ext, catalog, pageNumber, perPage, extra), perPage)
+    },
     preview: writable(),
     // Variables of the search page once the section is opened ("See all"): catalogKey selects it in Source.
-    variables: { stremioCatalog: true, catalogKey: key }
+    variables: { stremioCatalog: true, catalogKey: key, catalogSearch: !!searchCatalog }
   }
 }
 

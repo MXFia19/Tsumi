@@ -20,7 +20,8 @@
   export let element
   export let zeroEpisode = false
   /** @type {import('@/modules/al.d.ts').Media | null} */
-  const media = data.media && mediaCache.value[data.media.id]
+  // The cached copy, else the media of the card (titles the cache does not hold).
+  const media = data.media && (mediaCache.value[data.media.id] || data.media)
   const episodeRange = episodesList.handleArray(data?.episode, data?.parseObject?.file_name)
   const lastEpisode = (data?.episodeRange || data?.parseObject?.episodeRange)?.last || episodeRange?.last || (isValidNumber(data?.episode) && (data?.episode + (zeroEpisode ? 1 : 0))) || (media?.episodes === 1 && media?.episodes)
   const episodeThumbnail = ((data.similarity || !hidesEpisodeThumbnail(media, lastEpisode, settings.value)) && data.episodeData?.image) || media?.bannerImage || media?.coverImage.extraLarge || ' '

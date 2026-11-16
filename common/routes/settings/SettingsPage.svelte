@@ -5,6 +5,8 @@
   import { IPC, VERSION } from '@/modules/bridge.js'
   import Debug from 'debug'
   const debug = Debug('ui:settings-view')
+  // The tab opened last, selected again when Settings opens (for the session).
+  let lastTab = 0
 
   if (settings.value.enableDoH) IPC.emit('doh', settings.value.doHURL)
   export const platformMap = {
@@ -79,7 +81,7 @@
   })
 </script>
 
-<Tabs>
+<Tabs initial={lastTab} onSelect={(index) => { lastTab = index }}>
   <div
     class='d-flex w-full h-full position-relative settings root flex-md-row flex-column pl-sm-30 pl-md-80'
     class:status-transition={statusTransition}

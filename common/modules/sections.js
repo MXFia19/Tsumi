@@ -12,6 +12,8 @@ import { isRelevanceSort } from '@/modules/search/relevance.js'
 import { relevancePage, relevanceKey } from '@/modules/search/relevancesearch.js'
 
 const lastSearched = cache.getEntry(caches.HISTORY, 'lastSearched')
+// Page info of the last schedule feed load (animeschedule.js). The search page no longer reads it: every row loading
+// in the background overwrote it. Each load returns its own page info instead (wrapResponse, items.hasNextPage).
 export const hasNextPage = writable(true)
 export const key = writable({})
 export const search = writable(lastSearched || { genre: [], genre_not: [], tag: [], tag_not: [], format: [], format_not: [], status: [], status_not: [], western: null })
@@ -166,11 +168,14 @@ export default class SectionsManager {
     return load
   }
 
+  /**
+   * Cards of a pending page. `items.hasNextPage` resolves with the page info of this load (false when it fails).
+   * @returns {Array<{ type: any, data: Promise<any> }> & { hasNextPage: Promise<boolean> }}
+   */
   static wrapResponse (res, length, type) {
-    res.then(res => {
-      hasNextPage.value = res?.data?.Page.pageInfo.hasNextPage
-    })
-    return Array.from({ length }, (_, i) => ({ type, data: SectionsManager.fromPending(res, i) }))
+    const items = Array.from({ length }, (_, i) => ({ type, data: SectionsManager.fromPending(res, i) }))
+    items.hasNextPage = Promise.resolve(res).then(res => !!res?.data?.Page?.pageInfo?.hasNextPage, () => false)
+    return items
   }
 
   static async fromPending (_arr, i) {
@@ -186,10 +191,14 @@ export default class SectionsManager {
 
 // list of all possible home screen sections
 export const sections = writable(createSections() || [])
+// Settings the sections are built from: a change rebuilds them and remaps Home (HomePage.svelte). Hide My Anime and
+// Adult Content (Hentai Releases row) needed a restart.
 const updateStores = [
   { store: writable(structuredClone(settings.value.homeSections)), key: 'homeSections', wpc: true },
   { store: writable(structuredClone(settings.value.customSections)), key: 'customSections', wpc: true },
-  { store: writable(structuredClone(settings.value.westernSections || [])), key: 'westernSections', wpc: true }
+  { store: writable(structuredClone(settings.value.westernSections || [])), key: 'westernSections', wpc: true },
+  { store: writable(settings.value.hideMyAnime), key: 'hideMyAnime', wpc: true },
+  { store: writable(settings.value.adult), key: 'adult', wpc: true }
 ]
 const debounceUpdate = debounce((value) => {
   let updated = false
