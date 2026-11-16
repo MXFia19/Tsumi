@@ -24,7 +24,7 @@ import './yearReview.js'
 import Updater from './updater.js'
 import Dialog from './dialog.js'
 import Debug from './debugger.js'
-import { startStreamProxy } from './streamProxy.js'
+import { startStreamProxy, proxyBase, proxyToken } from './streamProxy.js'
 import { setupVoicePermission } from './voice.js'
 import DownloadManager from './downloads/manager.js'
 import CastManager from './cast/index.js'
@@ -167,14 +167,17 @@ export default class App {
       this.mainWindow.webContents.send('electron:onFullScreen', isFullScreen)
     }
     ipcMain.handle('electron:isFullScreen', () => this.isFullScreen)
-    ipcMain.handle('electron:getProxyPort', () => this.proxyPort)
+    // "<port>/<token>": the renderer builds `http://localhost:${port}/...` URLs, which then carry the secret path
+    // segment every route of the proxy needs (streamProxy.js). getProxyBase is the full "http://localhost:<port>/<token>".
+    ipcMain.handle('electron:getProxyPort', () => this.proxyPort ? `${this.proxyPort}/${proxyToken}` : null)
+    ipcMain.handle('electron:getProxyBase', () => proxyBase())
     this.mainWindow.on('enter-full-screen', () => fullScreen(true))
     this.mainWindow.on('leave-full-screen', () => fullScreen(false))
 
     this.proxyPort = null
     startStreamProxy().then(port => {
       this.proxyPort = port
-      this.mainWindow.webContents.send('electron:proxyPort', port)
+      this.mainWindow.webContents.send('electron:proxyPort', `${port}/${proxyToken}`)
     }).catch(error => {
       console.warn('Failed to start proxy:', error)
     })

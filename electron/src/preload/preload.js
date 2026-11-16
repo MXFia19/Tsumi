@@ -38,6 +38,10 @@ if (trustedPage) {
     onMinimize: (callback) => ipcRenderer.on('electron:onMinimize', (event, isMinimized) => callback(isMinimized)),
     onFullScreen: (callback) => ipcRenderer.on('electron:onFullScreen', (event, isFullScreen) => callback(isFullScreen)),
     getYouTube: () => ipcRenderer.invoke('electron:getYouTube'),
-    getProxyPort: () => ipcRenderer.invoke('electron:getProxyPort')
+    // "<port>/<token>": every route of the local proxy starts with a secret path segment, so the existing
+    // `http://localhost:${port}/...` URLs of the renderer stay valid. New code should use getProxyBase.
+    getProxyPort: () => ipcRenderer.invoke('electron:getProxyPort'),
+    // "http://localhost:<port>/<token>" (null while the proxy starts).
+    getProxyBase: () => ipcRenderer.invoke('electron:getProxyBase')
   })
 }
