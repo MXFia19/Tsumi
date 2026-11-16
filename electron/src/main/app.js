@@ -29,6 +29,7 @@ import { setupVoicePermission } from './voice.js'
 import DownloadManager from './downloads/manager.js'
 import CastManager from './cast/index.js'
 import { setupContextMenu } from './contextMenu.js'
+import ExternalPlayer from './externalPlayer.js'
 
 /** The page of the app: the only one the main window may show (it has the IPC bridge, see preload.js). */
 const APP_URL = development ? 'http://localhost:5000/app.html' : pathToFileURL(join(__dirname, 'app.html')).href
@@ -123,6 +124,7 @@ export default class App {
   dialog = new Dialog()
   downloads = new DownloadManager(this.mainWindow)
   cast = new CastManager(this.mainWindow)
+  externalPlayer = new ExternalPlayer(this.mainWindow)
   tray = new Tray(this.trayIcon)
   imageDir = join(app.getPath('userData'), 'Cache', 'Image_Data')
   debug = new Debug()
@@ -392,6 +394,7 @@ export default class App {
     this.tray?.destroy()
     this.discord.destroy()
     this.cast.destroy()
+    this.externalPlayer.destroy()
     for (const timeout of this.timeouts) clearTimeout(timeout)
     this.timeouts.clear()
     clearTimeout(this.stateTimeout)
