@@ -1,6 +1,6 @@
 // Upcoming movies of the schedule, pure logic. Run with: node common/modules/schedule/movies.test.mjs
 import assert from 'node:assert/strict'
-import { releaseKinds, localeRegion, releaseDate, releaseDay, movieReleaseNodes, THEATRICAL_TYPES, DIGITAL_TYPES } from './movies.js'
+import { releaseKinds, localeRegion, preferredRegion, releaseDate, releaseDay, movieReleaseNodes, THEATRICAL_TYPES, DIGITAL_TYPES } from './movies.js'
 
 let passed = 0
 let failed = 0
@@ -39,6 +39,13 @@ test('localeRegion reads the country of a locale', () => {
   assert.equal(localeRegion('en'), null)
   assert.equal(localeRegion(''), null)
   assert.equal(localeRegion(undefined), null)
+})
+
+test('preferredRegion takes the first language that names a country', () => {
+  assert.equal(preferredRegion(['fr', 'fr-BE', 'en-US']), 'BE')
+  assert.equal(preferredRegion(['en-GB']), 'GB')
+  assert.equal(preferredRegion(['fr', 'en']), null)
+  assert.equal(preferredRegion(undefined), null)
 })
 
 test('releaseDate prefers the region, then the US, then anywhere when allowed', () => {

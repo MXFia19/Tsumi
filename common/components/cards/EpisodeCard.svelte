@@ -38,7 +38,8 @@
   $: if (data.media && !media) {
     media = mediaCache.value[data.media.id]
   }
-  mediaCache.subscribe((value) => { if (value && (JSON.stringify(value[media?.id]) !== JSON.stringify(media))) media = value[media?.id] })
+  // Follows the cached copy of the media; titles the cache does not hold keep their data.
+  mediaCache.subscribe((value) => { if (value && media?.id && value[media.id] && (JSON.stringify(value[media.id]) !== JSON.stringify(media))) media = value[media.id] })
   $: checkForZero(media).then(_zeroEpisode => zeroEpisode = _zeroEpisode)
   $: episodeRange = episodesList.handleArray(data?.episode, data?.parseObject?.file_name)
   $: lastEpisode = (data?.episodeRange || data?.parseObject?.episodeRange)?.last || episodeRange?.last || (isValidNumber(data?.episode) && (data?.episode + (zeroEpisode ? 1 : 0))) || (media?.episodes === 1 && media?.episodes)

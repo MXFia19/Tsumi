@@ -16,8 +16,9 @@
   const _variables = variables
 
   let media
-  $: if (data && !media) media = mediaCache.value[data?.id]
-  mediaCache.subscribe((value) => { if (value && (JSON.stringify(value[media?.id]) !== JSON.stringify(media))) media = value[media?.id] })
+  $: if (data && !media) media = mediaCache.value[data?.id] || data
+  // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data.
+  mediaCache.subscribe((value) => { if (value && media?.id && value[media.id] && (JSON.stringify(value[media.id]) !== JSON.stringify(media))) media = value[media.id] })
   $: maxEp = getMediaMaxEp(media)
   // Spoiler protection (modules/spoilers.js).
   $: hideDuration = hidesMedia('duration', media, $settings)

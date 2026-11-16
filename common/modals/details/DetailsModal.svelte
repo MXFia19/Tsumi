@@ -54,8 +54,9 @@
   $: {
     if (media && (!staticMedia || staticMedia?.id !== media?.id)) { staticMedia = media } else if (!media && staticMedia) staticMedia = null
   }
+  // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data.
   mediaCache.subscribe((value) => {
-    if (value && JSON.stringify(value[media?.id]) !== JSON.stringify(media)) { media = value[media?.id] }
+    if (value && media?.id && value[media.id] && JSON.stringify(value[media.id]) !== JSON.stringify(media)) { media = value[media.id] }
   })
   $: episodeOrder = !!staticMedia
   // Spoiler protection (modules/spoilers.js), from the live list entry.

@@ -39,6 +39,18 @@ export function localeRegion (locale) {
 }
 
 /**
+ * Country of the first preferred language that names one (["fr", "fr-BE", "en-US"] -> "BE"), null without one.
+ * @param {readonly string[] | string[] | undefined} languages navigator.languages
+ */
+export function preferredRegion (languages) {
+  for (const language of languages || []) {
+    const region = localeRegion(language)
+    if (region) return region
+  }
+  return null
+}
+
+/**
  * First release day ("YYYY-MM-DD") of one of `types` in `region`, else in the US, else (with `anywhere`) in any
  * country. Digital releases are often only listed for the US.
  * @param {any[]} results release_dates results

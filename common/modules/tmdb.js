@@ -1,7 +1,7 @@
 import Bottleneck from 'bottleneck'
 import { cache, caches } from '@/modules/cache.js'
 import { anilistClient } from '@/modules/anilist.js'
-import { localeRegion, movieReleaseNodes, MOVIE_WINDOW_DAYS } from '@/modules/schedule/movies.js'
+import { localeRegion, preferredRegion, movieReleaseNodes, MOVIE_WINDOW_DAYS } from '@/modules/schedule/movies.js'
 import Debug from 'debug'
 const debug = Debug('ui:tmdb')
 
@@ -426,7 +426,7 @@ class TMDBClient {
    * as airingSchedule nodes. Anime movies known to AniList are left out like in getSchedule.
    * @param {{ page?: number, theatrical?: boolean, digital?: boolean, region?: string }} [options]
    */
-  async getMovieSchedule ({ page = 1, theatrical = true, digital = true, region = localeRegion(globalThis.navigator?.language) || 'US' } = {}) {
+  async getMovieSchedule ({ page = 1, theatrical = true, digital = true, region = preferredRegion(globalThis.navigator?.languages) || localeRegion(globalThis.navigator?.language) || 'US' } = {}) {
     debug('TMDB Movie Schedule', page)
     try {
       const now = Date.now()

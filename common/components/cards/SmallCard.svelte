@@ -21,7 +21,8 @@
 
   let media
   $: media = mediaCache.value[data?.id] || data
-  mediaCache.subscribe((value) => { if (value && media?.id && (JSON.stringify(value[media?.id]) !== JSON.stringify(media))) media = value[media?.id] })
+  // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data.
+  mediaCache.subscribe((value) => { if (value && media?.id && value[media.id] && (JSON.stringify(value[media.id]) !== JSON.stringify(media))) media = value[media.id] })
   function viewMedia () {
     if (_variables?.fileEdit) _variables.fileEdit(media)
     else modal.open(modal.ANIME_DETAILS, media)
