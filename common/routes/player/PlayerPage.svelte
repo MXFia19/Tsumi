@@ -24,7 +24,7 @@
   import { playbackSync } from '@/modules/sync/session.js'
   import { downloadsSupported, downloadFromPlayer, updateEntryOrQueue } from '@/modules/downloads/downloads.js'
   import { HoldSpeed, holdSpeedOf, holdSpeedLabel } from '@/modules/holdspeed.js'
-  import { resumePosition, parseSubtitleOffset, subtitleUrlOf, inEndChapters, hlsLevelOptions, CHAPTER_KINDS } from '@/modules/playerstate.js'
+  import { resumePosition, parseSubtitleOffset, rememberOffset, subtitleUrlOf, inEndChapters, hlsLevelOptions, CHAPTER_KINDS } from '@/modules/playerstate.js'
   import { ArrowDownToLine, Gauge } from 'lucide-svelte'
 
   import { w2gEmitter, state } from '@/routes/w2g/WatchTogetherPage.svelte'
@@ -643,7 +643,13 @@
     try {
       await waitForVideo()
       if (stream !== streamToken) return false
-      await loadStream(video, url, { headers: headers || {} })
+      // onError (streaming.js): its HLS recovery gave up. Ignored by a streaming.js without the option.
+      await loadStream(video, url, {
+        headers: headers || {},
+        onError: () => {
+          if (stream === streamToken) showStreamError()
+        }
+      })
     } catch (error) {
       if (stream !== streamToken) return false
       debug('Stream load failed, falling back to direct src:', error)
@@ -716,7 +722,7 @@
 
   /** id of the "Playback Error" toast shown for the stream playing */
   let streamErrorToast = null
-  /** The stream stopped for good (hls.js gave up, or streaming.js dispatched 'streamerror' on the video). */
+  /** The stream stopped for good: streaming.js onError, hls.js gave up, or a 'streamerror' event on the video. */
   function showStreamError () {
     if (streamErrorToast != null || !current || externalPlayback) return
     buffering = false
@@ -832,7 +838,8 @@
     if (externalPlayback && externalSession && current) leaveExternal(0, true)
   }
 
-  // The main process may give the position and length the player reached ({ id?, position?, duration? }).
+  // external-player:closed ({ code }; position / duration / id are used if the main process ever sends them): the
+  // episode comes back here, where it was (or where the external player started) when no position is given.
   IPC?.on?.('external-player:closed', (detail) => {
     if (!externalPlayback || !externalSession || !current) return
     if (detail?.id != null && externalSession.id != null && detail.id !== externalSession.id) return
@@ -935,7 +942,7 @@
     if (!state.value) showResumeOffer(resume)
   }
 
-  /** "Resume from 12:34 / Start over" card: { label } for a few seconds after an automatic resume. */
+  /** "Resumed at 12:34 · Start over / Resume" card: { label } for 10 s after an automatic resume (as on iPhone). */
   let resumeOffer = null
   let resumeOfferTimer = null
   function showResumeOffer (time) {
@@ -944,7 +951,7 @@
     resumeOffer = { label: toTS(time, 3) }
     resumeOfferTimer = setTimeout(() => {
       if (token === loadToken) resumeOffer = null
-    }, 12_000)
+    }, 10_000)
   }
 
   function answerResumeOffer (startOver) {
@@ -975,16 +982,14 @@
   let onlineSubsOpen = false
   $: if (miniplayer) onlineSubsOpen = false
 
+  // Kept in the history cache (cleared by Settings > reset), 200 shows at most (playerstate.js rememberOffset).
   function savedSubDelay () {
-    return parseSubtitleOffset(cache.getEntry(caches.HISTORY, SUB_DELAY_KEY)?.[showKey()]) ?? 0
+    return parseSubtitleOffset(cache.getEntry(caches.HISTORY, SUB_DELAY_KEY)?.[showKey()]?.offset) ?? 0
   }
 
   function rememberSubDelay (value) {
     if (!current) return
-    const offsets = { ...(cache.getEntry(caches.HISTORY, SUB_DELAY_KEY) || {}) }
-    if (value) offsets[showKey()] = value
-    else delete offsets[showKey()]
-    cache.setEntry(caches.HISTORY, SUB_DELAY_KEY, offsets)
+    cache.setEntry(caches.HISTORY, SUB_DELAY_KEY, rememberOffset(cache.getEntry(caches.HISTORY, SUB_DELAY_KEY), showKey(), value))
   }
 
   function typeSubDelay (text) {
@@ -1896,7 +1901,8 @@
   }
 
   // ---- "Up next": while the credits / preview close the episode (AniSkip, TheIntroDB or file chapters) and autoplay
-  // is on, a card counts down to the next episode. Watch Together goes through tryPlayNext() (the lobby's queue).
+  // is on, a card counts down 10 s of playback to the next episode. Full player only (not the miniplayer or PiP), and
+  // not in Watch Together, where the lobby queue handles the end (same as the iPhone player).
   const UP_NEXT_S = 10
   /** { label, remaining } while the card shows */
   let upNext = null
@@ -1904,19 +1910,16 @@
   let upNextDismissed = false
   let upNextTimer = null
 
+  /** Never an episode title or a file name (spoilers): "Episode 5". */
   function nextLabel () {
-    if (state.value) return 'Next in the queue'
     const index = videos.indexOf(current)
     const next = index !== -1 && index + 1 < videos.length ? videos[index + 1] : null
-    if (next) return isValidNumber(next.media?.episode) ? `Episode ${next.media.episode}` : AnimeResolver.cleanFileName(next.name)
+    if (next) return isValidNumber(next.media?.episode) ? `Episode ${next.media.episode}` : 'Next episode'
     return isValidNumber(media?.episode) ? `Episode ${Number(media.episode) + 1}` : 'Next episode'
   }
 
   function canAdvance () {
-    if (externalPlayback || miniplayer || !$settings.playerAutoplay) return false
-    // Watch Together: only the host following the lobby advances its queue (episodeEnded()).
-    if (state.value) return !!(state.value.isHost && state.value.isFollowing && state.value.queue?.value?.items?.length)
-    return hasNext
+    return !externalPlayback && !miniplayer && !pip && !state.value && $settings.playerAutoplay && hasNext
   }
 
   function checkUpNext () {
@@ -2124,7 +2127,8 @@
   // served locally (offline downloads): for a remote stream it would download the episode a second time through the
   // proxy and pile range requests on the host (it used to poll forever on a `buffer` that stayed at 0, with the raw
   // URL and no headers). Remote streams get thumbnails from the frames played (createThumbnail).
-  const localDownloadRx = /^http:\/\/(localhost|127\.0\.0\.1):\d+\/downloads\//i
+  // (the local server may prefix its paths with a token: http://localhost:<port>/<token>/downloads/...)
+  const localDownloadRx = /^http:\/\/(localhost|127\.0\.0\.1):\d+\/(?:[^/?#]+\/)?downloads\//i
   /** running generator: { videoDraw } */
   let thumbnailProcess = null
 
@@ -2814,9 +2818,10 @@
         </div>
       {/if}
       {#if resumeOffer && !miniplayer && !externalPlayback}
-        <div class='resume-offer position-absolute bottom-0 left-0 ml-20 mb-5 z-30 d-flex align-items-center'>
-          <button class='btn btn-primary font-weight-bold' type='button' use:click={() => answerResumeOffer(false)}>Resume from {resumeOffer.label}</button>
-          <button class='btn ml-10 font-weight-bold' type='button' use:click={() => answerResumeOffer(true)}>Start over</button>
+        <div class='resume-offer position-absolute bottom-0 left-0 ml-20 mb-5 z-30 d-flex align-items-center rounded p-10'>
+          <span class='font-weight-bold mr-15 text-nowrap'>Resumed at {resumeOffer.label}</span>
+          <button class='btn font-weight-bold' type='button' use:click={() => answerResumeOffer(true)}>Start over</button>
+          <button class='btn btn-primary ml-10 font-weight-bold' type='button' use:click={() => answerResumeOffer(false)}>Resume</button>
         </div>
       {/if}
       {#if upNext && !miniplayer}
@@ -3823,6 +3828,7 @@
 
   /* "Up next" card, "Resume from / Start over" and the external player card: stay visible when immersed */
   .up-next,
+  .resume-offer,
   .external-card {
     background: hsla(var(--black-color-hsl), 0.8);
     backdrop-filter: blur(10px);

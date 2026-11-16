@@ -1,6 +1,6 @@
 // Player pure helpers. Run with: node common/modules/playerstate.test.mjs
 import assert from 'node:assert/strict'
-import { chapterKind, resumePosition, parseSubtitleOffset, subtitleUrlOf, inEndChapters, hlsLevelOptions, episodeRangeOf, isTmdbMedia } from './playerstate.js'
+import { chapterKind, rememberOffset, resumePosition, parseSubtitleOffset, subtitleUrlOf, inEndChapters, hlsLevelOptions, episodeRangeOf, isTmdbMedia } from './playerstate.js'
 
 let passed = 0
 let failed = 0
@@ -47,8 +47,29 @@ test('resumePosition ignores an episode past the completion threshold', () => {
   assert.equal(resumePosition({ currentTime: 1300, safeduration: 1440 }, { threshold: 95 }), 1295)
   // the loaded video length wins over the saved one
   assert.equal(resumePosition({ currentTime: 1300, safeduration: 3000 }, { duration: 1440 }), null)
-  // threshold 100: only the very end counts as finished
-  assert.equal(resumePosition({ currentTime: 1440, safeduration: 1440 }, { threshold: 100 }), null)
+  // the threshold is clamped to 50-97 %
+  assert.equal(resumePosition({ currentTime: 1420, safeduration: 1440 }, { threshold: 100 }), null) // 97 % = 1396.8 s
+  assert.equal(resumePosition({ currentTime: 1390, safeduration: 1440 }, { threshold: 100 }), 1385)
+  assert.equal(resumePosition({ currentTime: 700, safeduration: 1440 }, { threshold: 10 }), 695) // 50 % = 720 s
+  assert.equal(resumePosition({ currentTime: 730, safeduration: 1440 }, { threshold: 10 }), null)
+})
+
+test('rememberOffset keeps the 200 most recent shows and forgets 0', () => {
+  let entries = rememberOffset(null, '21', 1.5, 1000)
+  assert.deepEqual(entries, { 21: { offset: 1.5, at: 1000 } })
+  entries = rememberOffset(entries, '21', 0, 2000)
+  assert.deepEqual(entries, {})
+  entries = {}
+  for (let i = 0; i < 205; i++) entries = rememberOffset(entries, String(i), 1, i)
+  assert.equal(Object.keys(entries).length, 200)
+  assert.equal(entries['0'], undefined)
+  assert.equal(entries['4'], undefined)
+  assert.deepEqual(entries['5'], { offset: 1, at: 5 })
+  // setting an old show again makes it recent
+  entries = rememberOffset(entries, '5', 2, 1000)
+  entries = rememberOffset(entries, 'new', 1, 1001)
+  assert.deepEqual(entries['5'], { offset: 2, at: 1000 })
+  assert.equal(entries['6'], undefined)
 })
 
 test('parseSubtitleOffset accepts a decimal comma and signs', () => {

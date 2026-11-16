@@ -34,7 +34,7 @@ export const RESUME_REWIND_S = 5
 /**
  * Where to resume an episode from its saved progress, or null to start it from the beginning: nothing saved, less
  * than 10 s watched, or already past the completion threshold (a finished episode starts over instead of jumping to
- * its last seconds and to the next episode).
+ * its last seconds and to the next episode). The threshold is clamped to 50-97 % (same as the iPhone player).
  * @param {{ currentTime?: number, safeduration?: number } | null | undefined} progress saved by animeprogress.js
  * @param {{ threshold?: number, duration?: number }} [options] threshold in percent (playerAutocompleteThreshold),
  *   duration of the loaded video in seconds when known
@@ -44,7 +44,7 @@ export function resumePosition (progress, { threshold = 85, duration } = {}) {
   const time = Number(progress?.currentTime)
   if (!Number.isFinite(time) || time < MIN_RESUME_S) return null
   const length = Number.isFinite(Number(duration)) && Number(duration) > 0 ? Number(duration) : Number(progress?.safeduration)
-  const ratio = Math.min(Math.max(Number(threshold) || 85, 1), 100) / 100
+  const ratio = Math.min(Math.max(Number(threshold) || 85, 50), 97) / 100
   if (length > 0 && time >= length * ratio) return null
   if (length > 0 && time >= length) return null
   return Math.max(time - RESUME_REWIND_S, 0)
@@ -63,6 +63,29 @@ export function parseSubtitleOffset (value) {
   const number = Math.round(Number(text) * 1000) / 1000
   if (!Number.isFinite(number)) return null
   return Math.max(-3600, Math.min(3600, number))
+}
+
+/** Shows whose subtitle offset is remembered (the oldest are forgotten, same as the iPhone player). */
+export const MAX_REMEMBERED_OFFSETS = 200
+
+/**
+ * Remembered subtitle offsets ({ [show]: { offset, at } }) after setting `offset` for `key`: 0 forgets the show, and
+ * only the most recently set MAX_REMEMBERED_OFFSETS shows are kept.
+ * @param {Record<string, any> | null | undefined} entries
+ * @param {string} key
+ * @param {number} offset seconds
+ * @param {number} [now]
+ */
+export function rememberOffset (entries, key, offset, now = Date.now(), max = MAX_REMEMBERED_OFFSETS) {
+  const next = { ...(entries && typeof entries === 'object' ? entries : {}) }
+  if (offset) next[key] = { offset, at: now }
+  else delete next[key]
+  const keys = Object.keys(next)
+  if (keys.length > max) {
+    keys.sort((a, b) => (Number(next[a]?.at) || 0) - (Number(next[b]?.at) || 0))
+    for (const old of keys.slice(0, keys.length - max)) delete next[old]
+  }
+  return next
 }
 
 /**
