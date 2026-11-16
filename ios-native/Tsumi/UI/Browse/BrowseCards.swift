@@ -58,7 +58,7 @@ struct BrowseMediaCard: View {
 
   @ViewBuilder
   private func decorated(_ current: Media) -> some View {
-    if AppSettings.shared.values.cardPreview {
+    if BrowseSettingsMirror.shared.cardPreview {
       button(current)
         .contextMenu {
           BrowseMediaMenuItems(media: current, onEditList: { showEditor = true })
@@ -246,7 +246,7 @@ struct BrowseAudioLabel: View {
   @State private var feedVersion = 0
 
   var body: some View {
-    if ServiceSettingsExtras.cardAudio && media.source == .anilist {
+    if BrowseSettingsMirror.shared.cardAudio && media.source == .anilist {
       labels
         .task(id: media.id) {
           await loadDubFeed()

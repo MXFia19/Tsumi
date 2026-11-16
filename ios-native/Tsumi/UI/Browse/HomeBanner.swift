@@ -16,7 +16,8 @@ final class BrowseBannerModel {
 
   /// Settings that change the banner source (bannerProvider, adult, hentaiBanner).
   static var settingsKey: String {
-    let values = AppSettings.shared.values
+    // Mirrored values: HomeView keys its task on this, so it does not depend on every other setting.
+    let values = BrowseSettingsMirror.shared
     return "\(values.bannerProvider)-\(values.adult)-\(values.hentaiBanner)"
   }
 
@@ -194,7 +195,7 @@ struct BrowseBannerPage: View {
 
   var body: some View {
     let current = BrowseMediaInfo.current(media)
-    let settings = AppSettings.shared.values
+    let settings = BrowseSettingsMirror.shared
     // FullBanner rotated: no banner and no trailer, adult "hentai" with the hentai banner setting.
     let rotated = current.images.banner == nil && current.trailerYouTubeId == nil && settings.adult == "hentai" && settings.hentaiBanner
     ZStack(alignment: .bottomLeading) {
@@ -273,7 +274,7 @@ struct BrowseBannerInfo: View {
     if media.format != .unknown { parts.append(BrowseMediaInfo.formatText(media)) }
     let showDuration = !SpoilerProtection.hidesMedia(.duration, entry: BrowseMediaInfo.entry(media))
     if let episodes = BrowseMediaInfo.bannerEpisodesText(media, entry: media.listEntry, showDuration: showDuration) { parts.append(episodes) }
-    if ServiceSettingsExtras.cardAudio && media.source == .anilist {
+    if BrowseSettingsMirror.shared.cardAudio && media.source == .anilist {
       if Services.shared.dubs.isFullyDubbed(malId: media.malId) {
         parts.append("Dub | Sub")
       } else if Services.shared.dubs.isIncomplete(malId: media.malId) {

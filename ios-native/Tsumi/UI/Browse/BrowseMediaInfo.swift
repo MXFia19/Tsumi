@@ -11,7 +11,10 @@ enum BrowseMediaInfo {
 
   /// anilistClient.title (userPreferred when logged into AniList, else the titleLang setting).
   static func title(_ media: Media) -> String {
-    AniListService.shared.title(media)
+    // AniListService.title with the mirrored titleLang: reading AppSettings.values here made every card depend
+    // on every setting (BrowseSettingsMirror).
+    if AccountStore.shared.isAniList, let preferred = media.title.userPreferred, !preferred.isEmpty { return preferred }
+    return media.title.display(BrowseSettingsMirror.shared.titleLang)
   }
 
   /// Latest copy of a media (mediaCache) with its current list entry. Reads the list revision so the
