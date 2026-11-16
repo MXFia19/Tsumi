@@ -1,9 +1,15 @@
+<script context='module'>
+  // The results scrolled when leaving the page, given back on back / forward to the same search.
+  /** @type {{ key: object, search: string, scrollTop: number } | null} */
+  let memory = null
+</script>
+
 <script>
   import SearchBar, {
     searchCleanup
   } from '@/routes/search/components/SearchBar.svelte'
   import Card from '@/components/cards/Card.svelte'
-  import { hasNextPage } from '@/modules/sections.js'
+  import { pageFromHistory } from '@/modules/navigation.js'
   import { status } from '@/modules/networking.js'
   import { debounce } from '@/modules/util.js'
   import { onDestroy, onMount } from 'svelte'
@@ -15,7 +21,7 @@
   export let key
   export let search
   export let clearNow = writable(false)
-  search?.subscribe((value) => ($clearNow = value?.clearNow))
+  const unsubscribeSearch = search?.subscribe((value) => ($clearNow = value?.clearNow))
 
   let page = 0
   items.value = []
@@ -48,12 +54,21 @@
     })
   }
 
+  /**
+   * Loads the next page of results.
+   * @returns {Promise<boolean>} There is a page after it
+   */
   function loadSearchData () {
     const load = $search.load || SectionsManager.createFallbackLoad()
-    const nextData = load(++page, undefined, { ...searchCleanup($search), isSearch: true })
+    const loaded = load(++page, undefined, { ...searchCleanup($search), isSearch: true })
+    const nextData = Array.isArray(loaded) ? loaded : []
     $items = [...$items, ...nextData]
     requestAnimationFrame(updateRowMarkers)
-    return nextData[nextData.length - 1].data
+    // The page info of this load (sections.js wrapResponse; a shared store was overwritten by the rows of Home loading
+    // meanwhile, which stopped the infinite scroll early). Loads without it (schedule feeds) go on while they come back
+    // full.
+    if (nextData.hasNextPage) return nextData.hasNextPage
+    return Promise.resolve(nextData[nextData.length - 1]?.data).then(last => !!last, () => false)
   }
   const update = debounce((event) => {
     if (!event.target.classList.contains('no-bubbles')) {
@@ -64,24 +79,33 @@
   $: loadTillFull($key)
 
   let canScroll = true
-  async function loadTillFull (_key) {
+  let hasMore = true
+  const searchMemoryKey = () => JSON.stringify(searchCleanup($search))
+  /**
+   * First pages of a search, until the results fill the page.
+   * @param {any} _key
+   * @param {number} [restoreTo] Scroll position to load pages for and give back (back / forward)
+   */
+  async function loadTillFull (_key, restoreTo = 0) {
     if (!container) return
     const cachedKey = $key
     canScroll = false
     page = 0
     items.value = []
-    hasNextPage.value = true
-    await loadSearchData()
+    let more = await loadSearchData()
+    // A restore stops after 20 pages at most.
     while (
-      $hasNextPage &&
+      more &&
       container &&
       cachedKey === $key &&
-      container.scrollTop + container.clientHeight >
-      container.scrollHeight - 800
+      (container.scrollTop + container.clientHeight > container.scrollHeight - 800 || (restoreTo && page < 20 && container.scrollHeight - container.clientHeight < restoreTo))
     ) {
       canScroll = false
-      await loadSearchData()
+      more = await loadSearchData()
     }
+    if (cachedKey !== $key) return // a newer search took over
+    if (restoreTo && container) container.scrollTop = restoreTo
+    hasMore = more
     canScroll = true
   }
 
@@ -91,27 +115,31 @@
     if (
       container &&
       canScroll &&
-      $hasNextPage &&
+      hasMore &&
       container.scrollTop + container.clientHeight >
       container.scrollHeight - 800
     ) {
       canScroll = false
-      await loadSearchData()
+      let more = await loadSearchData()
       while (
-        $hasNextPage &&
+        more &&
         container &&
         cachedKey === $key &&
         container.scrollTop + container.clientHeight >
         container.scrollHeight - 800
       ) {
         canScroll = false
-        await loadSearchData()
+        more = await loadSearchData()
       }
+      if (cachedKey !== $key) return // a newer search took over
+      hasMore = more
       canScroll = true
     }
   }
 
   onDestroy(() => {
+    unsubscribeSearch?.()
+    if (container) memory = { key: $key, search: searchMemoryKey(), scrollTop: container.scrollTop }
     observer?.disconnect()
     window.removeEventListener('resize', updateRowMarkers)
     if ($search.disableSearch) { $search = { format: [], format_not: [], status: [], status_not: [] } }
@@ -123,7 +151,8 @@
       observer.observe(container)
     }
     window.addEventListener('resize', updateRowMarkers)
-    loadTillFull()
+    const restore = pageFromHistory() && memory?.key === $key && memory?.search === searchMemoryKey() ? memory.scrollTop : 0
+    loadTillFull($key, restore)
   })
 </script>
 
