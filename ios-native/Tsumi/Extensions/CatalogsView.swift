@@ -10,8 +10,9 @@ struct StremioCatalogSection: Identifiable, Hashable {
   var catalog: StremioCatalog
   var extra: [StremioExtraParam]
 
-  func load(page: Int, perPage: Int = 50) async throws -> MediaPage {
-    try await addon.loadCatalogPage(catalog, page: page, perPage: perPage, extra: extra)
+  /// The page starting at `skip` (0 = first page) and the `skip` of the next one.
+  func load(skip: Int, perPage: Int = 50) async throws -> StremioCatalogPage {
+    try await addon.loadCatalogPage(catalog, skip: skip, perPage: perPage, extra: extra)
   }
 
   static func == (lhs: StremioCatalogSection, rhs: StremioCatalogSection) -> Bool { lhs.id == rhs.id }
@@ -64,7 +65,33 @@ enum StremioCatalogSections {
   }
 }
 
-/// Loading state of one row or grid.
+/// Row models of the catalogs page, kept while the page lives: a row scrolled away and back (the lazy stack drops
+/// its views) keeps its items, and the full grid of a catalog starts from the row's items.
+@MainActor
+final class StremioCatalogModelStore {
+  private var models: [String: StremioCatalogPageModel] = [:]
+
+  nonisolated init() {}
+
+  func model(for section: StremioCatalogSection) -> StremioCatalogPageModel {
+    if let existing = models[section.id] { return existing }
+    let created = StremioCatalogPageModel(section: section)
+    models[section.id] = created
+    return created
+  }
+
+  /// Drops (and stops) the models of the sections not in `ids` (a previous search, a removed addon).
+  func keep(only ids: Set<String>) {
+    for (id, model) in models where !ids.contains(id) {
+      model.cancel()
+      models[id] = nil
+    }
+  }
+}
+
+/// Loading state of one row or grid. The loads belong to the model, not to the view: a row scrolled away or a
+/// details sheet opened over it does not cancel them (a cancelled load used to commit an empty page, since the TMDB
+/// lookups of a cancelled task fail).
 @MainActor
 @Observable
 final class StremioCatalogPageModel {
@@ -80,54 +107,109 @@ final class StremioCatalogPageModel {
   var phase: Phase = .idle
   var hasNextPage = false
   var loadingMore = false
-  private var page = 0
+  /// `skip` of the next page: the real position after every item read so far (StremioAddon.loadCatalogPage).
+  @ObservationIgnored private var nextSkip = 0
   /// Ids of the items as the addon returned them (before the AniList swap), to drop repeats.
   @ObservationIgnored private var sourceIDs = Set<String>()
+  @ObservationIgnored private var loadTask: Task<Void, Never>?
+  @ObservationIgnored private var moreTask: Task<Void, Never>?
+  /// Bumped by every start / cancel: a load finishing for an older generation is ignored.
+  @ObservationIgnored private var generation = 0
+  /// Pages in a row that brought nothing new (an addon ignoring skip): the next page is not chained after 3.
+  @ObservationIgnored private var emptyPages = 0
 
   init(section: StremioCatalogSection) {
     self.section = section
   }
 
-  /// First page (rows load lazily when they appear, like the IntersectionObserver deferredLoad).
-  func loadIfNeeded() async {
+  /// First page (rows start when they appear, like the IntersectionObserver deferredLoad). No-op once started.
+  func start() {
     guard phase == .idle else { return }
+    generation += 1
+    let current = generation
     phase = .loading
-    do {
-      let result = try await section.load(page: 1)
-      sourceIDs = []
-      items = unseen(result.items)
-      hasNextPage = result.hasNextPage
-      page = 1
-      phase = .loaded
-      showAnimeEntries()
-    } catch {
-      if PlaybackResolver.isCancellation(error) {
-        phase = .idle
-        return
+    let section = self.section
+    loadTask = Task { [weak self] in
+      do {
+        let result = try await section.load(skip: 0)
+        guard let self, self.generation == current else { return }
+        self.loadTask = nil
+        // Cancelled: the page may be missing items, so nothing is kept and the next start loads it again.
+        if Task.isCancelled {
+          self.phase = .idle
+          return
+        }
+        self.sourceIDs = []
+        self.emptyPages = 0
+        self.items = self.unseen(result.page.items)
+        self.hasNextPage = result.page.hasNextPage
+        self.nextSkip = result.nextSkip
+        self.phase = .loaded
+        self.showAnimeEntries()
+      } catch {
+        guard let self, self.generation == current else { return }
+        self.loadTask = nil
+        if Task.isCancelled || PlaybackResolver.isCancellation(error) {
+          self.phase = .idle
+          return
+        }
+        self.phase = .failed(error.localizedDescription)
       }
-      phase = .failed(error.localizedDescription)
     }
   }
 
   /// Next page for the full grid.
-  func loadMore() async {
+  func loadMore() {
     guard phase == .loaded, hasNextPage, !loadingMore else { return }
     loadingMore = true
-    defer { loadingMore = false }
-    do {
-      let result = try await section.load(page: page + 1)
-      items.append(contentsOf: unseen(result.items))
-      hasNextPage = result.hasNextPage
-      page += 1
-      showAnimeEntries()
-    } catch {
-      hasNextPage = false
+    let current = generation
+    let section = self.section
+    let skip = nextSkip
+    moreTask = Task { [weak self] in
+      do {
+        let result = try await section.load(skip: skip)
+        guard let self, self.generation == current else { return }
+        self.loadingMore = false
+        self.moreTask = nil
+        if Task.isCancelled { return }
+        let fresh = self.unseen(result.page.items)
+        self.items.append(contentsOf: fresh)
+        self.hasNextPage = result.page.hasNextPage
+        self.nextSkip = result.nextSkip
+        self.showAnimeEntries()
+        // Nothing new (repeats only): the grid's last card did not change, so its onAppear will not ask again.
+        self.emptyPages = fresh.isEmpty ? self.emptyPages + 1 : 0
+        if fresh.isEmpty && self.hasNextPage && self.emptyPages < 3 {
+          self.loadMore()
+        }
+      } catch {
+        guard let self, self.generation == current else { return }
+        self.loadingMore = false
+        self.moreTask = nil
+        if Task.isCancelled || PlaybackResolver.isCancellation(error) { return }
+        self.hasNextPage = false
+      }
     }
   }
 
-  func retry() async {
+  /// Loads the first page again (after an error, or a page that showed nothing).
+  func retry() {
+    cancel()
+    items = []
+    hasNextPage = false
     phase = .idle
-    await loadIfNeeded()
+    start()
+  }
+
+  /// Stops the loads in progress; an unfinished first page goes back to idle.
+  func cancel() {
+    generation += 1
+    loadTask?.cancel()
+    loadTask = nil
+    moreTask?.cancel()
+    moreTask = nil
+    loadingMore = false
+    if phase == .loading { phase = .idle }
   }
 
   /// Items not returned before (addons repeat items, and skip pages can overlap).
@@ -218,6 +300,7 @@ struct CatalogsView: View {
   @State private var activeQuery = ""
   @State private var debounceTask: Task<Void, Never>? = nil
   @State private var gridSection: StremioCatalogSection? = nil
+  @State private var models = StremioCatalogModelStore()
 
   init(onSelect: @escaping (Media) -> Void, onOpenSettings: (() -> Void)? = nil) {
     self.onSelect = onSelect
@@ -245,7 +328,7 @@ struct CatalogsView: View {
             .padding(.horizontal, 20)
         } else {
           ForEach(sections) { section in
-            StremioCatalogRowView(section: section, onSelect: onSelect, onOpenAll: { gridSection = section })
+            StremioCatalogRowView(section: section, model: models.model(for: section), onSelect: onSelect, onOpenAll: { gridSection = section })
               .id(section.id)
           }
         }
@@ -256,7 +339,12 @@ struct CatalogsView: View {
     // Pushed rather than presented: the details, playback dialogs and toasts are hosted by the root
     // layer, which a sheet would cover.
     .navigationDestination(item: $gridSection) { section in
-      StremioCatalogGridView(section: section, onSelect: onSelect, catalogs: StremioCatalogSections.build(self.addons, search: ""))
+      StremioCatalogGridView(section: section, onSelect: onSelect, catalogs: StremioCatalogSections.build(self.addons, search: ""), models: models)
+    }
+    .onChange(of: sections.map(\.id)) { _, ids in
+      // Rows of a previous search (or of a removed addon) are dropped; the browse rows are kept.
+      let browse = StremioCatalogSections.build(self.addons, search: "").map(\.id)
+      models.keep(only: Set(ids + browse))
     }
     .onDisappear { debounceTask?.cancel() }
   }
@@ -359,11 +447,12 @@ struct CatalogsView: View {
 @MainActor
 struct StremioCatalogRowView: View {
   let section: StremioCatalogSection
+  /// Owned by the catalogs page (StremioCatalogModelStore), so it outlives this view.
+  let model: StremioCatalogPageModel
   /// Kept for the callers; the cards use the standard card actions.
   var onSelect: (Media) -> Void
   var onOpenAll: () -> Void
 
-  @State private var model: StremioCatalogPageModel? = nil
   @AppStorage(BrowseCardMode.storageKey) private var cardMode = BrowseCardMode.small.rawValue
 
   private var style: BrowseCardStyle {
@@ -398,40 +487,24 @@ struct StremioCatalogRowView: View {
         .padding(.horizontal, 20)
       }
     }
-    .task(id: section.id) {
-      let current: StremioCatalogPageModel
-      if let model, model.section.id == section.id {
-        current = model
-      } else {
-        current = StremioCatalogPageModel(section: section)
-        model = current
-      }
-      await current.loadIfNeeded()
-    }
+    .onAppear { model.start() }
   }
 
   @ViewBuilder
   private var rowContent: some View {
-    if let model {
-      switch model.phase {
-      case .idle, .loading:
-        placeholders
-      case .failed(let message):
-        failureCard(message, model: model)
-      case .loaded:
-        if model.items.isEmpty {
-          Text("Nothing to show")
-            .font(.subheadline)
-            .foregroundStyle(ExtensionPalette.muted)
-            .frame(height: 60)
-        } else {
-          ForEach(model.items) { media in
-            BrowseMediaCard(media: media, style: style, width: cardWidth)
-          }
+    switch model.phase {
+    case .idle, .loading:
+      placeholders
+    case .failed(let message):
+      messageCard(message)
+    case .loaded:
+      if model.items.isEmpty {
+        messageCard("Nothing to show")
+      } else {
+        ForEach(model.items) { media in
+          BrowseMediaCard(media: media, style: style, width: cardWidth)
         }
       }
-    } else {
-      placeholders
     }
   }
 
@@ -445,14 +518,15 @@ struct StremioCatalogRowView: View {
     }
   }
 
-  private func failureCard(_ message: String, model: StremioCatalogPageModel) -> some View {
+  /// Error or empty page, with Retry (an empty page can come from a lookup that failed for every item).
+  private func messageCard(_ message: String) -> some View {
     VStack(alignment: .leading, spacing: 8) {
       Text(message)
         .font(.footnote)
         .foregroundStyle(ExtensionPalette.muted)
         .lineLimit(3)
       Button("Retry") {
-        Task { await model.retry() }
+        model.retry()
       }
       .font(.footnote.weight(.semibold))
     }
@@ -493,6 +567,8 @@ struct StremioCatalogGridView: View {
   var onSelect: (Media) -> Void
   /// Catalogs of the switcher menu (the Source menu of the search page on Windows lists them the same way).
   var catalogs: [StremioCatalogSection] = []
+  /// Models of the catalogs page: the grid continues the row's list (nil = a model of its own).
+  var models: StremioCatalogModelStore? = nil
 
   @State private var model: StremioCatalogPageModel? = nil
   /// Catalog picked in the switcher, nil = `section`.
@@ -538,10 +614,9 @@ struct StremioCatalogGridView: View {
     }
     .task(id: shown.id) {
       if model?.section.id != shown.id {
-        let created = StremioCatalogPageModel(section: shown)
-        model = created
-        await created.loadIfNeeded()
+        model = models?.model(for: shown) ?? StremioCatalogPageModel(section: shown)
       }
+      model?.start()
     }
   }
 
@@ -568,17 +643,26 @@ struct StremioCatalogGridView: View {
           Text(message)
             .foregroundStyle(ExtensionPalette.muted)
             .multilineTextAlignment(.center)
-          Button("Retry") { Task { await model.retry() } }
+          Button("Retry") { model.retry() }
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 60)
       case .loaded:
+        if model.items.isEmpty {
+          VStack(spacing: 12) {
+            Text("Nothing to show")
+              .foregroundStyle(ExtensionPalette.muted)
+            Button("Retry") { model.retry() }
+          }
+          .frame(maxWidth: .infinity)
+          .padding(.top, 60)
+        }
         LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
           ForEach(model.items) { media in
             BrowseMediaCard(media: media, style: style)
               .onAppear {
                 if media.id == model.items.last?.id {
-                  Task { await model.loadMore() }
+                  model.loadMore()
                 }
               }
           }

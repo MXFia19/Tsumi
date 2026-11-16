@@ -167,6 +167,12 @@ struct StremioMediaIds {
   var stremioType: String { tmdbType == .movie ? "movie" : "series" }
 }
 
+/// One page of a catalog (loadCatalogPage) and the `skip` of the page after it.
+struct StremioCatalogPage {
+  var page: MediaPage
+  var nextSkip: Int
+}
+
 /// A loaded addon: base URL + raw manifest (loadStremioAddon).
 struct StremioAddon: Hashable {
   static let requestTimeout: TimeInterval = 45
@@ -228,7 +234,8 @@ struct StremioAddon: Hashable {
 
   static func fetch(_ url: URL, resource: String) async throws -> StremioPayload {
     do {
-      let (data, response) = try await HTTP.data(url, timeout: requestTimeout, allowErrorStatus: true)
+      // 20 MB at most (ExtensionHTTP), so a broken or hostile addon can't exhaust the memory.
+      let (data, response) = try await ExtensionHTTP.data(url, timeout: requestTimeout)
       guard (200..<300).contains(response.statusCode) else {
         throw ExtensionFailure("Addon returned HTTP \(response.statusCode) for \(resource)")
       }
@@ -325,11 +332,16 @@ struct StremioAddon: Hashable {
     return results
   }
 
-  /// metaToMedia: a Stremio catalog item as a TMDB media (nil when no TMDB id can be found).
+  /// metaToMedia: a Stremio catalog item as a TMDB media (nil when no TMDB id can be found). Items of anime addons
+  /// (kitsu:, mal:, anilist: ids) are their AniList entry (nil when it can't be found).
   static func metaToMedia(_ meta: [String: Any], fallbackType: String) async -> Media? {
     let stremioType = ExtensionJSON.truthyString(meta["type"]) ?? fallbackType
     let tmdbType: TMDBType = stremioType == "movie" ? .movie : .tv
     let id = ExtensionJSON.string(meta["id"]) ?? ""
+    if let animeId = StremioAnimeIds.parse(id) {
+      guard let anilistId = await StremioAnimeIds.shared.anilistId(animeId) else { return nil }
+      return await AniListService.shared.requestMedia(id: anilistId)
+    }
     var tmdbId: Int?
     if id.hasPrefix("tmdb:") {
       let parts = id.components(separatedBy: ":")
@@ -404,27 +416,31 @@ struct StremioAddon: Hashable {
     return MediaPage(items: items.compactMap { $0 }, hasNextPage: hasNextPage)
   }
 
-  /// loadCatalogPage: one page of a catalog; Stremio pages with "skip" (several batches per page).
-  func loadCatalogPage(_ catalog: StremioCatalog, page: Int = 1, perPage: Int = 50, extra: [StremioExtraParam] = []) async throws -> MediaPage {
+  /// loadCatalogPage: one page of a catalog, from `skip`; Stremio pages with "skip" (several batches per page, at
+  /// least `perPage` items when the catalog has them). Every item read is kept (no truncation), and `nextSkip` is
+  /// the real position after them (the sum of the batch sizes): addons that read skip as a page boundary would
+  /// otherwise skip or repeat items.
+  func loadCatalogPage(_ catalog: StremioCatalog, skip: Int = 0, perPage: Int = 50, extra: [StremioExtraParam] = []) async throws -> StremioCatalogPage {
     let canSkip = catalog.supports("skip")
-    if page > 1 && !canSkip { return .empty }
+    if skip > 0 && !canSkip { return StremioCatalogPage(page: .empty, nextSkip: skip) }
     var metas: [StremioPayload] = []
-    var skip = (page - 1) * perPage
+    var cursor = skip
     var lastBatch = 0
     var attempt = 0
     while attempt < 6 && metas.count < perPage {
       attempt += 1
       var params = extra
-      if skip > 0 { params.append(StremioExtraParam(name: "skip", value: String(skip))) }
+      if cursor > 0 { params.append(StremioExtraParam(name: "skip", value: String(cursor))) }
       let response = try await request("catalog", type: catalog.type, id: catalog.id, extra: params)
       let batch = (response["metas"] as? [Any] ?? []).compactMap { $0 as? [String: Any] }
       lastBatch = batch.count
       if batch.isEmpty { break }
       metas.append(contentsOf: batch.map { StremioPayload(json: $0) })
-      skip += batch.count
+      cursor += batch.count
       if !canSkip { break }
     }
-    return await Self.metasToPage(Array(metas.prefix(perPage)), fallbackType: catalog.type, hasNextPage: canSkip && lastBatch > 0)
+    let page = await Self.metasToPage(metas, fallbackType: catalog.type, hasNextPage: canSkip && lastBatch > 0)
+    return StremioCatalogPage(page: page, nextSkip: cursor)
   }
 
   // MARK: Sora-compatible functions
@@ -630,13 +646,17 @@ struct StremioAddon: Hashable {
 }
 
 /// Request cache of stremio.js (`requestCache`): same URL within the TTL shares one request,
-/// failed requests are dropped from the cache.
+/// failed requests are dropped from the cache. Bounded: expired answers are dropped, and above `capacity` the least
+/// recently used ones go first (the desktop cache grew for the whole session).
 actor StremioRequestCache {
   static let shared = StremioRequestCache()
+  /// Answers kept at most (catalog pages, metas, searches).
+  static let capacity = 200
 
   private struct Entry {
     var id: UUID
-    var time: Date
+    var expires: Date
+    var lastUsed: Date
     var task: Task<StremioPayload, Error>
   }
 
@@ -644,12 +664,18 @@ actor StremioRequestCache {
 
   func load(_ url: URL, resource: String, ttl: TimeInterval) async throws -> StremioPayload {
     let key = url.absoluteString
-    if ttl > 0, let entry = entries[key], Date().timeIntervalSince(entry.time) < ttl {
+    let now = Date()
+    if ttl > 0, var entry = entries[key], entry.expires > now {
+      entry.lastUsed = now
+      entries[key] = entry
       return try await entry.task.value
     }
     let task = Task.detached { try await StremioAddon.fetch(url, resource: resource) }
     let id = UUID()
-    if ttl > 0 { entries[key] = Entry(id: id, time: Date(), task: task) }
+    if ttl > 0 {
+      entries[key] = Entry(id: id, expires: now.addingTimeInterval(ttl), lastUsed: now, task: task)
+      prune(now: now)
+    }
     do {
       return try await task.value
     } catch {
@@ -658,5 +684,128 @@ actor StremioRequestCache {
     }
   }
 
+  /// Drops the expired answers, then the least recently used ones above `capacity`.
+  private func prune(now: Date) {
+    entries = entries.filter { $0.value.expires > now }
+    guard entries.count > Self.capacity else { return }
+    let overflow = entries.count - Self.capacity
+    let oldest = entries.sorted { $0.value.lastUsed < $1.value.lastUsed }.prefix(overflow).map { $0.key }
+    for key in oldest {
+      entries[key] = nil
+    }
+  }
+
   func clear() { entries.removeAll() }
+}
+
+/// Ids of anime addons (Kitsu, MyAnimeList and AniList catalogs: "kitsu:123", "mal:456", "anilist:789", episode ids
+/// add ":<n>") as AniList ids, so their items open the AniList entry: AniList ids as they are, MyAnimeList ids through
+/// the animap index of AnimeMappingsService, Kitsu ids (and MyAnimeList ids animap does not know) through
+/// api.ani.zip, cached on disk.
+actor StremioAnimeIds {
+  enum AnimeId: Hashable {
+    case anilist(Int)
+    case mal(Int)
+    case kitsu(Int)
+  }
+
+  private enum Lookup {
+    case found(Int)
+    case notFound
+    case failed
+  }
+
+  static let shared = StremioAnimeIds()
+
+  /// MyAnimeList id -> AniList id, built once from animap.
+  private var malIndex: [Int: Int] = [:]
+  private var malIndexBuilt: Date?
+  private var resolved: [AnimeId: Int] = [:]
+  /// Ids ani.zip does not know (not asked again this session).
+  private var missing: Set<AnimeId> = []
+  private var inflight: [AnimeId: Task<Lookup, Never>] = [:]
+
+  static func parse(_ id: String) -> AnimeId? {
+    let parts = id.split(separator: ":", omittingEmptySubsequences: false)
+    guard parts.count >= 2, let value = Int(parts[1]), value > 0 else { return nil }
+    switch parts[0].lowercased() {
+    case "anilist": return .anilist(value)
+    case "mal": return .mal(value)
+    case "kitsu": return .kitsu(value)
+    default: return nil
+    }
+  }
+
+  func anilistId(_ id: AnimeId) async -> Int? {
+    switch id {
+    case .anilist(let value):
+      return value
+    case .mal(let value):
+      if let mapped = await malToAnilist(value) { return mapped }
+    case .kitsu:
+      break
+    }
+    if let known = resolved[id] { return known }
+    if missing.contains(id) { return nil }
+    let task: Task<Lookup, Never>
+    if let running = inflight[id] {
+      task = running
+    } else {
+      task = Task { await StremioAnimeIds.lookup(id) }
+      inflight[id] = task
+    }
+    let result = await task.value
+    inflight[id] = nil
+    switch result {
+    case .found(let value):
+      resolved[id] = value
+      return value
+    case .notFound:
+      missing.insert(id)
+      return nil
+    case .failed:
+      return nil
+    }
+  }
+
+  private func malToAnilist(_ malId: Int) async -> Int? {
+    // Built again when animap was not available (offline), at most every 5 minutes.
+    let stale = malIndexBuilt.map { malIndex.isEmpty && Date().timeIntervalSince($0) > 300 } ?? true
+    if stale {
+      malIndexBuilt = Date()
+      let index = await AnimeMappingsService.shared.animapIndex()
+      var map: [Int: Int] = [:]
+      for entry in index.byAnilist.values {
+        if let mal = entry.malId, map[mal] == nil { map[mal] = entry.anilistId }
+      }
+      malIndex = map
+    }
+    return malIndex[malId]
+  }
+
+  private static func lookup(_ id: AnimeId) async -> Lookup {
+    let query: String
+    switch id {
+    case .anilist(let value):
+      return .found(value)
+    case .mal(let value):
+      query = "mal_id=\(value)"
+    case .kitsu(let value):
+      query = "kitsu_id=\(value)"
+    }
+    let cacheKey = "stremio.anime." + query
+    if let cached = await DiskCache.shared.get(cacheKey, as: Int.self) { return .found(cached) }
+    guard let url = URL(string: "https://api.ani.zip/mappings?" + query) else { return .failed }
+    do {
+      let (data, response) = try await HTTP.data(url, timeout: 20, allowErrorStatus: true)
+      if response.statusCode == 404 { return .notFound }
+      guard (200..<300).contains(response.statusCode) else { return .failed }
+      let mappings = try JSONDecoder().decode(AniZipMappings.self, from: data)
+      guard let anilistId = mappings.mappings?.anilistId, anilistId > 0 else { return .notFound }
+      await DiskCache.shared.set(cacheKey, anilistId, ttl: 30 * 86400)
+      return .found(anilistId)
+    } catch {
+      return .failed
+    }
+  }
 }
