@@ -1,5 +1,6 @@
 <script>
   import { modal } from '@/modules/navigation.js'
+  import { modalLayer } from '@/modules/modalstack.js'
 
   export let id
   export let showModal
@@ -7,21 +8,14 @@
   export let close
   export let css = ''
   export let innerCss = ''
-
-  function handleKeydown (event) {
-    if (!showModal || event.key !== 'Escape' || !modal.focused || modal.focused !== id) return
-    const target = event.target
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-      target.blur()
-      event.preventDefault()
-    } else close()
-  }
+  export let label = ''
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
-
-<div class='modal-soft position-absolute d-flex align-items-center justify-content-center z-50 w-full h-full {css}' class:hide={!showModal} class:show={showModal} id={`${id}_modal`}>
-  <div class='modal-soft-dialog d-flex align-items-center justify-content-center pt-40 {innerCss}' tabindex='-1' role='button' class:hide={!showModal} class:show={showModal} on:pointerdown|self={close}>
+<!-- A layer of the modal stack (modules/modalstack.js): Esc closes the top layer only, focus moves in and back. -->
+<div class='modal-soft position-absolute d-flex align-items-center justify-content-center z-50 w-full h-full {css}' class:hide={!showModal} class:show={showModal} id={`${id}_modal`}
+  role='dialog' aria-modal='true' aria-label={label || undefined} aria-hidden={showModal ? undefined : 'true'}
+  use:modalLayer={{ open: !!showModal, close, priority: modal.priority(id) }}>
+  <div class='modal-soft-dialog d-flex align-items-center justify-content-center pt-40 {innerCss}' role='presentation' class:hide={!showModal} class:show={showModal} on:pointerdown|self={close}>
     <div class='overflow-hidden d-flex flex-column overflow-y-scroll scroll-container {$$restProps.class}'>
       {#if showModal || shouldRender}
         <slot></slot>

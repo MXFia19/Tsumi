@@ -32,6 +32,7 @@ const debug = Debug('ui:history')
  * @property {function(): void} clear Clear all modals
  * @property {function(string): boolean} exists Check if modal exists
  * @property {string|null} focused Get the highest priority open modal
+ * @property {function(string): number} priority Drawing priority of a modal (lower is drawn higher)
  * @property {number} length Number of open modals
  * @property {Object} value Current modal state object
  * @property {string} MINIMIZE_PROMPT
@@ -215,6 +216,12 @@ export const modal = (() => {
       if (keys.length === 0) return null
       return keys.reduce((highest, current) => (Object.values(MODALS).find(modal => modal.id === current)?.priority || 100) < (Object.values(MODALS).find(modal => modal.id === highest)?.priority || 100) ? current : highest)
     },
+    /**
+     * Drawing priority of a modal, lower is drawn higher (the modal stack of modalstack.js)
+     * @param {string} type Modal ID
+     * @returns {number}
+     */
+    priority: (type) => Object.values(MODALS).find(modal => modal.id === type)?.priority || 100,
     /**
      * Get the number of currently open modals
      * @returns {number} Number of open modals
