@@ -223,7 +223,7 @@ struct ExtensionPickerView: View {
       }
     }
     if !model.failedNames.isEmpty {
-      Text("No answer from \(model.failedNames.joined(separator: ", ")).")
+      Text("Couldn't search with \(model.failedNames.joined(separator: ", ")) (error or no answer in time).")
         .font(.footnote)
         .foregroundStyle(ExtensionPalette.dimmed)
         .lineLimit(2)

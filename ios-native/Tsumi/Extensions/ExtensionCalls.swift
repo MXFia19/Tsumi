@@ -28,6 +28,10 @@ enum ExtensionLoader {
   /// loadExtension(manifestUrl)
   static func load(manifestURL: String) async throws -> ExtensionLoadResult {
     let normalized = StremioAddon.normalizeManifestURL(manifestURL)
+    if normalized.isEmpty {
+      // The Keychain lost the address (restored from a backup without it): only adding it again helps.
+      throw ExtensionFailure("The address of this extension is missing: delete it and add it again")
+    }
     guard let url = URL.lenient(normalized), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
       throw ExtensionFailure("Failed to load manifest from \(ExtensionURLMask.host(normalized)): Invalid URL")
     }
