@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import {
   formatClock, parseClock, cleanDevice, formatLine, parseLine, readPosition, stripPosition, withPosition,
-  shouldOffer, needsWrite, positionLabel
+  shouldOffer, needsWrite, positionLabel, MAX_CLOCK
 } from './position.js'
 
 let passed = 0
@@ -30,6 +30,23 @@ test('formatClock / parseClock', () => {
   assert.equal(parseClock('1:02:03'), 3723)
   assert.ok(Number.isNaN(parseClock('abc')))
   assert.ok(Number.isNaN(parseClock('12')))
+})
+
+test('clocks are capped at 99:59:59 (larger values from a hand-edited note are rejected)', () => {
+  assert.equal(MAX_CLOCK, 359_999)
+  assert.equal(formatClock(MAX_CLOCK), '99:59:59')
+  assert.equal(formatClock(1e12), '99:59:59')
+  assert.equal(formatClock(Infinity), '0:00')
+  assert.equal(formatClock(NaN), '0:00')
+  assert.equal(parseClock('99:59:59'), MAX_CLOCK)
+  assert.ok(Number.isNaN(parseClock('100:00:00')))
+  assert.ok(Number.isNaN(parseClock('99999999999999999999:00:00')))
+  assert.ok(Number.isNaN(parseClock('6000:00')))
+  assert.equal(parseLine('[Tsumi] Ep 3 · 123456789:00:00 · PC · 2026-11-15T12:00:00Z'), null)
+  const line = parseLine('[Tsumi] Ep 3 · 12:00 / 999999:00:00 · PC · 2026-11-15T12:00:00Z')
+  assert.equal(line.time, 720)
+  assert.equal(line.duration, undefined)
+  assert.equal(positionLabel({ percent: 250 }), '100%')
 })
 
 test('cleanDevice removes separators and line breaks', () => {
