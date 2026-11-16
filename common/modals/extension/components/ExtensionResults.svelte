@@ -391,6 +391,16 @@
   $: if (search && search !== searchedFor) {
     searchedFor = search
     searchExtensions(search)
+    playPreferred(search.preferred)
+  }
+
+  // A title opened from a Sora module result of the search page plays from that module and result right away
+  // (modules/sora/searchsource.js); the search above still lists the other extensions if it fails.
+  function playPreferred (preferred) {
+    if (!preferred?.extensionKey || !preferred.href) return
+    const ext = extensionManager.getEnabled().find(enabled => enabled.key === preferred.extensionKey)
+    if (!ext) return
+    selectResult({ extensionKey: ext.key, extensionName: ext.manifest?.sourceName || ext.key, extensionIcon: ext.manifest?.iconUrl, href: preferred.href, title: preferred.title })
   }
 
   function toggleGroup (key) {

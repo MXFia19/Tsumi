@@ -11,6 +11,7 @@
   import { mediaCache } from '@/modules/cache.js'
   import { modal } from '@/modules/navigation.js'
   import { CalendarDays, Tv, ThumbsUp, ThumbsDown } from 'lucide-svelte'
+  import { openSoraResult } from '@/modules/sora/searchsource.js'
 
   /** @type {import('@/modules/al.d.ts').Media} */
   export let data
@@ -28,7 +29,9 @@
     if (cached && cached !== media && JSON.stringify(cached) !== JSON.stringify(media)) media = cached
   }))
   function viewMedia () {
-    if (_variables?.fileEdit) _variables.fileEdit(media)
+    // A Sora module result (search page Source): find the matching AniList / TMDB title first.
+    if (media?.isSora) openSoraResult(media)
+    else if (_variables?.fileEdit) _variables.fileEdit(media)
     else modal.open(modal.ANIME_DETAILS, media)
   }
 
@@ -37,7 +40,8 @@
   function setHoverState (state) {
     const focused = document.activeElement
     if (container && focused?.offsetParent != null && (container.contains(focused)) && (!previewCard || !previewCard.contains(focused))) ignoreFocus = true
-    if (settings.value.cardPreview) preview = state
+    // Module results have no AniList data to preview (trailer, score...).
+    if (settings.value.cardPreview && !media?.isSora) preview = state
     else if (state) viewMedia()
   }
 
@@ -46,7 +50,7 @@
   let focusTimeout
   let blurTimeout
   function handleFocus () {
-    if (ignoreFocus || preview) return
+    if (ignoreFocus || preview || media?.isSora) return
     clearTimeouts()
     focusTimeout = setTimeout(() => {
       if (settings.value.cardPreview) {
@@ -147,10 +151,14 @@
     <div class='d-flex flex-row mt-auto font-weight-medium justify-content-between w-full text-muted'>
       <div class='d-flex align-items-center pr-5'>
         <CalendarDays class='pr-5' size='2.6rem' />
-        {#await ((media?.seasonYear || (media?.status === 'NOT_YET_RELEASED')) && media) || (media?.id && getKitsuMappings(media.id)) then details}
-          {@const attributes = details?.included?.[0]?.attributes}
-          <span class='line-height-1'>{details?.seasonYear || ((media?.status === 'NOT_YET_RELEASED') && 'TBA') || (attributes?.startDate && new Date(attributes?.startDate).getFullYear()) || (attributes?.createdAt && new Date(attributes?.createdAt).getFullYear()) || (media?.status === 'RELEASING' && currentYear) || 'N/A'}</span>
-        {/await}
+        {#if media?.isSora}
+          <span class='line-height-1 text-truncate' title='Result of {media.sora.extensionName}'>{media.sora.extensionName}</span>
+        {:else}
+          {#await ((media?.seasonYear || (media?.status === 'NOT_YET_RELEASED')) && media) || (media?.id && getKitsuMappings(media.id)) then details}
+            {@const attributes = details?.included?.[0]?.attributes}
+            <span class='line-height-1'>{details?.seasonYear || ((media?.status === 'NOT_YET_RELEASED') && 'TBA') || (attributes?.startDate && new Date(attributes?.startDate).getFullYear()) || (attributes?.createdAt && new Date(attributes?.createdAt).getFullYear()) || (media?.status === 'RELEASING' && currentYear) || 'N/A'}</span>
+          {/await}
+        {/if}
       </div>
       <div class='d-flex align-items-center text-nowrap text-right'>
         <span class='line-height-1'>{formatMap[media?.format] || 'N/A'}</span>

@@ -23,6 +23,8 @@
   import { RELEASE_FILTERS } from '@/modules/schedule/movies.js'
   import { manager } from '@/modules/extension.js'
   import { catalogAddons, catalogSections } from '@/routes/catalogs/sections.js'
+  import { soraModules, soraSection } from '@/modules/sora/searchsource.js'
+  import SourcePicker from '@/routes/search/components/SourcePicker.svelte'
   import { onDestroy } from 'svelte'
 
   import { tmdbGenreList } from '@/modules/tmdb.js'
@@ -98,6 +100,7 @@
       delete search.load
       delete search.stremioCatalog
       delete search.catalogKey
+      delete search.soraModule
       delete search.disableHide
       delete search.userList
       delete search.continueWatching
@@ -171,14 +174,41 @@
   // Source: Both / Anime / Western, or one of the Stremio addon catalogs (routes/catalogs/sections.js). A catalog
   // opened from the Catalogs page shows up selected here; picking Both / Anime / Western leaves it.
   let catalogAddonList = catalogAddons()
-  const unsubscribeAddons = manager.subscribe(() => { catalogAddonList = catalogAddons() })
+  let soraModuleList = soraModules()
+  const unsubscribeAddons = manager.subscribe(() => {
+    catalogAddonList = catalogAddons()
+    soraModuleList = soraModules()
+  })
   onDestroy(unsubscribeAddons)
   $: catalogOptions = listCatalogOptions(catalogAddonList, search.scheduleList, search.catalogKey, search.title)
   // A Stremio catalog ignores the filters of the search page: they are disabled. The title goes to the search catalog
   // of the addon when it has one (routes/catalogs/sections.js, catalogSearch).
-  $: catalogMode = !!search.catalogKey
-  $: titleDisabled = search.disableSearch || (catalogMode && !search.catalogSearch)
-  $: sourceValue = search.catalogKey ? `catalog:${search.catalogKey}` : search.western === true ? 'western' : search.western === false ? 'anime' : 'both'
+  // Sora modules as a Source (modules/sora/searchsource.js): the Title is searched in the module itself.
+  $: soraOptions = search.scheduleList ? [] : soraModuleList.map(soraSection)
+  // Catalogs and modules ignore the filters of the search page: they are disabled.
+  $: catalogMode = !!search.catalogKey || !!search.soraModule
+  $: titleDisabled = search.disableSearch || (!!search.catalogKey && !search.catalogSearch)
+  $: sourceValue = search.soraModule ? `sora:${search.soraModule}` : search.catalogKey ? `catalog:${search.catalogKey}` : search.western === true ? 'western' : search.western === false ? 'anime' : 'both'
+  $: sourceGroups = buildSourceGroups(catalogOptions, soraOptions, catalogAddonList)
+
+  /** Groups of the Source menu: one folding group per Stremio addon (its catalogs), one for the Sora modules. */
+  function buildSourceGroups (catalogs, modules, addons) {
+    const groups = [{ id: 'basic', items: [{ value: 'both', label: 'Both' }, { value: 'anime', label: 'Anime' }, { value: 'western', label: 'Western' }] }]
+    const used = new Set()
+    for (const ext of addons) {
+      const addonName = ext.manifest?.sourceName || ext.key
+      const items = catalogs.filter(option => option.key.startsWith(`${ext.key}|`)).map(option => {
+        used.add(option.key)
+        const suffix = ` · ${addonName}`
+        return { value: `catalog:${option.key}`, label: option.title.endsWith(suffix) ? option.title.slice(0, -suffix.length) : option.title }
+      })
+      if (items.length) groups.push({ id: `catalogs:${ext.key}`, label: `Catalogs · ${addonName}`, items })
+    }
+    const others = catalogs.filter(option => !used.has(option.key)).map(option => ({ value: `catalog:${option.key}`, label: option.title }))
+    if (others.length) groups.push({ id: 'catalogs:other', label: 'Catalogs', items: others })
+    if (modules.length) groups.push({ id: 'sora', label: 'Sora modules', items: modules.map(option => ({ value: `sora:${option.key}`, label: option.title })) })
+    return groups
+  }
 
   function listCatalogOptions (addons, scheduleList, currentKey, currentTitle) {
     if (scheduleList) return []
@@ -188,19 +218,26 @@
     return options
   }
 
-  function changeSource ({ currentTarget }) {
-    const value = currentTarget.value
-    if (value.startsWith('catalog:')) {
+  function changeSource (value) {
+    if (value.startsWith('sora:')) {
+      const section = soraOptions.find(option => option.key === value.slice('sora:'.length))
+      if (!section?.load) return
+      // The typed title is kept: it is what the module searches.
+      const text = search.search || ''
+      searchTags = { ...searchTags, tags: [], tags_not: [] }
+      search = { genre: [], genre_not: [], tag: [], tag_not: [], format: [], format_not: [], status: [], status_not: [], ...section.variables, load: section.load, title: section.title, clearNext: true, search: text }
+    } else if (value.startsWith('catalog:')) {
       const section = catalogOptions.find(option => option.key === value.slice('catalog:'.length))
       if (!section?.load) return
       searchTags = { ...searchTags, tags: [], tags_not: [] }
       search = { genre: [], genre_not: [], tag: [], tag_not: [], format: [], format_not: [], status: [], status_not: [], ...section.variables, load: section.load, title: section.title, clearNext: true }
     } else {
-      if (search.catalogKey) {
+      if (search.catalogKey || search.soraModule) {
         delete search.load
         delete search.title
         delete search.stremioCatalog
         delete search.catalogKey
+        delete search.soraModule
       }
       search = { ...search, western: value === 'western' ? true : value === 'anime' ? false : null }
     }
@@ -231,18 +268,7 @@
         <div>Source</div>
       </div>
       <div class='input-group'>
-        <select class='form-control bg-dark-light rounded-1' value={sourceValue} on:change={changeSource}>
-          <option value='both'>Both</option>
-          <option value='anime'>Anime</option>
-          <option value='western'>Western</option>
-          {#if catalogOptions.length}
-            <optgroup label='Catalogs'>
-              {#each catalogOptions as option (option.key)}
-                <option value={'catalog:' + option.key}>{option.title}</option>
-              {/each}
-            </optgroup>
-          {/if}
-        </select>
+        <SourcePicker value={sourceValue} groups={sourceGroups} on:change={({ detail }) => changeSource(detail)} />
       </div>
     </div>
     {#if search.scheduleList}
@@ -278,7 +304,7 @@
           data-option='search'
           disabled={titleDisabled}
           title={catalogMode && !search.catalogSearch ? 'This catalog cannot search' : ''}
-          placeholder={catalogMode ? (search.catalogSearch ? 'Search the addon' : 'Not searchable') : 'Any'} />
+          placeholder={search.soraModule ? 'Type a title to search' : search.catalogKey ? (search.catalogSearch ? 'Search the addon' : 'Not searchable') : 'Any'} />
       </div>
     </div>
     <div class='col-lg col-4 p-10 z-4 d-flex {advancedSearch} flex-column justify-content-end'>

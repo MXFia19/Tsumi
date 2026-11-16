@@ -9,6 +9,7 @@
   import { modal } from '@/modules/navigation.js'
   import { settings } from '@/modules/settings.js'
   import { hidesMedia, SPOILER_TEXT } from '@/modules/spoilers.js'
+  import { openSoraResult } from '@/modules/sora/searchsource.js'
 
   /** @type {import('@/modules/al.d.ts').Media} */
   export let data
@@ -31,7 +32,9 @@
   $: hideSynopsis = hidesMedia('synopsis', media, $settings)
 
   function viewMedia () {
-    if (_variables?.fileEdit) _variables.fileEdit(media)
+    // A Sora module result (search page Source): find the matching AniList / TMDB title first.
+    if (media?.isSora) openSoraResult(media)
+    else if (_variables?.fileEdit) _variables.fileEdit(media)
     else modal.open(modal.ANIME_DETAILS, media)
   }
 
