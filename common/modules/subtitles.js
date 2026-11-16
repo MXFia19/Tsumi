@@ -1,6 +1,7 @@
 import JASSUB from 'jassub'
 import { hex2arr, bin2hex } from 'uint8-util'
-import { toTS, subRx, videoRx } from '@/modules/util.js'
+import { subRx, videoRx } from '@/modules/util.js'
+import { convertSubText } from '@/modules/subconvert.js'
 import { settings } from '@/modules/settings.js'
 import clipboard from '@/modules/clipboard.js'
 import { SUPPORTS } from '@/modules/support.js'
@@ -39,6 +40,8 @@ export default class Subtitles {
     this.videoFiles = files.filter(file => videoRx.test(file.name))
     this.subtitleFiles = []
     this.timeout = null
+    /** subtitle offset in seconds (positive shows them earlier), also given to renderers created later */
+    this.timeOffset = 0
     this.handleFile = ({ detail }) => {
       if (this.selected) {
         const uint8 = hex2arr(bin2hex(detail))
@@ -124,16 +127,22 @@ export default class Subtitles {
   handleTracks () { }
   handleSubtitle () { }
   handleFile () { }
-  handleSubtitleFile () { } async addSingleSubtitleFile (file) {
+  handleSubtitleFile () { }
+
+  async addSingleSubtitleFile (file) {
     // lets hope there's no more than 100 subtitle tracks in a file
     const index = 100 + this.headers.length
     this.subtitleFiles[index] = file
-    const type = file.name.substring(file.name.lastIndexOf('.') + 1).toLowerCase()
-    const subname = file.name.slice(0, file.name.lastIndexOf('.'))
+    const dot = file.name.lastIndexOf('.')
+    const type = dot === -1 ? '' : file.name.substring(dot + 1).toLowerCase()
+    const subname = dot === -1 ? file.name : file.name.slice(0, dot)
     // sub name could contain video name with or without extension, possibly followed by lang, or not.
-    const name = subname.includes(this.selected.name)
-      ? subname.replace(this.selected.name, '')
-      : subname.replace(this.selected.name.slice(0, this.selected.name.lastIndexOf('.')), '')
+    const videoName = this.selected?.name || ''
+    const name = !videoName
+      ? subname
+      : subname.includes(videoName)
+        ? subname.replace(videoName, '')
+        : subname.replace(videoName.slice(0, videoName.lastIndexOf('.')), '')
     this.headers[index] = {
       header: defaultHeader,
       language: name.replace(/[,._-]/g, ' ').trim() || 'Track ' + index,
@@ -142,11 +151,14 @@ export default class Subtitles {
     }
     this.onHeader()
     this.tracks[index] = []
-    const subtitles = Subtitles.convertSubText(await file.text(), type)
+    const subtitles = convertSubText(await file.text(), type)
+    // Destroyed while the file was read (episode changed, player closed): the caller sees the missing header.
+    if (!this.headers?.[index]) return index
     if (subtitles) {
-      if (type === 'ass') this.headers[index].header = subtitles
+      if (typeof subtitles === 'string') this.headers[index].header = subtitles
       else this.headers[index].header += subtitles.join('\n')
-      if (!this.current) {
+      // Nothing selected yet, or this track was selected while its file was still loading: (re)render it now.
+      if (!this.current || this.current === index) {
         this.current = index
         this.initSubtitleRenderer()
         this.selectCaptions(this.current)
@@ -154,6 +166,12 @@ export default class Subtitles {
       }
     } else console.error(`Failed to load the file ${file.name} as it is not a subtitle file.`)
     return index
+  }
+
+  /** @param {number} offset seconds, positive shows the subtitles earlier */
+  setTimeOffset (offset) {
+    this.timeOffset = Number.isFinite(Number(offset)) ? Number(offset) : 0
+    if (this.renderer) this.renderer.timeOffset = this.timeOffset
   }
 
   initSubtitleRenderer () {
@@ -176,7 +194,8 @@ export default class Subtitles {
         legacyWasmUrl: new URL('jassub/dist/jassub-worker.wasm.js', import.meta.url).toString(),
         modernWasmUrl: new URL('jassub/dist/jassub-worker-modern.wasm', import.meta.url).toString(),
         useLocalFonts: settings.value.missingFont,
-        dropAllBlur: settings.value.disableSubtitleBlur
+        dropAllBlur: settings.value.disableSubtitleBlur,
+        timeOffset: this.timeOffset
       }
       if (SUPPORTS.isAndroid) JASSUB._hasBitmapBug = true
       this.renderer = new JASSUB(options)
@@ -184,65 +203,9 @@ export default class Subtitles {
     }
   }
 
+  /** Kept for callers of the class API: see modules/subconvert.js. */
   static convertSubText (text, type) {
-    const srtRx = /(?:\d+\r?\n)?(\S{9,12})\s?-->\s?(\S{9,12})(.*)\r?\n([\s\S]*)$/i
-    const srt = text => {
-      const subtitles = []
-      const replaced = text.replace(/\r/g, '')
-      for (const split of replaced.split(/\r?\n\r?\n/)) {
-        const match = split.match(srtRx)
-        if (match) {
-          match[1] = match[1].replace(',', '.')
-          match[2] = match[2].replace(',', '.')
-
-          const formatTime = (t) => {
-            const parts = t.split(':')
-            if (parts.length === 2) return `0:${t}`
-            if (parts.length === 3 && parts[0].startsWith('00')) return `${parts[0].substring(1)}:${parts[1]}:${parts[2]}`
-            return t
-          }
-
-          match[1] = formatTime(match[1])
-          match[2] = formatTime(match[2])
-          const matches = match[4].match(/<[^>]+>/g)
-          if (matches) {
-            matches.forEach(matched => {
-              if (/<\//.test(matched)) {
-                match[4] = match[4].replace(matched, matched.replace('</', '{\\').replace('>', '0}'))
-              } else {
-                match[4] = match[4].replace(matched, matched.replace('<', '{\\').replace('>', '1}'))
-              }
-            })
-          }
-          subtitles.push('Dialogue: 0,' + match[1].replace(',', '.') + ',' + match[2].replace(',', '.') + ',Default,,0,0,0,,' + match[4].replace(/\r?\n/g, '\\N'))
-        }
-      }
-      return subtitles
-    }
-    const subRx = /[{[](\d+)[}\]][{[](\d+)[}\]](.+)/i
-    const sub = text => {
-      const subtitles = []
-      const replaced = text.replace(/\r/g, '')
-      let frames = 1000 / Number(replaced.match(subRx)[3])
-      if (!frames || isNaN(frames)) frames = 41.708
-      for (const split of replaced.split('\r?\n')) {
-        const match = split.match(subRx)
-        if (match) subtitles.push('Dialogue: 0,' + toTS((match[1] * frames) / 1000, 1) + ',' + toTS((match[2] * frames) / 1000, 1) + ',Default,,0,0,0,,' + match[3].replace('|', '\\N'))
-      }
-      return subtitles
-    }
-    const subtitles = type === 'ass' ? text : []
-    if (type === 'ass') {
-      return subtitles
-    } else if (type === 'srt' || type === 'vtt') {
-      return srt(text)
-    } else if (type === 'sub') {
-      return sub(text)
-    } else {
-      // subbers have a tendency to not set the extensions properly
-      if (srtRx.test(text)) return srt(text)
-      if (subRx.test(text)) return sub(text)
-    }
+    return convertSubText(text, type)
   }
 
   constructSub (subtitle, isNotAss, subtitleIndex, trackNumber) {
@@ -290,7 +253,8 @@ export default class Subtitles {
   }
 
   destroy () {
-    // Client event listeners removed
+    clipboard.off('text', this.handleClipboardText)
+    clipboard.off('files', this.handleClipboardFiles)
     this.stream?.destroy()
     this.parser?.destroy()
     this.renderer?.destroy()

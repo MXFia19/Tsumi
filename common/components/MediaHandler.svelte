@@ -8,6 +8,7 @@
   import { mediaCache } from '@/modules/cache.js'
   import { episodesList } from '@/modules/episodes.js'
   import { getAniMappings, getKitsuMappings, hasZeroEpisode } from '@/modules/anime/anime.js'
+  import { episodeRangeOf, isTmdbMedia } from '@/modules/playerstate.js'
   import Debug from 'debug'
   const debug = Debug('ui:mediahandler')
 
@@ -30,6 +31,15 @@
 
   let playFile
 
+  /**
+   * Incremented when another set of files arrives (or the player closes) and when the player starts another file:
+   * the async steps of handleFiles / handleMedia / handleRanged started before see it changed and stop, instead of
+   * starting an episode in the (mini)player after it was closed or overwriting nowPlaying with the previous episode.
+   */
+  let playToken = 0
+  /** file the player was last asked to play */
+  let lastFile = null
+
   function updateCurrent (current) {
     handleCurrent(current)
     processed.set(processed.value)
@@ -37,6 +47,10 @@
   }
 
   function handleCurrent ({ detail }) {
+    if (detail !== lastFile) {
+      lastFile = detail
+      playToken++
+    }
     const nextMedia = detail?.media
     debug('Handling current media:', JSON.stringify(nextMedia?.parseObject))
     if (nextMedia?.parseObject) handleMedia(nextMedia)
@@ -56,6 +70,20 @@
     return promiseData
   }
 
+  /** Waits (10 s at most) for nowPlaying to describe `current` (it is set asynchronously by handleMedia). */
+  async function nowPlayingOf (current, token) {
+    const matches = () => {
+      const playing = nowPlaying.value
+      if (!playing?.media || !current?.media) return false
+      return playing.media.id === current.media.media?.id && (current.media.episode == null || Number(current.media.episode) === Number(playing.episode))
+    }
+    for (let i = 0; i < 40; i++) {
+      if (token !== playToken || matches()) break
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+    return token === playToken && matches() ? nowPlaying.value : null
+  }
+
   /**
    * Dynamically detects the number of episodes combined into a single video file.
    * This is useful for series like "I'm Living With a Otaku NEET Kunoichi?!", where two or more episodes are merged into one file.
@@ -65,38 +93,36 @@
    * @param {number} duration - The duration of the video in seconds.
    */
   async function handleRanged ({ detail: { current, duration } }) {
-    if (duration && (duration > 120) && nowPlaying.value?.episode && nowPlaying.value?.media?.duration && !nowPlaying.value?.episodeRange) {
-      // We need check the mappings to verify that the episode isn't actually an ultra-long premiere episode like "Oshi No Ko", Anilist doesn't differentiate these so we need to manually check.
-      const mappings = (!nowPlaying.value.media.episodes || !nowPlaying.value.media.episodes <= 100) && (await getAniMappings(nowPlaying.value.media.id) || {})?.episodes
-      const episode = mappings && (mappings[nowPlaying.value.episode] || Object.values(mappings)?.find(episode => ((episode.episode || episode.episodeNumber) && Number((episode.episode || episode.episodeNumber))) === Number(nowPlaying.value.episode) && episode.length > 1))
-      debug(`Duration of the current media has changed, checking for multiple episodes in the video file for: ${JSON.stringify(nowPlaying.value.parseObject)}`)
-      const mediaDuration = (episode?.length && episode.length * 60) || (nowPlaying.value.media.duration * 60)
-      if (duration > (mediaDuration + 360)) { // Add 6 minutes (360 second) buffer
-        const episodeMultiplier = Math.round(duration / mediaDuration) // Round to nearest whole number
-        const startingEpisode = (nowPlaying.value.episode * episodeMultiplier) - (episodeMultiplier - 1)
-        const finalEpisode = nowPlaying.value.episode * episodeMultiplier
-        if (startingEpisode !== finalEpisode) {
-          debug(`Multiple episodes have been detected in the video file for: ${JSON.stringify(nowPlaying.value.parseObject)}`)
-          current.media.episodeRange = {
-            first: startingEpisode,
-            last: finalEpisode
-          }
-          await handleMedia({
-            media: nowPlaying.value.media,
-            episode: nowPlaying.value.episode,
-            episodeRange: current.media.episodeRange,
-            parseObject: nowPlaying.value.parseObject,
-            failed: nowPlaying.failed
-          })
-        }
-      }
-    }
+    if (!duration || duration <= 120) return
+    const token = playToken
+    const playing = await nowPlayingOf(current, token)
+    // TMDB shows and movies: one episode per file, and their runtime is only an average (a long finale is not two
+    // episodes).
+    if (!playing?.episode || !playing.media?.duration || playing.episodeRange || isTmdbMedia(playing.media) || playing.media.format === 'MOVIE') return
+    // We need check the mappings to verify that the episode isn't actually an ultra-long premiere episode like "Oshi No Ko", Anilist doesn't differentiate these so we need to manually check.
+    const mappings = (!playing.media.episodes || playing.media.episodes <= 100) && (await getAniMappings(playing.media.id) || {})?.episodes
+    if (token !== playToken) return
+    const episode = mappings && (mappings[playing.episode] || Object.values(mappings)?.find(episode => ((episode.episode || episode.episodeNumber) && Number((episode.episode || episode.episodeNumber))) === Number(playing.episode) && episode.length > 1))
+    debug(`Duration of the current media has changed, checking for multiple episodes in the video file for: ${JSON.stringify(playing.parseObject)}`)
+    const range = episodeRangeOf(duration, episode?.length || playing.media.duration, Number(playing.episode))
+    if (!range) return
+    debug(`Multiple episodes have been detected in the video file for: ${JSON.stringify(playing.parseObject)}`)
+    current.media.episodeRange = range
+    await handleMedia({
+      media: playing.media,
+      episode: playing.episode,
+      episodeRange: range,
+      parseObject: playing.parseObject,
+      failed: playing.failed
+    })
   }
 
   async function handleMedia (opts, newPlaying) {
+    const token = playToken
     if (opts?.media || opts?.episode || opts?.parseObject) {
       const { media, episode, episodeRange, parseObject } = opts
       const zeroEpisode = media && await checkForZero(media)
+      if (token !== playToken) return
       const ep = (Number(episode || parseObject?.episode_number) === 0) || (zeroEpisode && !episode) ? 0 : (Number(episode || parseObject?.episode_number) || null)
       const streamingTitle = media?.streamingEpisodes?.find(episode => episodeRx.exec(episode.title) && Number(episodeRx.exec(episode.title)?.[1]) === ep)
       let streamingEpisode
@@ -123,6 +149,8 @@
           if (episodeTitle && episodeTitle?.title) streamingEpisode = { title: (`Episode ${Number(episode)} - ` + episodeTitle.title) }
         }
       }
+      // Another file started (or the player closed) while the titles loaded: this episode is not playing anymore.
+      if (token !== playToken) return
       if (!streamingEpisode) streamingEpisode = streamingTitle
       if (streamingEpisode?.title) {
         const titleParts = streamingEpisode.title.split(' - ')
@@ -255,6 +283,8 @@
   }
 
   async function handleFiles (files, targetFile) {
+    const token = ++playToken
+    lastFile = null
     debug(`Got ${files?.length} files`, fileListToDebug(files))
     if (!files?.length) {
       processed.set(files)
@@ -281,6 +311,7 @@
       } catch (e) {
         debug(e)
       }
+      if (token !== playToken) return
     }
 
     if (resolved?.length) {
@@ -293,6 +324,7 @@
     const failedToResolve = videoFiles.filter(file => !file.media)
     if (failedToResolve.length) {
       resolved = await AnimeResolver.findAndCacheTitle(AnimeResolver.cleanFileName(videoFiles.map(file => file.name)), false)
+      if (token !== playToken) return
       failedToResolve.forEach((file) => {
         const parseObject = resolved.find((parseObject) => AnimeResolver.cleanFileName(file.name).includes(parseObject?.file_name))
         if (parseObject) file.media = { parseObject: { ...parseObject }, ...(parseObject?.episode_number ? { episode: parseObject?.episode_number ? Number(parseObject.episode_number) : 1 } : {}), ...(parseObject?.anime_season ? { season: parseObject?.anime_season ? Number(parseObject.anime_season) : 1 } : {}), failed: true }
@@ -320,6 +352,7 @@
     }
 
     const newPlaying = await findPreferredPlaybackMedia(videoFiles, targetFile)
+    if (token !== playToken) return
     debug(`Found preferred playback media: ${newPlaying?.media?.id}:${newPlaying?.media?.title?.userPreferred} ${newPlaying?.episode}`)
 
     const filtered = newPlaying?.media && videoFiles.filter(file => (file.media?.media?.id && file.media?.media?.id === newPlaying?.media?.id) || !file.media?.media?.id)
@@ -344,8 +377,10 @@
     processed.set([...result, ...otherFiles])
     processedFiles.set([...sortFiles(videoFiles, newPlaying)])
     await tick()
+    if (token !== playToken) return
     const file = (newPlaying?.episode && (result.find(({ media }) => media.episode === newPlaying.episode) || result.find(({ media }) => media.episode === 1))) || result[0]
     if (!file) throw new Error('No playable files were detected. Choose another source.')
+    lastFile = file
     playFile(file || 0)
     await handleMedia(file?.media, newPlaying)
   }

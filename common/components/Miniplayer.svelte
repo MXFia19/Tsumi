@@ -11,7 +11,7 @@
   export const isSuperSmall = readable(!smql.matches, (set) => {
     const check = ({ matches }) => set(!matches)
     smql.addEventListener('change', check)
-    return () => mql.removeEventListener('change', check)
+    return () => smql.removeEventListener('change', check)
   })
 </script>
 
@@ -164,6 +164,7 @@
     node.addEventListener('pointerdown', dragStart)
     return {
       destroy () {
+        clearTimeout(timeout)
         node.removeEventListener('pointerdown', dragStart)
         window.removeEventListener('touchmove', handleDrag)
         window.removeEventListener('pointermove', handleDrag)
@@ -221,6 +222,7 @@
         node.removeEventListener('pointerdown', resizeStart)
         node.removeEventListener('pointerup', resizeEnd)
         node.removeEventListener('touchend', resizeEnd)
+        document.body.removeEventListener('pointermove', handleResize)
       }
     }
   }
