@@ -64,6 +64,12 @@ struct UserListItem: Codable, Hashable, Identifiable {
     ListEntry(status: status, progress: progress, score: score, repeatCount: repeatCount, updatedAt: updatedAt)
   }
 
+  enum CodingKeys: String, CodingKey {
+    case id, media, anilistId, malId, listEntryId, status, progress, score, repeatCount, updatedAt, startedAt
+    case completedAt, isRewatching, title, alternativeTitles, malMediaType, malNumEpisodes, malAverageEpisodeDuration
+    case malStartSeason, malStartYear, malAiringStatus, cover
+  }
+
   static func fromAniList(_ media: Media, extras: MediaExtras) -> UserListItem? {
     guard let entry = media.listEntry else { return nil }
     return UserListItem(id: media.id, media: media, anilistId: media.anilistId, malId: media.malId, listEntryId: extras.listEntryId, status: entry.status, progress: entry.progress, score: entry.score ?? 0, repeatCount: entry.repeatCount ?? 0, updatedAt: entry.updatedAt, startedAt: extras.startedAt, completedAt: extras.completedAt, isRewatching: entry.status == .repeating, title: media.title.display(), alternativeTitles: media.title.all, cover: media.images.cover)
@@ -81,6 +87,37 @@ struct UserListItem: Codable, Hashable, Identifiable {
     let season = node.dict("start_season")
     let picture = node.dict("main_picture")
     return UserListItem(id: "mal-\(malId)", malId: malId, status: status, progress: listStatus.int("num_episodes_watched") ?? 0, score: listStatus.double("score") ?? 0, repeatCount: listStatus.int("num_times_rewatched") ?? 0, updatedAt: ServiceDates.parse(listStatus.string("updated_at")), startedAt: FuzzyDate.parse(isoDay: listStatus.string("start_date")), completedAt: FuzzyDate.parse(isoDay: listStatus.string("finish_date")), isRewatching: rewatching, title: node.string("title"), alternativeTitles: titles, malMediaType: node.string("media_type"), malNumEpisodes: node.int("num_episodes"), malAverageEpisodeDuration: node.int("average_episode_duration"), malStartSeason: season?.string("season"), malStartYear: season?.int("year"), malAiringStatus: node.string("status"), cover: URL.lenient(picture?.string("large") ?? picture?.string("medium")))
+  }
+}
+
+extension UserListItem {
+  /// Tolerant decoding of the cached lists: only the id and the status are required.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      id: try container.decode(String.self, forKey: .id),
+      media: container.svcValue(Media.self, .media),
+      anilistId: container.svcLossyInt(.anilistId),
+      malId: container.svcLossyInt(.malId),
+      listEntryId: container.svcLossyInt(.listEntryId),
+      status: try container.decode(ListStatus.self, forKey: .status),
+      progress: container.svcLossyInt(.progress) ?? 0,
+      score: container.svcLossyDouble(.score) ?? 0,
+      repeatCount: container.svcLossyInt(.repeatCount) ?? 0,
+      updatedAt: container.svcValue(Date.self, .updatedAt),
+      startedAt: container.svcValue(FuzzyDate.self, .startedAt),
+      completedAt: container.svcValue(FuzzyDate.self, .completedAt),
+      isRewatching: container.svcLossyBool(.isRewatching) ?? false,
+      title: container.svcValue(String.self, .title),
+      alternativeTitles: container.svcArray(String.self, .alternativeTitles),
+      malMediaType: container.svcValue(String.self, .malMediaType),
+      malNumEpisodes: container.svcLossyInt(.malNumEpisodes),
+      malAverageEpisodeDuration: container.svcLossyInt(.malAverageEpisodeDuration),
+      malStartSeason: container.svcValue(String.self, .malStartSeason),
+      malStartYear: container.svcLossyInt(.malStartYear),
+      malAiringStatus: container.svcValue(String.self, .malAiringStatus),
+      cover: container.svcValue(URL.self, .cover)
+    )
   }
 }
 
@@ -137,6 +174,9 @@ final class MediaListService {
 
   @ObservationIgnored private var timerTask: Task<Void, Never>?
   @ObservationIgnored private var started = false
+  /// Incremented by every local list change after a save / delete: a list download that started before it may
+  /// predate it and must not overwrite it (see `refresh`).
+  @ObservationIgnored private var saveCounter = 0
 
   private init() {}
 
@@ -198,23 +238,40 @@ final class MediaListService {
     }
     isLoading = true
     defer { isLoading = false }
-    do {
-      let items: [UserListItem]
-      if account.isAniList {
-        items = try await AniListService.shared.userLists(userId: account.viewer.id)
-      } else {
-        items = try await MyAnimeListService.shared.userLists(sort: "list_updated_at")
+    // A list downloaded while an entry was saved may predate that save: it is downloaded again (up to twice)
+    // instead of putting the old progress back.
+    for _ in 0..<3 {
+      let saves = saveCounter
+      do {
+        let items: [UserListItem]
+        if account.isAniList {
+          items = try await AniListService.shared.userLists(userId: account.viewer.id)
+        } else {
+          items = try await MyAnimeListService.shared.userLists(sort: "list_updated_at")
+        }
+        guard AccountStore.shared.current?.id == account.id else { return }
+        if saveCounter != saves { continue }
+        let fresh = UserLists(service: account.viewer.service, userId: account.viewer.id, items: Self.sort(items, by: "UPDATED_TIME_DESC"), fetchedAt: Date())
+        apply(fresh)
+        lastError = nil
+        if let key = cacheKey {
+          await DiskCache.shared.set(key, fresh, ttl: 14 * 60)
+        }
+        return
+      } catch {
+        lastError = error.localizedDescription
+        return
       }
-      guard AccountStore.shared.current?.id == account.id else { return }
-      let fresh = UserLists(service: account.viewer.service, userId: account.viewer.id, items: Self.sort(items, by: "UPDATED_TIME_DESC"), fetchedAt: Date())
-      apply(fresh)
-      lastError = nil
-      if let key = cacheKey {
-        await DiskCache.shared.set(key, fresh, ttl: 14 * 60)
-      }
-    } catch {
-      lastError = error.localizedDescription
     }
+  }
+
+  /// Whether the MyAnimeList list of `account` is loaded (downloaded once when it is not). MyAnimeList entries
+  /// only come from that list: without it an existing entry looks missing.
+  private func hasMALList(_ account: AccountProfile) async -> Bool {
+    func loaded() -> Bool { lists?.service == .myanimelist && lists?.userId == account.viewer.id }
+    if loaded() { return true }
+    await refresh()
+    return loaded()
   }
 
   private func apply(_ value: UserLists?) {
@@ -310,20 +367,26 @@ final class MediaListService {
     let current = MediaStore.shared.media(media.id) ?? media
     let existing = entry(for: current)
     let repeatValue = repeatCount ?? existing?.repeatCount ?? 0
+    // The editor shows the stored score rounded to 0-10: an untouched score is not sent back (85 would become 90),
+    // nor an untouched rewatch count.
+    let scoreChanged = score.rounded() != (existing?.score ?? 0).rounded()
+    let repeatChanged = repeatValue != (existing?.repeatCount ?? 0)
     let maxEpisode = AnimeHelpers.maxEpisode(current)
     let description = "Title: \(AniListService.shared.title(current))\nStatus: \(status.label)\nEpisode: \(progress) / \(maxEpisode > 0 ? String(maxEpisode) : "?")\(score != 0 ? "\nYour Score: \(Self.scoreText(score))" : "")"
-    if existing?.status == status && existing?.progress == progress && (existing?.score ?? 0) == score && (existing?.repeatCount ?? 0) == repeatValue {
+    if existing?.status == status && existing?.progress == progress && !scoreChanged && !repeatChanged {
       ServiceMessages.shared.post(.warning, "No Changes to List", description)
       return false
     }
-    let input = makeInput(current, status: status, progress: progress, score: score, repeatCount: repeatValue, account: account)
+    let sentScore: Double? = scoreChanged ? score : nil
+    let sentRepeat: Int? = repeatChanged ? repeatValue : nil
+    let input = makeInput(current, status: status, progress: progress, score: sentScore, repeatCount: sentRepeat, account: account)
     let success = await performSave(current, input: input, account: account)
     if success {
       ServiceMessages.shared.post(.success, "List Updated", description)
     } else {
       ServiceMessages.shared.post(.error, "Failed to Update List", description)
     }
-    await syncProfiles(current, status: status, progress: progress, score: score, repeatCount: repeatValue, delete: false, description: description, startedAt: input.startedAt, completedAt: input.completedAt)
+    await syncProfiles(current, status: status, progress: progress, score: sentScore, repeatCount: sentRepeat, delete: false, description: description, startedAt: input.startedAt, completedAt: input.completedAt)
     return success
   }
 
@@ -355,41 +418,50 @@ final class MediaListService {
     } else {
       ServiceMessages.shared.post(.error, "Failed to Update List", description)
     }
-    await syncProfiles(current, status: .current, progress: 0, score: 0, repeatCount: 0, delete: true, description: description)
+    await syncProfiles(current, status: .current, progress: 0, score: nil, repeatCount: nil, delete: true, description: description)
     return success
   }
 
-  /// anime.js setStatus: changes the status keeping the score / repeat count (no toast).
+  /// anime.js setStatus: changes the status keeping the score / repeat count (neither is sent, no toast).
   @discardableResult
   func setStatus(_ status: ListStatus, media: Media, progress: Int? = nil) async -> Bool {
     guard let account = AccountStore.shared.current else { return false }
     let current = MediaStore.shared.media(media.id) ?? media
     let existing = entry(for: current)
-    let input = makeInput(current, status: status, progress: progress ?? existing?.progress ?? 0, score: existing?.score ?? 0, repeatCount: existing?.repeatCount ?? 0, account: account)
+    let input = makeInput(current, status: status, progress: progress ?? existing?.progress ?? 0, score: nil, repeatCount: nil, account: account)
     return await performSave(current, input: input, account: account)
   }
 
   /// Helper.updateEntry: automatic progress update after an episode was watched (playerAutocomplete).
-  func updateAfterWatching(_ media: Media, episode: Int?, failed: Bool = false) async {
-    guard AccountStore.shared.isAuthorized, media.source == .anilist, let anilistId = media.anilistId else { return }
+  /// Returns false when the update failed and is worth retrying (offline progress queue), true when it was saved
+  /// or there was nothing to update. The score is never sent (it is read rounded), so it never changes here.
+  @discardableResult
+  func updateAfterWatching(_ media: Media, episode: Int?, failed: Bool = false) async -> Bool {
+    guard let account = AccountStore.shared.current, media.source == .anilist, let anilistId = media.anilistId else { return true }
     if failed {
       ServiceMessages.shared.post(.error, "Failed to Update Progress", "The currently playing media failed to be identified, episode progress will not be updated.")
-      return
+      return true
+    }
+    // MyAnimeList entries come from its list (the AniList media carry none): with the list missing (failed
+    // download), an existing entry would look new and be overwritten as "watching" from today.
+    if !account.isAniList, !(await hasMALList(account)) {
+      ServiceMessages.shared.post(.error, "Failed to Update Progress", "Your MyAnimeList list could not be loaded: the episode progress will be sent later.")
+      return false
     }
     let cached = await AniListService.shared.requestMedia(id: anilistId) ?? media
-    if cached.status == .cancelled { return }
+    if cached.status == .cancelled { return true }
     let zeroEpisode = await AnimeHelpers.hasZeroEpisode(cached) != nil
     let singleEpisode = ((cached.episodes == nil && (episode == nil || episode == 1)) || (cached.format == .movie && cached.episodes == 1)) ? 1 : 0
     let watched = episode.flatMap { $0 != 0 ? $0 : nil } ?? singleEpisode
     let videoEpisode = watched + (zeroEpisode ? 1 : 0)
     let maxEpisode = AnimeHelpers.maxEpisode(cached)
     let mediaEpisode = maxEpisode > 0 ? maxEpisode : singleEpisode
-    guard videoEpisode > 0, mediaEpisode > 0, videoEpisode <= mediaEpisode else { return }
+    guard videoEpisode > 0, mediaEpisode > 0, videoEpisode <= mediaEpisode else { return true }
     let existing = entry(for: cached)
     let baseStatus: ListStatus = existing?.status == .repeating ? .repeating : .current
     if let progress = existing?.progress {
-      if progress > videoEpisode { return }
-      if progress == videoEpisode && videoEpisode != mediaEpisode && singleEpisode == 0 { return }
+      if progress > videoEpisode { return true }
+      if progress == videoEpisode && videoEpisode != mediaEpisode && singleEpisode == 0 { return true }
     }
     var status = baseStatus
     var repeatCount = existing?.repeatCount ?? 0
@@ -398,9 +470,10 @@ final class MediaListService {
       if existing?.status == .repeating { repeatCount += 1 }
     }
     let score = existing?.score ?? 0
-    let changed = existing?.status != status || existing?.progress != videoEpisode || (existing?.repeatCount ?? 0) != repeatCount
-    guard changed, let account = AccountStore.shared.current else { return }
-    let input = makeInput(cached, status: status, progress: videoEpisode, score: score, repeatCount: repeatCount, account: account)
+    let repeatChanged = (existing?.repeatCount ?? 0) != repeatCount
+    let changed = existing?.status != status || existing?.progress != videoEpisode || repeatChanged
+    guard changed else { return true }
+    let input = makeInput(cached, status: status, progress: videoEpisode, score: nil, repeatCount: repeatChanged ? repeatCount : nil, account: account)
     let description = "Title: \(AniListService.shared.title(cached))\nStatus: \(status.label)\nEpisode: \(videoEpisode) / \(maxEpisode > 0 ? String(maxEpisode) : "?")\(score != 0 ? "\nYour Score: \(Self.scoreText(score))" : "")"
     let success = await performSave(cached, input: input, account: account)
     if success {
@@ -408,7 +481,8 @@ final class MediaListService {
     } else {
       ServiceMessages.shared.post(.error, "Failed to Update List", description)
     }
-    await syncProfiles(cached, status: status, progress: videoEpisode, score: score, repeatCount: repeatCount, delete: false, description: description, startedAt: input.startedAt, completedAt: input.completedAt)
+    await syncProfiles(cached, status: status, progress: videoEpisode, score: nil, repeatCount: nil, delete: false, automatic: true, description: description, startedAt: input.startedAt, completedAt: input.completedAt)
+    return success
   }
 
   /// playMedia: episode to start from (continues after the progress, zero episode aware).
@@ -434,14 +508,20 @@ final class MediaListService {
     score.rounded() == score ? String(Int(score)) : String(score)
   }
 
-  private func makeInput(_ media: Media, status: ListStatus, progress: Int, score: Double, repeatCount: Int, account: AccountProfile) -> ListEntryInput {
+  /// Score of a list mutation: AniList scoreRaw (0-100) or MyAnimeList 0-10, from a 0-10 score.
+  private static func rawScore(_ score: Double, aniList: Bool) -> Int {
+    aniList ? Int((score * 10).rounded()) : Int(score.rounded())
+  }
+
+  /// `score` (0-10) and `repeatCount` are only sent when given: nil keeps the stored values.
+  private func makeInput(_ media: Media, status: ListStatus, progress: Int, score: Double?, repeatCount: Int?, account: AccountProfile) -> ListEntryInput {
     let extras = MediaStore.shared.extras(for: media)
     let dates = Self.fuzzyDates(startedAt: extras.startedAt ?? item(for: media)?.startedAt, completedAt: extras.completedAt ?? item(for: media)?.completedAt, status: status)
-    let raw = account.isAniList ? Int((score * 10).rounded()) : Int(score.rounded())
+    let raw = score.map { Self.rawScore($0, aniList: account.isAniList) }
     return ListEntryInput(anilistId: media.anilistId, malId: media.malId, status: status, progress: progress, scoreRaw: raw, repeatCount: repeatCount, startedAt: dates.startedAt, completedAt: dates.completedAt)
   }
 
-  /// Helper.entry for the current account; updates the store and the local lists.
+  /// Helper.entry for the current account; updates the store and the local lists (only after a successful save).
   private func performSave(_ media: Media, input: ListEntryInput, account: AccountProfile) async -> Bool {
     do {
       if account.isAniList {
@@ -454,9 +534,13 @@ final class MediaListService {
         updateLocal(media, entry: saved.listEntry, listEntryId: saved.id, startedAt: saved.startedAt, completedAt: saved.completedAt)
       } else {
         guard let malId = media.malId else { return false }
+        let previous = entry(for: media)
         let ok = try await MyAnimeListService.shared.saveEntry(malId: malId, input: input)
         guard ok else { return false }
-        let entry = ListEntry(status: input.status, progress: input.progress, score: Double(input.scoreRaw), repeatCount: input.repeatCount, updatedAt: Date())
+        // Fields left out of the request kept their stored values.
+        let score = input.scoreRaw.map { Double($0) } ?? previous?.score
+        let repeatCount = input.repeatCount ?? previous?.repeatCount
+        let entry = ListEntry(status: input.status, progress: input.progress, score: score, repeatCount: repeatCount, updatedAt: Date())
         MediaStore.shared.setListEntry(media.id, entry: entry) { extras in
           extras.startedAt = input.startedAt
           extras.completedAt = input.completedAt
@@ -474,33 +558,47 @@ final class MediaListService {
 
   /// Syncs a change to the other profiles whose "Sync List Entries" switch is on. The entry's dates are the
   /// ones sent for the current account (Scoring.svelte / helper.js `...variables`), so a synced profile keeps
-  /// the real start / completion dates instead of getting today.
-  private func syncProfiles(_ media: Media, status: ListStatus, progress: Int, score: Double, repeatCount: Int, delete: Bool, description: String, startedAt: FuzzyDate? = nil, completedAt: FuzzyDate? = nil) async {
+  /// the real start / completion dates instead of getting today. `score` / `repeatCount` nil are not sent.
+  /// `automatic` (progress after watching): each profile's own entry is read first and never lowered.
+  private func syncProfiles(_ media: Media, status: ListStatus, progress: Int, score: Double?, repeatCount: Int?, delete: Bool, automatic: Bool = false, description: String, startedAt: FuzzyDate? = nil, completedAt: FuzzyDate? = nil) async {
     let store = AccountStore.shared
     let targets = store.others.filter { store.syncIds.contains($0.viewer.id) && !$0.reauth }
     for profile in targets {
       var success = false
       do {
-        if profile.isAniList {
-          if delete {
+        if delete {
+          if profile.isAniList {
             let theirLists = try await AniListService.shared.userLists(userId: profile.viewer.id, token: profile.token)
             if let listEntryId = theirLists.first(where: { $0.anilistId == media.anilistId })?.listEntryId {
               success = try await AniListService.shared.deleteEntry(listEntryId: listEntryId, token: profile.token)
             } else {
               continue
             }
-          } else {
-            let dates = Self.fuzzyDates(startedAt: startedAt, completedAt: completedAt, status: status)
-            let input = ListEntryInput(anilistId: media.anilistId, malId: media.malId, status: status, progress: progress, scoreRaw: Int((score * 10).rounded()), repeatCount: repeatCount, startedAt: dates.startedAt, completedAt: dates.completedAt)
+          } else if let malId = media.malId {
+            success = try await MyAnimeListService.shared.deleteEntry(malId: malId, profile: profile)
+          }
+        } else {
+          var targetStatus = status
+          var targetRepeat = repeatCount
+          var dates = Self.fuzzyDates(startedAt: startedAt, completedAt: completedAt, status: status)
+          if automatic {
+            let theirs = try await remoteEntry(media, profile: profile)
+            guard let plan = Self.automaticSync(theirs, status: status, progress: progress) else { continue }
+            targetStatus = plan.status
+            targetRepeat = plan.repeatCount
+            if let theirs {
+              dates = Self.fuzzyDates(startedAt: theirs.startedAt, completedAt: theirs.completedAt, status: plan.status)
+            } else {
+              dates = Self.fuzzyDates(startedAt: nil, completedAt: nil, status: plan.status)
+            }
+          }
+          let raw = score.map { Self.rawScore($0, aniList: profile.isAniList) }
+          if profile.isAniList {
+            let input = ListEntryInput(anilistId: media.anilistId, malId: media.malId, status: targetStatus, progress: progress, scoreRaw: raw, repeatCount: targetRepeat, startedAt: dates.startedAt, completedAt: dates.completedAt)
             _ = try await AniListService.shared.saveEntry(input, token: profile.token)
             success = true
-          }
-        } else if let malId = media.malId {
-          if delete {
-            success = try await MyAnimeListService.shared.deleteEntry(malId: malId, profile: profile)
-          } else {
-            let dates = Self.fuzzyDates(startedAt: startedAt, completedAt: completedAt, status: status)
-            let input = ListEntryInput(anilistId: media.anilistId, malId: malId, status: status, progress: progress, scoreRaw: Int(score.rounded()), repeatCount: repeatCount, startedAt: dates.startedAt, completedAt: dates.completedAt)
+          } else if let malId = media.malId {
+            let input = ListEntryInput(anilistId: media.anilistId, malId: malId, status: targetStatus, progress: progress, scoreRaw: raw, repeatCount: targetRepeat, startedAt: dates.startedAt, completedAt: dates.completedAt)
             success = try await MyAnimeListService.shared.saveEntry(malId: malId, input: input, profile: profile)
           }
         }
@@ -514,7 +612,40 @@ final class MediaListService {
     }
   }
 
+  /// List entry of `media` on another profile (nil: not on its list). Throws when it could not be read.
+  private func remoteEntry(_ media: Media, profile: AccountProfile) async throws -> RemoteListEntry? {
+    if profile.isAniList {
+      guard let id = media.anilistId else { throw ServiceError.api("This title has no AniList id.") }
+      return try await AniListService.shared.listEntry(mediaId: id, token: profile.token)
+    }
+    guard let malId = media.malId else { throw ServiceError.api("This title has no MyAnimeList id.") }
+    guard let item = try await MyAnimeListService.shared.listStatus(malId: malId, profile: profile) else { return nil }
+    return RemoteListEntry(status: item.status, progress: item.progress, repeatCount: item.repeatCount, startedAt: item.startedAt, completedAt: item.completedAt)
+  }
+
+  /// What an automatic progress update (`status` at episode `progress` on the current profile) changes on another
+  /// profile's entry, nil when nothing: that entry is already there or ahead (further episode, or completed while this
+  /// one is still watching), so it is never lowered. A rewatch of this profile is a first watch on a profile that never
+  /// finished it, and completing it counts a rewatch only on a profile that was rewatching too.
+  static func automaticSync(_ theirs: RemoteListEntry?, status: ListStatus, progress: Int) -> (status: ListStatus, repeatCount: Int?)? {
+    guard let theirs else {
+      return (status == .repeating ? .current : status, nil)
+    }
+    if theirs.progress > progress { return nil }
+    if theirs.status == .completed && status != .completed { return nil }
+    if theirs.progress == progress && (theirs.status == status || (theirs.status == .repeating && status == .current)) { return nil }
+    switch status {
+    case .completed:
+      return (.completed, theirs.status == .repeating ? theirs.repeatCount + 1 : nil)
+    case .current, .repeating:
+      return (theirs.status == .repeating ? .repeating : .current, nil)
+    default:
+      return (status, nil)
+    }
+  }
+
   private func updateLocal(_ media: Media, entry: ListEntry, listEntryId: Int?, startedAt: FuzzyDate?, completedAt: FuzzyDate?) {
+    saveCounter += 1
     guard var current = lists else { return }
     let previous = item(for: media)
     current.items.removeAll { candidate in
@@ -529,6 +660,7 @@ final class MediaListService {
   }
 
   private func removeLocal(_ media: Media) {
+    saveCounter += 1
     guard var current = lists else { return }
     current.items.removeAll { candidate in
       (media.anilistId != nil && candidate.anilistId == media.anilistId) || (current.service == .myanimelist && media.malId != nil && candidate.malId == media.malId)
@@ -620,8 +752,16 @@ final class MediaListService {
     if filter.statusNot.contains(media.status.rawValue) { return false }
     if filter.continueWatching {
       if media.status == .finished { return true }
-      guard let next = media.nextAiring?.episode, let progress = media.listEntry?.progress else { return false }
-      return progress < next - 1
+      guard let progress = media.listEntry?.progress else { return false }
+      // Episodes out: the one before the next airing, or the stored next airing itself once its time has passed.
+      // Without a next airing (hiatus, AniList not updated yet) the last aired one, so the show is not dropped.
+      let aired: Int
+      if let next = media.nextAiring {
+        aired = next.airingAt > Date() ? next.episode - 1 : next.episode
+      } else {
+        aired = AnimeHelpers.maxEpisode(media, playable: true)
+      }
+      return progress < aired
     }
     return true
   }

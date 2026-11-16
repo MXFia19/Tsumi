@@ -32,6 +32,38 @@ struct AccountProfile: Codable, Hashable, Identifiable {
     self.customLists = customLists
     self.expiresAt = expiresAt
   }
+
+  enum CodingKeys: String, CodingKey {
+    case viewer, token, refreshToken, refreshAt, reauth, customLists, expiresAt
+  }
+}
+
+extension AccountProfile {
+  /// Tolerant decoding of the stored accounts: only the viewer and the token are required, so a field added later
+  /// never logs everyone out.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      viewer: try container.decode(Viewer.self, forKey: .viewer),
+      token: try container.decode(String.self, forKey: .token),
+      refreshToken: container.svcValue(String.self, .refreshToken),
+      refreshAt: container.svcValue(Date.self, .refreshAt),
+      reauth: container.svcLossyBool(.reauth) ?? false,
+      customLists: container.svcArray(String.self, .customLists),
+      expiresAt: container.svcValue(Date.self, .expiresAt)
+    )
+  }
+}
+
+extension AccountStore.Snapshot {
+  /// Tolerant decoding: an unreadable profile is dropped, not every account.
+  init(from decoder: Decoder) throws {
+    self.init()
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    current = container.svcValue(AccountProfile.self, .current)
+    others = container.svcArray(AccountProfile.self, .others)
+    sync = container.svcArray(Int.self, .sync)
+  }
 }
 
 /// Minimal Keychain wrapper (generic passwords of the app).
@@ -93,6 +125,10 @@ final class AccountStore: @unchecked Sendable {
     var others: [AccountProfile] = []
     /// Viewer ids of the other profiles whose lists are kept in sync (settings.js `sync`).
     var sync: [Int] = []
+
+    enum CodingKeys: String, CodingKey {
+      case current, others, sync
+    }
   }
 
   private static let keychainAccount = "accounts.v1"

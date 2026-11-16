@@ -131,6 +131,8 @@ final class TMDBService: @unchecked Sendable {
   private static let tvGenreIds: Set<Int> = [10759, 16, 35, 80, 99, 18, 10751, 10762, 9648, 10763, 10764, 10765, 10766, 10767, 10768, 37]
 
   private let limiter = ServiceRateLimiter(capacity: 40, interval: 1, minSpacing: 0.025)
+  /// TVmaze allows 20 calls every 10 seconds per IP.
+  private let tvMazeLimiter = ServiceRateLimiter(capacity: 20, interval: 10, minSpacing: 0.1)
   private let inflight = ServiceInflight()
 
   private init() {}
@@ -375,11 +377,25 @@ final class TMDBService: @unchecked Sendable {
       let details: TMDBDetails = try await inflight.run(cacheKey) {
         try await self.fetchDetails(id: id, type: type)
       }
-      await DiskCache.shared.set(cacheKey, details, ttl: 3 * 24 * 3600)
+      await DiskCache.shared.set(cacheKey, details, ttl: Self.detailsTTL(details))
       return details
     } catch {
       return await DiskCache.shared.get(cacheKey, as: TMDBDetails.self, allowExpired: true)
     }
+  }
+
+  /// Ended shows and released movies change little (3 days); a show still airing gets new episodes, seasons and
+  /// next-episode dates, so its details are refreshed every 12 hours.
+  static func detailsTTL(_ details: TMDBDetails) -> TimeInterval {
+    details.status == .finished || (details.mediaType == .movie && details.status == .releasing) ? 3 * 24 * 3600 : 12 * 3600
+  }
+
+  /// A season with an episode to come, without air date or aired in the last two weeks is still changing (titles,
+  /// stills, new episodes): 12 hours. Older seasons: 3 days.
+  static func seasonTTL(_ episodes: [TMDBSeasonEpisode], now: Date = Date()) -> TimeInterval {
+    let recent = now.addingTimeInterval(-14 * 24 * 3600)
+    let changing = episodes.isEmpty || episodes.contains { ($0.airDate ?? .distantFuture) > recent }
+    return changing ? 12 * 3600 : 3 * 24 * 3600
   }
 
   private func fetchDetails(id: Int, type: TMDBType) async throws -> TMDBDetails {
@@ -535,7 +551,7 @@ final class TMDBService: @unchecked Sendable {
       let rating = episode.double("vote_average").flatMap { $0 > 0 ? Int(($0 * 10).rounded()) : nil }
       return TMDBSeasonEpisode(episode: number, title: episode.string("name"), summary: episode.string("overview"), image: Self.image(episode.string("still_path"), size: "w500"), airDate: ServiceDates.parse(episode.string("air_date")), length: episode.int("runtime"), rating: rating, seasonNumber: season)
     }
-    await DiskCache.shared.set(cacheKey, episodes, ttl: 24 * 3600)
+    await DiskCache.shared.set(cacheKey, episodes, ttl: Self.seasonTTL(episodes))
     return episodes
   }
 
@@ -762,14 +778,57 @@ final class TMDBService: @unchecked Sendable {
     return result
   }
 
-  /// TVmaze lookup of the next episode by IMDb id.
+  /// TVmaze next episode lookup, cached: "none" (no next episode known) is cached too.
+  private struct TVMazeNext: Codable {
+    var episode: TMDBEpisodeRef?
+  }
+
+  /// TVmaze lookup of the next episode by IMDb id, cached 6 hours and rate limited (TVmaze answers 429 past 20
+  /// calls in 10 seconds, which used to drop shows from the western schedule).
   private func tvMazeNextEpisode(imdbId: String) async -> TMDBEpisodeRef? {
-    guard let lookup = URL(string: "https://api.tvmaze.com/lookup/shows?imdb=\(imdbId)"),
-          let show = (try? await HTTP.jsonObject(from: lookup)) as? [String: Any],
-          let href = show.dict("_links")?.dict("nextepisode")?.string("href"),
-          let nextURL = URL(string: href),
-          let next = (try? await HTTP.jsonObject(from: nextURL)) as? [String: Any] else { return nil }
-    return TMDBEpisodeRef(airDate: next.string("airdate"), episodeNumber: next.int("number"), seasonNumber: next.int("season"), name: next.string("name"), still: nil, overview: next.string("summary"))
+    let cacheKey = "tvmaze.next.\(imdbId)"
+    if let cached = await DiskCache.shared.get(cacheKey, as: TVMazeNext.self) {
+      // A cached next episode that already aired is looked up again.
+      let aired = ServiceDates.parse(cached.episode?.airDate).map { $0 < Date() } ?? false
+      if !aired { return cached.episode }
+    }
+    guard let lookup = URL(string: "https://api.tvmaze.com/lookup/shows?imdb=\(imdbId)") else { return nil }
+    do {
+      guard let show = try await tvMazeJSON(lookup) else {
+        // 404: TVmaze does not know the show.
+        await DiskCache.shared.set(cacheKey, TVMazeNext(episode: nil), ttl: 24 * 3600)
+        return nil
+      }
+      var next: TMDBEpisodeRef?
+      if let href = show.dict("_links")?.dict("nextepisode")?.string("href"), let nextURL = URL(string: href),
+         let episode = try await tvMazeJSON(nextURL) {
+        next = TMDBEpisodeRef(airDate: episode.string("airdate"), episodeNumber: episode.int("number"), seasonNumber: episode.int("season"), name: episode.string("name"), still: nil, overview: episode.string("summary"))
+      }
+      await DiskCache.shared.set(cacheKey, TVMazeNext(episode: next), ttl: 6 * 3600)
+      return next
+    } catch {
+      return await DiskCache.shared.get(cacheKey, as: TVMazeNext.self, allowExpired: true)?.episode
+    }
+  }
+
+  /// One TVmaze request: nil on 404, waits and retries on 429 (Retry-After), throws on other failures.
+  private func tvMazeJSON(_ url: URL) async throws -> [String: Any]? {
+    var attempt = 0
+    while true {
+      attempt += 1
+      await tvMazeLimiter.acquire()
+      let (data, response) = try await HTTP.data(url, timeout: 20, allowErrorStatus: true)
+      if response.statusCode == 429 && attempt < 4 {
+        let retry = Double(response.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 10
+        await tvMazeLimiter.pause(for: retry + 1)
+        continue
+      }
+      if response.statusCode == 404 { return nil }
+      guard (200..<300).contains(response.statusCode), let json = ServiceJSON.object(data) else {
+        throw HTTPError.status(response.statusCode, url)
+      }
+      return json
+    }
   }
 
   /// "Western - Recent TV Episodes" feed (getMediaForRSS): next or last episode of the shows on the air.

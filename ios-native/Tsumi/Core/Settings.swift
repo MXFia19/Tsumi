@@ -406,12 +406,28 @@ private extension KeyedDecodingContainer {
 }
 
 @Observable
-final class AppSettings {
+final class AppSettings: @unchecked Sendable {
   static let shared = AppSettings()
   private static let storageKey = "tsumi.settings.v1"
 
+  /// The settings are read by background services and written by the UI: the value lives behind a lock, and
+  /// `values` reports its reads and writes to Observation itself (SwiftUI and withObservationTracking still see them).
+  @ObservationIgnored private let lock = NSLock()
+  @ObservationIgnored private var stored: SettingsValues
+
   var values: SettingsValues {
-    didSet { save() }
+    get {
+      access(keyPath: \.values)
+      return lock.withLock { stored }
+    }
+    set {
+      withMutation(keyPath: \.values) {
+        lock.withLock {
+          stored = newValue
+          Self.save(newValue)
+        }
+      }
+    }
   }
 
   private init() {
@@ -426,8 +442,8 @@ final class AppSettings {
       }
     }
     let migrated = Self.migrateLegacyExtras(&initial, storedKeys: storedKeys)
-    values = initial
-    if migrated { save() }
+    stored = initial
+    if migrated { Self.save(initial) }
   }
 
   func reset() { values = SettingsValues() }
@@ -455,7 +471,7 @@ final class AppSettings {
     return changed
   }
 
-  private func save() {
+  private static func save(_ values: SettingsValues) {
     if let data = try? JSONEncoder().encode(values) {
       UserDefaults.standard.set(data, forKey: Self.storageKey)
     }

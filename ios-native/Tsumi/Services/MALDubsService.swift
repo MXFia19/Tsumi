@@ -32,8 +32,13 @@ final class MALDubsService: @unchecked Sendable {
     if !force, let lists = current.lists, let loadedAt = current.loadedAt, Date().timeIntervalSince(loadedAt) < 3600 {
       return lists
     }
-    let lists: MALDubLists = (try? await inflight.run("maldubs") { await MALDubsService.fetch() }) ?? current.lists ?? MALDubLists()
-    state.set(State(lists: lists, dubbed: Set(lists.dubbed), incomplete: Set(lists.incomplete), loadedAt: Date()))
+    let fetched: MALDubLists = (try? await inflight.run("maldubs") { await MALDubsService.fetch() }) ?? MALDubLists()
+    // A failed load (no cache either) keeps the lists already loaded instead of emptying them for an hour, and is
+    // tried again after 5 minutes.
+    let failed = fetched.dubbed.isEmpty
+    let lists = failed ? (current.lists ?? fetched) : fetched
+    let loadedAt = failed ? Date().addingTimeInterval(-3600 + 300) : Date()
+    state.set(State(lists: lists, dubbed: Set(lists.dubbed), incomplete: Set(lists.incomplete), loadedAt: loadedAt))
     return lists
   }
 

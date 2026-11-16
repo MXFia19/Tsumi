@@ -55,7 +55,7 @@ final class ServiceLocked<Value>: @unchecked Sendable {
 // MARK: - Rate limiter (Bottleneck equivalent: reservoir per interval + minimum spacing)
 
 actor ServiceRateLimiter {
-  private let capacity: Int
+  private var capacity: Int
   private let interval: TimeInterval
   private let minSpacing: TimeInterval
   private var tokens: Int
@@ -100,6 +100,26 @@ actor ServiceRateLimiter {
   func pause(for seconds: TimeInterval) {
     let until = Date().addingTimeInterval(seconds)
     if until > pausedUntil { pausedUntil = until }
+  }
+
+  /// Quota reported by the server (X-RateLimit-Limit / X-RateLimit-Remaining / X-RateLimit-Reset): the reservoir
+  /// follows the real limit (AniList lowers it from 90 to 30 a minute when degraded), never spends more than the
+  /// server says is left (other requests of the same IP count too), and waits for the reset once it is used up.
+  func observe(limit: Int?, remaining: Int?, resetAt: Date?) {
+    if let limit, limit > 0, limit != capacity {
+      capacity = limit
+      tokens = min(tokens, limit)
+    }
+    guard let remaining else { return }
+    if remaining <= 0 {
+      let now = Date()
+      var until = resetAt ?? now.addingTimeInterval(interval)
+      // A reset in the past (clock skew) or absurdly far: one window.
+      if until <= now || until.timeIntervalSince(now) > interval * 2 { until = now.addingTimeInterval(interval) }
+      if until > pausedUntil { pausedUntil = until }
+    } else if remaining < tokens {
+      tokens = remaining
+    }
   }
 }
 
@@ -195,6 +215,12 @@ struct FuzzyDate: Codable, Hashable {
 // MARK: - Dates
 
 enum ServiceDates {
+  /// Gregorian calendar in the device time zone. API years and months (AniList seasonYear, TMDB dates, fuzzy dates)
+  /// are Gregorian: `Calendar.current` can be Buddhist (year 2569) or Japanese (year 8) on some devices.
+  static var gregorian: Calendar {
+    Calendar(identifier: .gregorian)
+  }
+
   private static let isoPlain: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
@@ -269,13 +295,13 @@ enum AnimeSeasonClock {
   static let ordered: [MediaSeason] = [.winter, .spring, .summer, .fall]
 
   static var currentSeason: MediaSeason {
-    let month = Calendar.current.component(.month, from: Date()) - 1
+    let month = ServiceDates.gregorian.component(.month, from: Date()) - 1
     let index = Int((Double(month) / 12.0 * 4.0).rounded(.down)) % 4
     return ordered[index]
   }
 
   static var currentYear: Int {
-    Calendar.current.component(.year, from: Date())
+    ServiceDates.gregorian.component(.year, from: Date())
   }
 
   /// Season after the current one (Anime - Upcoming Next Season).
@@ -366,6 +392,19 @@ extension KeyedDecodingContainer {
     if let value = try? decodeIfPresent(Bool.self, forKey: key) { return value }
     if let value = try? decodeIfPresent(Int.self, forKey: key) { return value != 0 }
     return nil
+  }
+
+  /// Tolerant decoding of the stored models (media store, lists, accounts): nil when the key is missing or its value
+  /// unreadable, so a field added or changed by another version never fails the whole object.
+  func svcValue<T: Decodable>(_ type: T.Type, _ key: Key) -> T? {
+    guard let value = try? decodeIfPresent(type, forKey: key) else { return nil }
+    return value
+  }
+
+  /// Array whose unreadable elements are dropped; empty when the key is missing or not an array.
+  func svcArray<T: Decodable>(_ type: T.Type, _ key: Key) -> [T] {
+    guard let items = try? decodeIfPresent([SettingsLossyItem<T>].self, forKey: key) else { return [] }
+    return items.compactMap { $0.value }
   }
 }
 
@@ -531,7 +570,7 @@ enum ServiceText {
       return formatter.string(from: date)
     }
     formatter.dateFormat = "MMMM"
-    let day = Calendar.current.component(.day, from: date)
+    let day = ServiceDates.gregorian.component(.day, from: date)
     let suffix: String
     switch day {
     case 1, 21, 31: suffix = "st"

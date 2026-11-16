@@ -207,6 +207,57 @@ struct Media: Identifiable, Codable, Hashable {
 
   static func anilistKey(_ id: Int) -> String { "al-\(id)" }
   static func tmdbKey(_ id: Int, _ type: TMDBType) -> String { "tmdb-\(type.rawValue)-\(id)" }
+
+  enum CodingKeys: String, CodingKey {
+    case id, source, anilistId, malId, tmdbId, tmdbType, imdbId
+    case title, images, format, status, description, synonyms, genres, tags, studios, episodes, duration, season
+    case seasonYear, startDate, averageScore, popularity, isAdult, countryOfOrigin, nextAiring, listEntry
+    case trailerYouTubeId, relations, recommendations, characters, staff, numberOfSeasons
+  }
+}
+
+extension Media {
+  /// Tolerant decoding of stored media (media store, caches, offline queue): only `id` is required, a missing or
+  /// unreadable field takes its default, so a field added or changed later never wipes the stored data.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let id = try container.decode(String.self, forKey: .id)
+    self.init(
+      id: id,
+      source: container.svcValue(MediaSource.self, .source) ?? (id.hasPrefix("tmdb-") ? .tmdb : .anilist),
+      title: container.svcValue(MediaTitle.self, .title) ?? MediaTitle(),
+      images: container.svcValue(MediaImages.self, .images) ?? MediaImages(),
+      format: container.svcValue(MediaFormat.self, .format) ?? .unknown,
+      status: container.svcValue(MediaStatus.self, .status) ?? .unknown
+    )
+    anilistId = container.svcLossyInt(.anilistId)
+    malId = container.svcLossyInt(.malId)
+    tmdbId = container.svcLossyInt(.tmdbId)
+    tmdbType = container.svcValue(TMDBType.self, .tmdbType)
+    imdbId = container.svcValue(String.self, .imdbId)
+    description = container.svcValue(String.self, .description)
+    synonyms = container.svcArray(String.self, .synonyms)
+    genres = container.svcArray(String.self, .genres)
+    tags = container.svcArray(String.self, .tags)
+    studios = container.svcArray(String.self, .studios)
+    episodes = container.svcLossyInt(.episodes)
+    duration = container.svcLossyInt(.duration)
+    season = container.svcValue(MediaSeason.self, .season)
+    seasonYear = container.svcLossyInt(.seasonYear)
+    startDate = container.svcValue(Date.self, .startDate)
+    averageScore = container.svcLossyInt(.averageScore)
+    popularity = container.svcLossyInt(.popularity)
+    isAdult = container.svcLossyBool(.isAdult) ?? false
+    countryOfOrigin = container.svcValue(String.self, .countryOfOrigin)
+    nextAiring = container.svcValue(NextAiring.self, .nextAiring)
+    listEntry = container.svcValue(ListEntry.self, .listEntry)
+    trailerYouTubeId = container.svcValue(String.self, .trailerYouTubeId)
+    relations = container.svcArray(MediaRelation.self, .relations)
+    recommendations = container.svcArray(Media.self, .recommendations)
+    characters = container.svcArray(MediaCharacter.self, .characters)
+    staff = container.svcArray(MediaStaff.self, .staff)
+    numberOfSeasons = container.svcLossyInt(.numberOfSeasons)
+  }
 }
 
 struct MediaPage {
@@ -297,6 +348,23 @@ struct Viewer: Codable, Hashable {
   var name: String
   var avatar: URL?
   var service: Service
+
+  enum CodingKeys: String, CodingKey {
+    case id, name, avatar, service
+  }
+}
+
+extension Viewer {
+  /// Tolerant decoding (stored accounts): a missing name or unreadable avatar does not drop the account.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      id: try container.decode(Int.self, forKey: .id),
+      name: container.svcValue(String.self, .name) ?? "",
+      avatar: container.svcValue(URL.self, .avatar),
+      service: try container.decode(Service.self, forKey: .service)
+    )
+  }
 }
 
 struct AppNotification: Identifiable, Codable, Hashable {

@@ -203,6 +203,8 @@ final class TsumiNotificationDelegate: NSObject, UNUserNotificationCenterDelegat
 final class AppNotificationsService {
   static let shared = AppNotificationsService()
   private static let fileName = "tsumi-notifications.json"
+  /// Notifications kept in the list (the oldest read ones go first).
+  static let maxItems = 300
 
   /// Sorted: unread first, then newest first.
   private(set) var items: [MediaNotification] = []
@@ -226,8 +228,9 @@ final class AppNotificationsService {
 
   private init() {
     let url = Self.fileURL
-    if let data = try? Data(contentsOf: url), let stored = try? JSONDecoder().decode([MediaNotification].self, from: data) {
-      items = stored
+    if let data = try? Data(contentsOf: url), let stored = try? JSONDecoder().decode([SettingsLossyItem<MediaNotification>].self, from: data) {
+      // One unreadable notification (older or newer format) does not empty the list.
+      items = Self.capped(stored.compactMap { $0.value })
     }
   }
 
@@ -278,10 +281,12 @@ final class AppNotificationsService {
     }
   }
 
-  /// One refresh pass, e.g. from a BGAppRefreshTask (AniList notifications + schedule announcements).
+  /// One refresh pass, e.g. from a BGAppRefreshTask (AniList notifications, schedule announcements and the
+  /// "Episode N is out" sub / dub releases, which otherwise come from the home rows).
   func backgroundRefresh() async {
     await checkAniList()
     await AnimeScheduleService.shared.checkForUpdates()
+    await AnimeScheduleService.shared.checkNewReleases()
   }
 
   // MARK: - AniList notifications (findNewNotifications)
@@ -324,7 +329,10 @@ final class AppNotificationsService {
       queue(notification, systemNotify: settings.systemNotify)
     }
     if !fresh.isEmpty || lastNotified <= 1 {
-      ReleaseNotifyStore.shared.setLastAni(Date().timeIntervalSince1970)
+      // The newest notification seen, not the device time: a notification AniList creates a little before now
+      // but lists after this check (or a device clock ahead) would be skipped otherwise.
+      let newest = notifications.map { $0.createdAt.timeIntervalSince1970 }.max()
+      ReleaseNotifyStore.shared.setLastAni(max(lastNotified, newest ?? Date().timeIntervalSince1970))
     }
   }
 
@@ -387,7 +395,7 @@ final class AppNotificationsService {
         notification.read = true
       }
     }
-    items = Self.sorted([notification] + current)
+    items = Self.capped(Self.sorted([notification] + current))
   }
 
   private static func sorted(_ list: [MediaNotification]) -> [MediaNotification] {
@@ -397,6 +405,16 @@ final class AppNotificationsService {
       return false
     }
     return byDate.filter { !$0.read } + byDate.filter { $0.read }
+  }
+
+  /// At most `maxItems` (of a list sorted unread first, newest first): the oldest read notifications are dropped
+  /// first, then the oldest unread ones.
+  private static func capped(_ list: [MediaNotification]) -> [MediaNotification] {
+    guard list.count > maxItems else { return list }
+    let unread = list.filter { !$0.read }
+    let read = list.filter { $0.read }
+    if unread.count >= maxItems { return Array(unread.prefix(maxItems)) }
+    return unread + Array(read.prefix(maxItems - unread.count))
   }
 
   // MARK: - Read state

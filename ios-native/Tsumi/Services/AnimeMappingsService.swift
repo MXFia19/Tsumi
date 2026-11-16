@@ -187,14 +187,34 @@ struct JikanEpisodePage: Codable {
 final class AnimeMappingsService: @unchecked Sendable {
   static let shared = AnimeMappingsService()
 
+  /// animap index as loaded: `stale` when it came from an expired cache (served while a new one downloads).
+  private struct AnimapLoad {
+    var index: AnimapIndex
+    var stale: Bool
+  }
+
+  /// In-memory copy of a cached value, with its expiry.
+  private struct Timed<Value> {
+    var value: Value
+    var expires: Date
+  }
+
+  private static let animapCacheKey = "animap.index.v1"
+  /// In-memory lifetime of the episode metadata and Jikan pages (ongoing shows get new episodes).
+  private static let memoryTTL: TimeInterval = 30 * 60
+  /// Entries kept in each in-memory map.
+  private static let memoryLimit = 300
+
   private let animap = ServiceLocked<AnimapIndex?>(nil)
-  private let animapTask = ServiceLocked<Task<AnimapIndex, Never>?>(nil)
+  private let animapTask = ServiceLocked<Task<AnimapLoad, Never>?>(nil)
+  private let animapRefreshing = ServiceLocked<Bool>(false)
   private let aniZipLimiter = ServiceRateLimiter(capacity: 200, interval: 30, minSpacing: 0.08)
   private let episodesLimiter = ServiceRateLimiter(capacity: 60, interval: 60, minSpacing: 0.333)
   private let inflight = ServiceInflight()
-  private let metadata = ServiceLocked<[Int: [String: AniZipEpisode]]>([:])
-  /// Jikan episode pages kept in memory for the session ("malId.page"), so an episode list reads each page once.
-  private let jikanMemory = ServiceLocked<[String: JikanEpisodePage]>([:])
+  /// Episode metadata per AniList id, for `memoryTTL` (empty results are not kept: they are retried).
+  private let metadata = ServiceLocked<[Int: Timed<[String: AniZipEpisode]>]>([:])
+  /// Jikan episode pages kept in memory ("malId.page") for `memoryTTL`, so an episode list reads each page once.
+  private let jikanMemory = ServiceLocked<[String: Timed<JikanEpisodePage>]>([:])
   /// Jikan pages that failed recently ("malId.page" -> time): not requested again for 10 minutes.
   private let jikanFailures = ServiceLocked<[String: Date]>([:])
   /// Jikan mirrors that failed recently (unreachable, server error, blocked): skipped for 10 minutes.
@@ -204,27 +224,56 @@ final class AnimeMappingsService: @unchecked Sendable {
 
   // MARK: - animap (fetchAnimeMap)
 
-  /// Loads (once) the animap AniList <-> TMDB/TVDB index, cached for a day.
+  /// Loads (once) the animap AniList <-> TMDB/TVDB index, cached for a day. An expired cached index is served
+  /// right away and replaced in the background (the download is several megabytes).
   func animapIndex() async -> AnimapIndex {
     if let loaded = animap.get() { return loaded }
-    let task: Task<AnimapIndex, Never> = animapTask.update { slot in
+    let task: Task<AnimapLoad, Never> = animapTask.update { slot in
       if let existing = slot { return existing }
-      let created = Task<AnimapIndex, Never> { await AnimeMappingsService.fetchAnimap() }
+      let created = Task<AnimapLoad, Never> { await AnimeMappingsService.fetchAnimap() }
       slot = created
       return created
     }
-    let index = await task.value
-    if index.byAnilist.isEmpty {
+    let load = await task.value
+    if load.index.byAnilist.isEmpty {
       animapTask.set(nil)
     } else {
-      animap.set(index)
+      // A newer index downloaded in the background meanwhile is kept.
+      animap.update { current in
+        if current == nil { current = load.index }
+      }
+      if load.stale { refreshAnimapInBackground() }
     }
-    return index
+    return animap.get() ?? load.index
   }
 
-  private static func fetchAnimap() async -> AnimapIndex {
-    let cacheKey = "animap.index.v1"
-    if let cached = await DiskCache.shared.get(cacheKey, as: AnimapIndex.self) { return cached }
+  /// Downloads a new animap index without blocking the callers (they keep the expired one meanwhile).
+  private func refreshAnimapInBackground() {
+    let start = animapRefreshing.update { running -> Bool in
+      if running { return false }
+      running = true
+      return true
+    }
+    guard start else { return }
+    Task.detached(priority: .utility) {
+      if let fresh = await AnimeMappingsService.downloadAnimap() {
+        AnimeMappingsService.shared.animap.set(fresh)
+      }
+      AnimeMappingsService.shared.animapRefreshing.set(false)
+    }
+  }
+
+  private static func fetchAnimap() async -> AnimapLoad {
+    if let cached = await DiskCache.shared.get(animapCacheKey, as: AnimapIndex.self) { return AnimapLoad(index: cached, stale: false) }
+    if let stale = await DiskCache.shared.get(animapCacheKey, as: AnimapIndex.self, allowExpired: true), !stale.byAnilist.isEmpty {
+      return AnimapLoad(index: stale, stale: true)
+    }
+    return AnimapLoad(index: await downloadAnimap() ?? AnimapIndex(), stale: false)
+  }
+
+  /// Downloads and caches the animap index; nil when it failed (or came back empty).
+  private static func downloadAnimap() async -> AnimapIndex? {
+    let cacheKey = animapCacheKey
     do {
       guard let url = URL(string: "https://animap.s0n1c.ca/mappings/all") else { throw ServiceError.invalidResponse }
       let (data, _) = try await HTTP.data(url, timeout: 120)
@@ -248,13 +297,29 @@ final class AnimeMappingsService: @unchecked Sendable {
         let entry = AnimapEntry(anilistId: anilistId, malId: item.int("mal_id"), tmdbId: tmdbId, tmdbType: tmdbType, mediaType: item.string("media_type") ?? (movieId != nil ? "MOVIE" : "TV"), tvdbId: item.int("tvdb_id"), tvdbSeason: item.int("tvdb_season"), tvdbEpoffset: item.int("tvdb_epoffset"), tmdbSeason: item.int("tmdb_season"), imdbId: item.string("imdb_id"), animePlanetId: item.string("animeplanet_id"))
         index.byAnilist[String(anilistId)] = entry
       }
-      if !index.byAnilist.isEmpty {
-        await DiskCache.shared.set(cacheKey, index, ttl: 24 * 3600)
-      }
+      guard !index.byAnilist.isEmpty else { return nil }
+      await DiskCache.shared.set(cacheKey, index, ttl: 24 * 3600)
       return index
     } catch {
-      if let stale = await DiskCache.shared.get(cacheKey, as: AnimapIndex.self, allowExpired: true) { return stale }
-      return AnimapIndex()
+      return nil
+    }
+  }
+
+  /// Memory warning: the in-memory episode metadata and Jikan pages are dropped (their disk caches stay).
+  func purgeMemory() {
+    metadata.set([:])
+    jikanMemory.set([:])
+  }
+
+  /// Stores `value` for `memoryTTL`, dropping expired entries (then the soonest to expire) past `memoryLimit`.
+  private static func storeTimed<Key: Hashable, Value>(_ map: inout [Key: Timed<Value>], _ key: Key, _ value: Value) {
+    let now = Date()
+    map[key] = Timed(value: value, expires: now.addingTimeInterval(memoryTTL))
+    guard map.count > memoryLimit else { return }
+    map = map.filter { $0.value.expires > now }
+    if map.count > memoryLimit {
+      let excess = map.sorted { $0.value.expires < $1.value.expires }.prefix(map.count - memoryLimit)
+      for (oldKey, _) in excess { map[oldKey] = nil }
     }
   }
 
@@ -296,7 +361,8 @@ final class AnimeMappingsService: @unchecked Sendable {
     let longTTL = TimeInterval(Int.random(in: 14...21) * 24 * 3600)
     guard let media = MediaStore.shared.anilist(anilistId), media.status == .finished else { return shortTTL }
     let extras = MediaStore.shared.extras(for: media)
-    let calendar = Calendar.current
+    // Fuzzy dates are Gregorian (Calendar.current can be Buddhist or Japanese).
+    let calendar = ServiceDates.gregorian
     let now = Date()
     let year = calendar.component(.year, from: now)
     let month = calendar.component(.month, from: now)
@@ -358,25 +424,24 @@ final class AnimeMappingsService: @unchecked Sendable {
     }
   }
 
-  /// First page of Kitsu episodes of an AniList media (same request as episodes.js).
+  /// Kitsu episodes of an AniList media. Kitsu pages hold 10 episodes unless `page[limit]` (20 at most) is given:
+  /// the pages are followed (`links.next`) up to `kitsuMaxPages`.
   func kitsuEpisodes(anilistId: Int) async -> [KitsuEpisode] {
     guard let kitsuIdentifier = await self.kitsuId(anilistId: anilistId) else { return [] }
-    let cacheKey = "kitsu.episodes.\(kitsuIdentifier)"
+    let cacheKey = "kitsu.episodes.v2.\(kitsuIdentifier)"
     let online = ServiceNetworkMonitor.shared.isOnline
     if let cached = await DiskCache.shared.get(cacheKey, as: [KitsuEpisode].self, allowExpired: !online) { return cached }
     if !online { return [] }
     do {
-      guard let url = URL(string: "https://kitsu.app/api/edge/anime/\(kitsuIdentifier)/episodes") else { return [] }
-      await episodesLimiter.acquire()
-      let json = try await HTTP.jsonObject(from: url) as? [String: Any]
-      let episodes: [KitsuEpisode] = (json?.array("data") ?? []).compactMap { item in
-        guard let attributes = item.dict("attributes"), let number = attributes.int("number") else { return nil }
-        var titles: [String: String] = [:]
-        for (key, value) in attributes.dict("titles") ?? [:] {
-          if let text = value as? String { titles[key] = text }
-        }
-        let thumbnail = attributes.dict("thumbnail")
-        return KitsuEpisode(id: item.string("id"), number: number, seasonNumber: attributes.int("seasonNumber"), canonicalTitle: attributes.string("canonicalTitle"), titles: titles, airdate: attributes.string("airdate"), length: attributes.int("length"), synopsis: attributes.string("synopsis"), description: attributes.string("description"), thumbnail: thumbnail?.string("original") ?? thumbnail?.string("large"))
+      var next = URL(string: "https://kitsu.app/api/edge/anime/\(kitsuIdentifier)/episodes?page%5Blimit%5D=20")
+      var episodes: [KitsuEpisode] = []
+      var pages = 0
+      while let url = next, pages < Self.kitsuMaxPages {
+        pages += 1
+        await episodesLimiter.acquire()
+        let json = try await HTTP.jsonObject(from: url) as? [String: Any]
+        episodes += Self.kitsuPage(json)
+        next = URL.lenient(json?.dict("links")?.string("next"))
       }
       await DiskCache.shared.set(cacheKey, episodes, ttl: TimeInterval(Int.random(in: 1...3) * 24 * 3600))
       return episodes
@@ -385,12 +450,27 @@ final class AnimeMappingsService: @unchecked Sendable {
     }
   }
 
+  /// Pages of Kitsu episodes read at most (20 episodes each).
+  private static let kitsuMaxPages = 10
+
+  private static func kitsuPage(_ json: [String: Any]?) -> [KitsuEpisode] {
+    (json?.array("data") ?? []).compactMap { item -> KitsuEpisode? in
+      guard let attributes = item.dict("attributes"), let number = attributes.int("number") else { return nil }
+      var titles: [String: String] = [:]
+      for (key, value) in attributes.dict("titles") ?? [:] {
+        if let text = value as? String { titles[key] = text }
+      }
+      let thumbnail = attributes.dict("thumbnail")
+      return KitsuEpisode(id: item.string("id"), number: number, seasonNumber: attributes.int("seasonNumber"), canonicalTitle: attributes.string("canonicalTitle"), titles: titles, airdate: attributes.string("airdate"), length: attributes.int("length"), synopsis: attributes.string("synopsis"), description: attributes.string("description"), thumbnail: thumbnail?.string("original") ?? thumbnail?.string("large"))
+    }
+  }
+
   // MARK: - Episode metadata (getEpisodeMetadataForMedia)
 
   /// ani.zip episodes, or Kitsu episodes converted to the same shape (keyed by episode number).
   func episodeMetadata(for media: Media) async -> [String: AniZipEpisode] {
     guard let anilistId = media.anilistId else { return [:] }
-    if let cached = metadata.get()[anilistId] { return cached }
+    if let cached = metadata.get()[anilistId], cached.expires > Date() { return cached.value }
     var result: [String: AniZipEpisode] = [:]
     if let mappings = await aniZip(anilistId: anilistId), !mappings.episodes.isEmpty {
       result = mappings.episodes
@@ -417,8 +497,11 @@ final class AnimeMappingsService: @unchecked Sendable {
         result[String(episode.number)] = converted
       }
     }
-    let stored = result
-    metadata.update { $0[anilistId] = stored }
+    // An empty result (ani.zip and Kitsu unreachable, or no episode yet) is not kept: the next call retries.
+    if !result.isEmpty {
+      let stored = result
+      metadata.update { Self.storeTimed(&$0, anilistId, stored) }
+    }
     return result
   }
 
@@ -529,13 +612,13 @@ final class AnimeMappingsService: @unchecked Sendable {
   /// not requested again for 10 minutes.
   private func sessionJikanPage(malId: Int, page: Int) async -> JikanEpisodePage? {
     let key = "\(malId).\(page)"
-    if let cached = jikanMemory.get()[key] { return cached }
+    if let cached = jikanMemory.get()[key], cached.expires > Date() { return cached.value }
     if let failed = jikanFailures.get()[key], Date().timeIntervalSince(failed) < 600 { return nil }
     guard let result = await jikanPage(malId: malId, page: page) else {
       jikanFailures.update { $0[key] = Date() }
       return nil
     }
-    jikanMemory.update { $0[key] = result }
+    jikanMemory.update { Self.storeTimed(&$0, key, result) }
     return result
   }
 

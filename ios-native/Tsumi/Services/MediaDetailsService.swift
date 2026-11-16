@@ -490,9 +490,29 @@ final class MediaDetailsService: @unchecked Sendable {
     if type == .movie {
       return [EpisodeInfo(number: 1, season: nil, localEpisode: nil, title: details.title ?? media.title.display(), summary: details.description ?? media.description, thumbnail: details.backdrop ?? media.images.banner, airDate: ServiceDates.parse(details.releaseDate), durationMinutes: details.runtime, isFiller: false)]
     }
+    // Seasons are fetched in parallel, then numbered in season order.
+    let seasons = details.seasons
+    let loaded: [Int: [TMDBSeasonEpisode]] = await withTaskGroup(of: (Int, [TMDBSeasonEpisode]).self) { group in
+      for season in seasons {
+        let number = season.seasonNumber
+        group.addTask {
+          (number, await TMDBService.shared.seasonEpisodes(id: id, season: number))
+        }
+      }
+      var collected: [Int: [TMDBSeasonEpisode]] = [:]
+      for await (number, list) in group { collected[number] = list }
+      return collected
+    }
     var episodes: [EpisodeInfo] = []
-    for season in details.seasons {
-      let seasonEpisodes = await TMDBService.shared.seasonEpisodes(id: id, season: season.seasonNumber)
+    for season in seasons {
+      var seasonEpisodes = loaded[season.seasonNumber] ?? []
+      if seasonEpisodes.isEmpty && season.episodeCount > 0 {
+        // The season failed to load: placeholders keep the absolute numbers of the following seasons (progress,
+        // Trakt and resume use them) instead of shifting them onto other episodes.
+        seasonEpisodes = (1...season.episodeCount).map { number in
+          TMDBSeasonEpisode(episode: number, title: nil, summary: nil, image: nil, airDate: nil, length: nil, rating: nil, seasonNumber: season.seasonNumber)
+        }
+      }
       for episode in seasonEpisodes {
         let name = episode.title ?? "Episode \(episode.episode)"
         let title = details.numberOfSeasons > 1 ? "S\(episode.seasonNumber)E\(episode.episode) - \(name)" : name

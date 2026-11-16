@@ -101,6 +101,48 @@ struct MediaExtras: Codable, Hashable {
   var collectionId: Int?
   var tvdbId: Int?
   var tmdbEnriched: Bool = false
+
+  enum CodingKeys: String, CodingKey {
+    case airingSchedule, streamingEpisodes, relationEdges, recommendationIds, startDate, endDate, listEntryId
+    case startedAt, completedAt, customLists, isFavourite, reviewCount, source, trailerSite, tagRanks
+    case generalSpoilerTags, mediaSpoilerTags, originalLanguage, originCountries, contentRating, networks
+    case streamingProviders, tmdbSeasons, collectionId, tvdbId, tmdbEnriched
+  }
+}
+
+extension MediaExtras {
+  /// Tolerant decoding of the stored extras: every field is optional and falls back to its default, so a field
+  /// added later (or one that changed type) never wipes the media store.
+  init(from decoder: Decoder) throws {
+    self.init()
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    airingSchedule = container.svcArray(AiringNode.self, .airingSchedule)
+    streamingEpisodes = container.svcArray(StreamingEpisodeInfo.self, .streamingEpisodes)
+    relationEdges = container.svcArray(RelationEdgeInfo.self, .relationEdges)
+    recommendationIds = container.svcArray(Int.self, .recommendationIds)
+    startDate = container.svcValue(FuzzyDate.self, .startDate)
+    endDate = container.svcValue(FuzzyDate.self, .endDate)
+    listEntryId = container.svcLossyInt(.listEntryId)
+    startedAt = container.svcValue(FuzzyDate.self, .startedAt)
+    completedAt = container.svcValue(FuzzyDate.self, .completedAt)
+    customLists = container.svcArray(CustomListFlag.self, .customLists)
+    isFavourite = container.svcLossyBool(.isFavourite) ?? false
+    reviewCount = container.svcLossyInt(.reviewCount)
+    source = container.svcValue(String.self, .source)
+    trailerSite = container.svcValue(String.self, .trailerSite)
+    tagRanks = container.svcValue([String: Int].self, .tagRanks) ?? [:]
+    generalSpoilerTags = container.svcValue([String].self, .generalSpoilerTags)
+    mediaSpoilerTags = container.svcValue([String].self, .mediaSpoilerTags)
+    originalLanguage = container.svcValue(String.self, .originalLanguage)
+    originCountries = container.svcArray(String.self, .originCountries)
+    contentRating = container.svcValue(String.self, .contentRating)
+    networks = container.svcArray(String.self, .networks)
+    streamingProviders = container.svcArray(String.self, .streamingProviders)
+    tmdbSeasons = container.svcArray(TMDBSeasonInfo.self, .tmdbSeasons)
+    collectionId = container.svcLossyInt(.collectionId)
+    tvdbId = container.svcLossyInt(.tvdbId)
+    tmdbEnriched = container.svcLossyBool(.tmdbEnriched) ?? false
+  }
 }
 
 final class MediaStore: @unchecked Sendable {
@@ -111,15 +153,39 @@ final class MediaStore: @unchecked Sendable {
     var extras: [String: MediaExtras] = [:]
     var touched: [String: Date] = [:]
     var saveScheduled = false
+    /// Changed since the last save.
+    var dirty = false
   }
 
   private struct Persisted: Codable {
     var media: [String: Media]
     var extras: [String: MediaExtras]
     var touched: [String: Date]
+
+    init(media: [String: Media], extras: [String: MediaExtras], touched: [String: Date]) {
+      self.media = media
+      self.extras = extras
+      self.touched = touched
+    }
+
+    /// One unreadable media (older or newer format) is dropped instead of the whole store.
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: CodingKeys.self)
+      media = ((try? container.decode([String: SettingsLossyItem<Media>].self, forKey: .media)) ?? [:]).compactMapValues { $0.value }
+      extras = ((try? container.decode([String: SettingsLossyItem<MediaExtras>].self, forKey: .extras)) ?? [:]).compactMapValues { $0.value }
+      touched = (try? container.decode([String: Date].self, forKey: .touched)) ?? [:]
+    }
   }
 
   private static let maxPersisted = 4000
+  /// Media kept in memory: past this, the least recently updated ones that are not on the list are dropped
+  /// (down to `maxPersisted`) at the next save.
+  private static let maxInMemory = 6000
+  /// Kept (besides the list entries) when the system warns about memory.
+  private static let keptOnMemoryWarning = 1500
+  /// Saves are grouped: the whole store is encoded at most once per this delay, and when the app goes to the
+  /// background (`saveNow`).
+  private static let saveDelay: TimeInterval = 60
   private let state = ServiceLocked<State>(State())
   private let fileURL: URL
 
@@ -176,8 +242,9 @@ final class MediaStore: @unchecked Sendable {
   func ingest(_ items: [Media], extras: [String: MediaExtras] = [:], overwrite: Bool = true) -> [Media] {
     var result: [Media] = []
     result.reserveCapacity(items.count)
-    state.update { current in
+    let changed: Bool = state.update { current in
       let now = Date()
+      var changed = false
       for var incoming in items {
         ServiceListOverlay.apply(to: &incoming, extras: nil)
         if let existing = current.media[incoming.id] {
@@ -217,9 +284,11 @@ final class MediaStore: @unchecked Sendable {
         current.media[incoming.id] = incoming
         current.touched[incoming.id] = now
         result.append(incoming)
+        changed = true
       }
+      return changed
     }
-    scheduleSave()
+    if changed { scheduleSave() }
     return result
   }
 
@@ -299,23 +368,54 @@ final class MediaStore: @unchecked Sendable {
     try? FileManager.default.removeItem(at: fileURL)
   }
 
+  /// Memory warning: keeps the list entries and the most recently updated media only (the file is untouched until
+  /// the next save).
+  func purgeMemory() {
+    state.update { current in
+      Self.prune(&current, keeping: Self.keptOnMemoryWarning)
+    }
+  }
+
+  /// Drops the least recently updated media that are not on the list, down to `keeping` of them.
+  private static func prune(_ current: inout State, keeping: Int) {
+    let removable = current.media.filter { $0.value.listEntry == nil }.map { $0.key }
+    guard removable.count > keeping else { return }
+    let ordered = removable.sorted { (current.touched[$0] ?? .distantPast) > (current.touched[$1] ?? .distantPast) }
+    for key in ordered.dropFirst(keeping) {
+      current.media[key] = nil
+      current.extras[key] = nil
+      current.touched[key] = nil
+    }
+  }
+
   // MARK: Persistence
 
   private func scheduleSave() {
     let shouldSchedule: Bool = state.update { current in
+      current.dirty = true
       if current.saveScheduled { return false }
       current.saveScheduled = true
       return true
     }
     guard shouldSchedule else { return }
-    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 10) { [weak self] in
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + Self.saveDelay) { [weak self] in
       self?.save()
     }
   }
 
+  /// Writes the pending changes now (the app goes to the background). Blocking: call it off the main thread.
+  func saveNow() {
+    save()
+  }
+
   private func save() {
-    let snapshot: Persisted = state.update { current in
+    let snapshot: Persisted? = state.update { current in
       current.saveScheduled = false
+      guard current.dirty else { return nil }
+      current.dirty = false
+      if current.media.count > Self.maxInMemory {
+        Self.prune(&current, keeping: Self.maxPersisted)
+      }
       var keys = Array(current.media.keys)
       if keys.count > Self.maxPersisted {
         keys.sort { (current.touched[$0] ?? .distantPast) > (current.touched[$1] ?? .distantPast) }
@@ -335,6 +435,7 @@ final class MediaStore: @unchecked Sendable {
       }
       return Persisted(media: media, extras: extras, touched: touched)
     }
+    guard let snapshot else { return }
     if let data = try? JSONEncoder().encode(snapshot) {
       try? data.write(to: fileURL, options: .atomic)
     }

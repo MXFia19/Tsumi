@@ -81,8 +81,19 @@ struct ListEntryInput: Hashable {
   var malId: Int?
   var status: ListStatus
   var progress: Int
-  /// AniList: 0-100 (scoreRaw). MyAnimeList: 0-10.
-  var scoreRaw: Int
+  /// AniList: 0-100 (scoreRaw). MyAnimeList: 0-10. nil is not sent, so the stored score is kept: the score is read
+  /// rounded (POINT_10), sending it back would turn 85 into 90 or 7.5 into 8. Only a score the user changed is sent.
+  var scoreRaw: Int?
+  /// nil is not sent (the stored rewatch count is kept).
+  var repeatCount: Int?
+  var startedAt: FuzzyDate?
+  var completedAt: FuzzyDate?
+}
+
+/// List entry of another profile kept in sync (read before an automatic update, so it is never lowered).
+struct RemoteListEntry: Hashable {
+  var status: ListStatus
+  var progress: Int
   var repeatCount: Int
   var startedAt: FuzzyDate?
   var completedAt: FuzzyDate?
@@ -292,6 +303,16 @@ final class AniListService: @unchecked Sendable {
   }
   """
 
+  /// List entry of a media for a given token (another profile kept in sync).
+  static let entryQuery = """
+  query($id: Int) {
+    Media(id: $id, type: ANIME) {
+      id
+      mediaListEntry { status, progress, repeat, startedAt { year, month, day }, completedAt { year, month, day } }
+    }
+  }
+  """
+
   static let airingScheduleQuery = """
   query($id: Int) {
     Page(page: 1, perPage: 1000) {
@@ -356,6 +377,12 @@ final class AniListService: @unchecked Sendable {
       attempt += 1
       await limiter.acquire()
       let (data, response) = try await HTTP.data(Self.endpoint, method: "POST", headers: headers, body: body, timeout: 60, allowErrorStatus: true)
+      // The limiter follows the quota AniList reports instead of assuming 90 a minute.
+      await limiter.observe(
+        limit: Int(response.value(forHTTPHeaderField: "X-RateLimit-Limit") ?? ""),
+        remaining: Int(response.value(forHTTPHeaderField: "X-RateLimit-Remaining") ?? ""),
+        resetAt: Double(response.value(forHTTPHeaderField: "X-RateLimit-Reset") ?? "").map { Date(timeIntervalSince1970: $0) }
+      )
       let outage = AniListOutageMonitor.shared
       if response.statusCode == 429 || response.statusCode == 500 {
         if attempt >= 4 {
@@ -517,15 +544,17 @@ final class AniListService: @unchecked Sendable {
 
   // MARK: - Mutations
 
+  /// SaveMediaListEntry. Variables left out (nil score / repeat) are not changed by AniList. Throws when the
+  /// mutation failed (`{ data: null, errors }`), so the caller never changes the local list for nothing.
   func saveEntry(_ input: ListEntryInput, token: String? = nil) async throws -> SavedListEntry {
     guard let mediaId = input.anilistId else { throw ServiceError.api("This title has no AniList id.") }
     var variables: [String: Any] = [
       "id": mediaId,
       "status": input.status.rawValue,
-      "episode": input.progress,
-      "repeat": input.repeatCount,
-      "score": input.scoreRaw
+      "episode": input.progress
     ]
+    if let repeatCount = input.repeatCount { variables["repeat"] = repeatCount }
+    if let score = input.scoreRaw { variables["score"] = score }
     if let startedAt = input.startedAt, !startedAt.isEmpty { variables["startedAt"] = startedAt.graphQL }
     if let completedAt = input.completedAt, !completedAt.isEmpty { variables["completedAt"] = completedAt.graphQL }
     let json = try await request(Self.saveEntryMutation, variables: variables, token: token)
@@ -534,7 +563,18 @@ final class AniListService: @unchecked Sendable {
       throw ServiceError.api(ServiceJSON.errorMessage(json) ?? "Failed to update the list")
     }
     let updatedAt = saved.double("updatedAt").map { Date(timeIntervalSince1970: $0) }
-    return SavedListEntry(id: saved.int("id"), status: status, progress: saved.int("progress") ?? input.progress, score: saved.double("score"), repeatCount: saved.int("repeat") ?? input.repeatCount, updatedAt: updatedAt ?? Date(), startedAt: FuzzyDate.parse(saved.dict("startedAt")), completedAt: FuzzyDate.parse(saved.dict("completedAt")))
+    return SavedListEntry(id: saved.int("id"), status: status, progress: saved.int("progress") ?? input.progress, score: saved.double("score"), repeatCount: saved.int("repeat") ?? input.repeatCount ?? 0, updatedAt: updatedAt ?? Date(), startedAt: FuzzyDate.parse(saved.dict("startedAt")), completedAt: FuzzyDate.parse(saved.dict("completedAt")))
+  }
+
+  /// List entry of a media for another profile's token: nil when it is not on that list, throws when unreadable.
+  func listEntry(mediaId: Int, token: String) async throws -> RemoteListEntry? {
+    let json = try await request(Self.entryQuery, variables: ["id": mediaId], token: token)
+    let data = try dataObject(json)
+    guard let media = data.dict("Media") else {
+      throw ServiceError.api(ServiceJSON.errorMessage(json) ?? "Failed to read the list entry")
+    }
+    guard let entry = media.dict("mediaListEntry"), let status = ListStatus(rawValue: entry.string("status") ?? "") else { return nil }
+    return RemoteListEntry(status: status, progress: entry.int("progress") ?? 0, repeatCount: entry.int("repeat") ?? 0, startedAt: FuzzyDate.parse(entry.dict("startedAt")), completedAt: FuzzyDate.parse(entry.dict("completedAt")))
   }
 
   func deleteEntry(listEntryId: Int, token: String? = nil) async throws -> Bool {
