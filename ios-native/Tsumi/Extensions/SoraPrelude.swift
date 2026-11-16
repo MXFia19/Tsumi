@@ -14,7 +14,7 @@ import Foundation
 /// structuredClone and in-memory localStorage / sessionStorage (one call = one fresh context).
 /// Not available: XMLHttpRequest, WebSocket, Worker, crypto.subtle beyond digest, layout APIs.
 ///
-/// Native hooks: __tsumiLog, __tsumiSchedule, __tsumiFetch, __tsumiBytes, __tsumiDone,
+/// Native hooks: __tsumiLog, __tsumiSchedule, __tsumiFetch, __tsumiText, __tsumiBytes, __tsumiDone,
 /// __tsumiRandom, __tsumiDigest (see SoraBridge).
 enum SoraPrelude {
   static let source = #"""
@@ -1633,11 +1633,35 @@ enum SoraPrelude {
     return plain;
   };
 
-  var makeResponse = function (meta) {
-    var text = typeof meta.text === 'string' ? meta.text : '';
+  // Body of a native answer, shared by a response and its clones and read lazily: the text is decoded natively on
+  // first use (a binary answer never is), the bytes are copied on first use. The native side releases its copy
+  // once read (__tsumiText / __tsumiBytes then answer null): the other form is rebuilt here from the one kept.
+  var bodyHolder = function (meta) {
+    return { id: meta.bodyId, text: typeof meta.text === 'string' ? meta.text : null, bytes: null };
+  };
+  var holderText = function (holder) {
+    if (holder.text === null) {
+      var t = __tsumiText(holder.id);
+      if (typeof t === 'string') holder.text = t;
+      else if (holder.bytes !== null) holder.text = utf8Decode(holder.bytes);
+      else holder.text = '';
+    }
+    return holder.text;
+  };
+  var holderBytes = function (holder) {
+    if (holder.bytes === null) {
+      var b = __tsumiBytes(holder.id);
+      if (typeof b === 'string') holder.bytes = binaryToBytes(atobImpl(b));
+      else holder.bytes = utf8Encode(holderText(holder));
+    }
+    return holder.bytes;
+  };
+
+  var makeResponse = function (meta, sharedHolder) {
+    var holder = sharedHolder || bodyHolder(meta);
     var status = Number(meta.status) || 0;
-    var bodyId = meta.bodyId;
-    var bytes = function () { return binaryToBytes(atobImpl(__tsumiBytes(bodyId))); };
+    // A copy, so a module editing the array does not change what the next read returns.
+    var bytes = function () { return new Uint8Array(holderBytes(holder)); };
     var response = {
       ok: status >= 200 && status < 300,
       status: status,
@@ -1647,8 +1671,8 @@ enum SoraPrelude {
       type: 'basic',
       bodyUsed: false,
       headers: makeHeaders(meta.headers),
-      text: function () { return Promise.resolve(text); },
-      json: function () { return new Promise(function (resolve) { resolve(JSON.parse(text)); }); },
+      text: function () { return new Promise(function (resolve) { resolve(holderText(holder)); }); },
+      json: function () { return new Promise(function (resolve) { resolve(JSON.parse(holderText(holder))); }); },
       arrayBuffer: function () {
         return new Promise(function (resolve) { var b = bytes(); resolve(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)); });
       },
@@ -1658,7 +1682,7 @@ enum SoraPrelude {
           resolve(new BlobImpl([bytes()], { type: response.headers['content-type'] || '' }));
         });
       },
-      clone: function () { return makeResponse(meta); }
+      clone: function () { return makeResponse(meta, holder); }
     };
     return response;
   };

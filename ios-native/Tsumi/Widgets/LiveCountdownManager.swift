@@ -128,14 +128,21 @@ final class LiveCountdownManager {
 
   // MARK: - Sync (after every widget snapshot)
 
-  /// Ends aired countdowns, follows rescheduled episodes, then auto starts the ones airing soon.
+  /// A countdown whose episode aired moves on to the next episode of the title when that one airs within this time
+  /// (iOS keeps a Live Activity for 8 hours, up to 12 on the lock screen).
+  static let nextEpisodeHorizon: TimeInterval = 12 * 3600
+
+  /// Ends aired countdowns (or moves them on to the next episode), follows rescheduled episodes, then auto starts the
+  /// ones airing soon. Runs after every snapshot, the background refresh included (TsumiWidgetBridge.backgroundRefresh,
+  /// called by ShellBackgroundRefresh), so a running countdown follows the schedule while the app is closed.
   func sync(with snapshot: TsumiWidgetSnapshot?) async {
     let now = Date()
     for activity in Activity<TsumiCountdownAttributes>.activities {
       guard activity.activityState == .active || activity.activityState == .stale else { continue }
       let state = activity.content.state
+      let mediaId = activity.attributes.mediaId
       let rescheduled = snapshot?.airing.first { airing in
-        airing.mediaId == activity.attributes.mediaId && airing.episode == state.episode && abs(airing.airingAt.timeIntervalSince(state.airingAt)) > 60
+        airing.mediaId == mediaId && airing.episode == state.episode && abs(airing.airingAt.timeIntervalSince(state.airingAt)) > 60
       }
       if let rescheduled, rescheduled.airingAt > now {
         var updated = state
@@ -143,14 +150,37 @@ final class LiveCountdownManager {
         updated.isOut = false
         await activity.update(ActivityContent(state: updated, staleDate: rescheduled.airingAt))
       } else if state.airingAt <= now {
-        var out = state
-        out.isOut = true
-        let dismissAt = max(state.airingAt.addingTimeInterval(TsumiWidgetSnapshot.outWindow), now.addingTimeInterval(10 * 60))
-        await activity.end(ActivityContent(state: out, staleDate: nil), dismissalPolicy: .after(dismissAt))
+        let next = Self.nextAiring(after: state, mediaId: mediaId, in: snapshot, now: now)
+        if let next, now >= state.airingAt.addingTimeInterval(TsumiWidgetSnapshot.outWindow) {
+          // "Out now" was shown for its window: count down to the next episode.
+          let updated = TsumiCountdownAttributes.ContentState(episode: next.episode, airingAt: next.airingAt, isOut: false)
+          await activity.update(ActivityContent(state: updated, staleDate: next.airingAt))
+        } else if next != nil {
+          // Still in the "Out now" window: kept running, so a later refresh can move it on to the next episode.
+          if !state.isOut {
+            var out = state
+            out.isOut = true
+            await activity.update(ActivityContent(state: out, staleDate: nil))
+          }
+        } else {
+          var out = state
+          out.isOut = true
+          let dismissAt = max(state.airingAt.addingTimeInterval(TsumiWidgetSnapshot.outWindow), now.addingTimeInterval(10 * 60))
+          await activity.end(ActivityContent(state: out, staleDate: nil), dismissalPolicy: .after(dismissAt))
+        }
       }
     }
     reload()
     await autoStart(snapshot, now: now)
+  }
+
+  /// The title's next episode after the aired one, when it airs within `nextEpisodeHorizon`.
+  private static func nextAiring(after state: TsumiCountdownAttributes.ContentState, mediaId: String, in snapshot: TsumiWidgetSnapshot?, now: Date) -> TsumiWidgetAiring? {
+    guard let snapshot else { return nil }
+    let limit = now.addingTimeInterval(nextEpisodeHorizon)
+    return snapshot.airing
+      .filter { $0.mediaId == mediaId && $0.episode > state.episode && $0.airingAt > now && $0.airingAt <= limit }
+      .min { $0.airingAt < $1.airingAt }
   }
 
   /// "Start Automatically": followed titles airing within the chosen hours, once per episode (a countdown the

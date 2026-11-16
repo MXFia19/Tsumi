@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import JavaScriptCore
 
@@ -10,42 +11,51 @@ import JavaScriptCore
 ///   allowed (User-Agent, Cookie, Referer), like the Electron fetch proxy;
 /// - 30 s timeout ("Extension execution timeout");
 /// - string results are JSON-parsed when possible.
-/// All JavaScript work runs on one serial queue.
+///
+/// Every call runs on its own serial queue (its own virtual machine too), so a module stuck in a loop only blocks
+/// itself. The timeout and the cancellation are delivered from outside that queue, and JavaScriptCore's watchdog
+/// then stops the stuck script (see `SoraWatchdog`).
 enum SoraRuntime {
-  static let queue = DispatchQueue(label: "org.tsumi.extensions.javascript", qos: .userInitiated)
   static let executionTimeout: TimeInterval = 30
 
   /// Calls `functionName(arguments...)` defined by `script`. Returns the JSON-decoded result
-  /// (dictionary, array, string, number) or nil for null/undefined.
-  static func call(script: String, functionName: String, arguments: [Any], timeout: TimeInterval = SoraRuntime.executionTimeout) async throws -> Any? {
+  /// (dictionary, array, string, number) or nil for null/undefined. `allowsLocalNetwork`: the module was installed
+  /// from this device or the local network, so it may fetch local addresses too.
+  static func call(
+    script: String,
+    functionName: String,
+    arguments: [Any],
+    allowsLocalNetwork: Bool = false,
+    timeout: TimeInterval = SoraRuntime.executionTimeout
+  ) async throws -> Any? {
     guard isIdentifier(functionName) else {
       throw ExtensionFailure("Invalid extension function name: \(functionName)")
     }
     let argumentList = try encodeArguments(arguments)
-    let state = SoraCallState()
+    let state = SoraCallState(allowsLocalNetwork: allowsLocalNetwork)
     let output: SoraCallOutput = try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SoraCallOutput, Error>) in
-        SoraRuntime.queue.async {
-          if state.cancelled {
-            continuation.resume(throwing: CancellationError())
-            return
-          }
-          state.continuation = continuation
-          SoraRuntime.run(state: state, script: script, functionName: functionName, argumentList: argumentList, timeout: timeout)
+        // Already cancelled: attach resumes the continuation at once.
+        guard state.attach(continuation) else { return }
+        state.queue.async {
+          SoraRuntime.run(state: state, script: script, functionName: functionName, argumentList: argumentList)
+        }
+        // Armed on another queue: it fires even when the module never gives its own queue back.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { [weak state] in
+          state?.finish(.failure(ExtensionFailure("Extension execution timeout")))
         }
       }
     } onCancel: {
-      SoraRuntime.queue.async {
-        state.cancelled = true
-        state.finish(.failure(CancellationError()))
-      }
+      state.finish(.failure(CancellationError()))
     }
     return output.value
   }
 
   // MARK: - Execution
 
-  private static func run(state: SoraCallState, script: String, functionName: String, argumentList: String, timeout: TimeInterval) {
+  /// Runs on `state.queue`.
+  private static func run(state: SoraCallState, script: String, functionName: String, argumentList: String) {
+    guard !state.isFinished else { return }
     let machine = JSVirtualMachine()
     let created: JSContext? = JSContext(virtualMachine: machine)
     guard let context = created else {
@@ -53,6 +63,7 @@ enum SoraRuntime {
       return
     }
     state.context = context
+    state.watchdogArmed = SoraWatchdog.arm(context, state: state)
     context.exceptionHandler = { [weak state] _, exception in
       state?.recordException(SoraRuntime.describe(exception))
     }
@@ -63,17 +74,13 @@ enum SoraRuntime {
       state.finish(.failure(ExtensionFailure("Extension runtime failed to start: \(message)")))
       return
     }
+    guard !state.isFinished else { return }
 
     // Same shape as the Svelte AsyncFunction body: module code, then `return await fn(args)`.
     let code = "(async function () {\n" + script + "\n;return await " + functionName + "(" + argumentList + ");\n})().then(__tsumiResolve, __tsumiReject);"
     _ = context.evaluateScript(code, withSourceURL: URL(string: "tsumi://extension-module.js"))
     if let message = state.takeException() {
       state.finish(.failure(ExtensionFailure(message)))
-      return
-    }
-
-    SoraRuntime.queue.asyncAfter(deadline: .now() + timeout) { [weak state] in
-      state?.finish(.failure(ExtensionFailure("Extension execution timeout")))
     }
   }
 
@@ -129,21 +136,134 @@ enum SoraRuntime {
   }
 }
 
+/// JavaScriptCore's watchdog (`JSContextGroupSetExecutionTimeLimit`, a C function of JavaScriptCore that is not in
+/// the public headers, looked up at run time). While a script runs, JavaScriptCore asks every `checkInterval`
+/// seconds of execution whether to stop it; it is stopped once its call is over (timeout or cancellation), which
+/// gives the thread of a module stuck in `while (true) {}` back. When the symbol is missing, nothing is armed: the
+/// call still ends on time, only the stuck thread keeps spinning until the app quits.
+enum SoraWatchdog {
+  typealias ShouldTerminate = @convention(c) (OpaquePointer?, UnsafeMutableRawPointer?) -> Bool
+  typealias SetLimit = @convention(c) (OpaquePointer?, Double, ShouldTerminate?, UnsafeMutableRawPointer?) -> Void
+  typealias ClearLimit = @convention(c) (OpaquePointer?) -> Void
+
+  static let checkInterval: Double = 1
+
+  private static let setLimit: SetLimit? = {
+    guard let symbol = lookup("JSContextGroupSetExecutionTimeLimit") else { return nil }
+    return unsafeBitCast(symbol, to: SetLimit.self)
+  }()
+
+  private static let clearLimit: ClearLimit? = {
+    guard let symbol = lookup("JSContextGroupClearExecutionTimeLimit") else { return nil }
+    return unsafeBitCast(symbol, to: ClearLimit.self)
+  }()
+
+  /// `context` is the call state (alive whenever its script runs: every entry into the script holds it).
+  private static let shouldTerminate: ShouldTerminate = { _, context in
+    guard let context else { return true }
+    return Unmanaged<SoraCallState>.fromOpaque(context).takeUnretainedValue().isFinished
+  }
+
+  private static func lookup(_ name: String) -> UnsafeMutableRawPointer? {
+    if let handle = dlopen("/System/Library/Frameworks/JavaScriptCore.framework/JavaScriptCore", RTLD_NOW | RTLD_NOLOAD),
+       let symbol = dlsym(handle, name) {
+      return symbol
+    }
+    // RTLD_DEFAULT ((void *)-2): every image loaded in the process.
+    return dlsym(UnsafeMutableRawPointer(bitPattern: -2), name)
+  }
+
+  /// Arms the watchdog of the context's group before any script runs; false when the API is not available.
+  static func arm(_ context: JSContext, state: SoraCallState) -> Bool {
+    guard let setLimit, let global = context.jsGlobalContextRef else { return false }
+    let group = JSContextGetGroup(global)
+    setLimit(group, checkInterval, shouldTerminate, Unmanaged.passUnretained(state).toOpaque())
+    return true
+  }
+
+  /// Removes the watchdog before the context goes away (no script runs any more at that point).
+  static func disarm(_ context: JSContext) {
+    guard let clearLimit, let global = context.jsGlobalContextRef else { return }
+    clearLimit(JSContextGetGroup(global))
+  }
+}
+
 /// Value returned by a call, boxed so it can cross the continuation.
 struct SoraCallOutput: @unchecked Sendable {
   let value: Any?
 }
 
-/// State of one running call. Only touched on `SoraRuntime.queue`.
+/// Response body kept for the module until it reads it (see `SoraBridge`: `__tsumiText` / `__tsumiBytes`).
+struct SoraResponseBody {
+  var data: Data
+  /// fetchv2 6th argument (text encoding asked by the module), nil = UTF-8.
+  var encoding: String?
+  var textRead = false
+}
+
+/// State of one running call.
+/// - `queue` runs every JavaScript entry of the call (script, timers, network callbacks) and its clean-up; the
+///   JavaScript-side state (`context`, `bodies`, exceptions) is only touched there.
+/// - `finish` can be called from any thread (timeout, cancellation, result): the outcome is decided under a lock
+///   and the continuation is resumed at once, without waiting for `queue`.
 final class SoraCallState: @unchecked Sendable {
+  let queue = DispatchQueue(label: "org.tsumi.extensions.call", qos: .userInitiated)
+  let allowsLocalNetwork: Bool
+
+  // Queue-only state.
   var context: JSContext?
-  var continuation: CheckedContinuation<SoraCallOutput, Error>?
-  var finished = false
-  var cancelled = false
-  var tasks: [URLSessionTask] = []
-  var bodies: [Int: Data] = [:]
+  var watchdogArmed = false
+  var bodies: [Int: SoraResponseBody] = [:]
   var nextBodyID = 0
   private var pendingException: String?
+
+  // Locked state.
+  private let lock = NSLock()
+  private var finished = false
+  private var continuation: CheckedContinuation<SoraCallOutput, Error>?
+  /// Outcome decided before a continuation was attached (cancelled before starting).
+  private var outcome: Result<SoraCallOutput, Error>?
+  private var tasks: [URLSessionTask] = []
+
+  init(allowsLocalNetwork: Bool) {
+    self.allowsLocalNetwork = allowsLocalNetwork
+  }
+
+  var isFinished: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return finished
+  }
+
+  /// Hands the continuation to the call; false (and the continuation resumed) when the call is already over.
+  func attach(_ continuation: CheckedContinuation<SoraCallOutput, Error>) -> Bool {
+    lock.lock()
+    if finished {
+      let result = outcome ?? .failure(CancellationError())
+      outcome = nil
+      lock.unlock()
+      continuation.resume(with: result)
+      return false
+    }
+    self.continuation = continuation
+    lock.unlock()
+    return true
+  }
+
+  /// Network task of the call (cancelled with it); false when the call is already over.
+  func register(_ task: URLSessionTask) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard !finished else { return false }
+    tasks.append(task)
+    return true
+  }
+
+  func unregister(_ task: URLSessionTask) {
+    lock.lock()
+    tasks.removeAll { $0 === task }
+    lock.unlock()
+  }
 
   func recordException(_ message: String) {
     #if DEBUG
@@ -158,29 +278,45 @@ final class SoraCallState: @unchecked Sendable {
     return message
   }
 
-  func storeBody(_ data: Data) -> Int {
+  func storeBody(_ data: Data, encoding: String?) -> Int {
     let identifier = nextBodyID
     nextBodyID += 1
-    bodies[identifier] = data
+    bodies[identifier] = SoraResponseBody(data: data, encoding: encoding)
     return identifier
   }
 
+  /// Ends the call with `result` (first caller wins), from any thread.
   func finish(_ result: Result<SoraCallOutput, Error>) {
-    guard !finished else { return }
+    lock.lock()
+    guard !finished else {
+      lock.unlock()
+      return
+    }
     finished = true
     let pending = continuation
     continuation = nil
-    for task in tasks { task.cancel() }
+    if pending == nil { outcome = result }
+    let running = tasks
     tasks.removeAll()
-    bodies.removeAll()
-    // finish() may run inside a JavaScript callback: keep the context alive until the current
-    // queue work item has returned, then let it go.
-    let retiring = context
-    context = nil
-    SoraRuntime.queue.async {
-      retiring?.exceptionHandler = nil
+    lock.unlock()
+
+    for task in running { task.cancel() }
+    // finish() may run inside a JavaScript callback: the context (and the response bodies) are released once the
+    // current work item of the call's queue has returned. A module stuck in a loop gets there once the watchdog
+    // stopped it.
+    queue.async {
+      self.cleanUp()
     }
     pending?.resume(with: result)
+  }
+
+  private func cleanUp() {
+    if let context {
+      if watchdogArmed { SoraWatchdog.disarm(context) }
+      context.exceptionHandler = nil
+    }
+    context = nil
+    bodies.removeAll()
   }
 }
 
@@ -194,25 +330,51 @@ enum SoraBridge {
     }
 
     let schedule: @convention(block) (JSValue, JSValue) -> Void = { [weak state] identifier, delay in
-      guard state != nil else { return }
+      guard let state else { return }
       let timerID = identifier.toInt32()
       var milliseconds = delay.toDouble()
       if !milliseconds.isFinite || milliseconds < 0 { milliseconds = 0 }
       milliseconds = min(milliseconds, 600_000)
-      SoraRuntime.queue.asyncAfter(deadline: .now() + milliseconds / 1000) { [weak state] in
-        guard let state, !state.finished, let context = state.context else { return }
+      state.queue.asyncAfter(deadline: .now() + milliseconds / 1000) { [weak state] in
+        guard let state, !state.isFinished, let context = state.context else { return }
         _ = context.objectForKeyedSubscript("__tsumiFireTimer")?.call(withArguments: [NSNumber(value: timerID)])
       }
     }
 
     let fetch: @convention(block) (String, JSValue) -> Void = { [weak state] request, callback in
-      guard let state, !state.finished else { return }
+      guard let state, !state.isFinished else { return }
       SoraNetwork.start(requestJSON: request, callback: callback, state: state)
     }
 
-    let bytes: @convention(block) (JSValue) -> String = { [weak state] identifier in
-      guard let state, let data = state.bodies[Int(identifier.toInt32())] else { return "" }
-      return data.base64EncodedString()
+    // Response text, decoded on first use (a binary answer is never decoded). Valid UTF-8 is released at once:
+    // its bytes are the text's UTF-8 encoding, which the prelude rebuilds if the module asks for them later.
+    let text: @convention(block) (JSValue) -> JSValue = { [weak state] identifier in
+      let current: JSContext = identifier.context
+      let key = Int(identifier.toInt32())
+      guard let state, var body = state.bodies[key] else { return JSValue(nullIn: current) }
+      let decoded: String
+      if body.encoding == nil, let valid = String(data: body.data, encoding: .utf8) {
+        decoded = valid
+        state.bodies[key] = nil
+      } else {
+        decoded = SoraNetwork.decode(body.data, encoding: body.encoding)
+        body.textRead = true
+        state.bodies[key] = body
+      }
+      return JSValue(object: decoded, in: current)
+    }
+
+    // Response bytes (base64), copied on first use. Kept for a later text read (decoded natively, much faster than in
+    // JavaScript), released once the text was read too.
+    let bytes: @convention(block) (JSValue) -> JSValue = { [weak state] identifier in
+      let current: JSContext = identifier.context
+      let key = Int(identifier.toInt32())
+      guard let state, let body = state.bodies[key] else { return JSValue(nullIn: current) }
+      let encoded = body.data.base64EncodedString()
+      if body.textRead {
+        state.bodies[key] = nil
+      }
+      return JSValue(object: encoded, in: current)
     }
 
     let done: @convention(block) (JSValue, JSValue, JSValue) -> Void = { [weak state] ok, payload, isString in
@@ -239,6 +401,7 @@ enum SoraBridge {
     context.setObject(log, forKeyedSubscript: "__tsumiLog" as NSString)
     context.setObject(schedule, forKeyedSubscript: "__tsumiSchedule" as NSString)
     context.setObject(fetch, forKeyedSubscript: "__tsumiFetch" as NSString)
+    context.setObject(text, forKeyedSubscript: "__tsumiText" as NSString)
     context.setObject(bytes, forKeyedSubscript: "__tsumiBytes" as NSString)
     context.setObject(done, forKeyedSubscript: "__tsumiDone" as NSString)
     context.setObject(random, forKeyedSubscript: "__tsumiRandom" as NSString)
@@ -280,11 +443,13 @@ enum SoraBridge {
 
 /// URLSession side of `fetchv2` / `fetch`. Mirrors the Electron fetch proxy (electron/src/main/streamProxy.js):
 /// desktop Chrome User-Agent unless the module sets one, any header allowed, body ignored for GET/HEAD,
-/// network failures answered as HTTP 500 with `{"error": message}` for fetchv2.
+/// network failures answered as HTTP 500 with `{"error": message}` for fetchv2. On top of the proxy: answers are
+/// capped at 20 MB, and local addresses (this device, the local network) are refused, redirects included, unless the
+/// module itself was installed from such an address.
 enum SoraNetwork {
   static let defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
-  static let session: URLSession = {
+  static let fetcher: ExtensionFetchSession = {
     let configuration = URLSessionConfiguration.default
     // No automatic cookie jar: modules send their own Cookie headers (like the proxy).
     configuration.httpCookieStorage = nil
@@ -294,17 +459,25 @@ enum SoraNetwork {
     configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
     configuration.timeoutIntervalForRequest = 30
     configuration.httpMaximumConnectionsPerHost = 8
-    return URLSession(configuration: configuration)
+    return ExtensionFetchSession(configuration: configuration, name: "org.tsumi.extensions.module-network")
   }()
 
+  /// Called from the module (on the call's queue).
   static func start(requestJSON: String, callback: JSValue, state: SoraCallState) {
-    guard let request = ExtensionJSON.parse(requestJSON) as? [String: Any],
-          let urlString = request["url"] as? String,
-          let url = URL.lenient(urlString),
+    let parsed = ExtensionJSON.parse(requestJSON) as? [String: Any]
+    let target = parsed?["url"] as? String ?? ""
+    guard let request = parsed,
+          let url = URL.lenient(target),
           let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
-      let target = (ExtensionJSON.parse(requestJSON) as? [String: Any])?["url"] as? String ?? ""
-      SoraRuntime.queue.async {
+      state.queue.async {
         SoraNetwork.deliverFailure(callback, state: state, url: target, message: "Invalid URL")
+      }
+      return
+    }
+    let allowsLocal = state.allowsLocalNetwork
+    if !allowsLocal && ExtensionNetworkPolicy.isLocal(url) {
+      state.queue.async {
+        SoraNetwork.deliverFailure(callback, state: state, url: target, message: ExtensionNetworkPolicy.blockedMessage)
       }
       return
     }
@@ -335,40 +508,52 @@ enum SoraNetwork {
     let encoding = request["encoding"] as? String
     let requestedURL = url.absoluteString
 
-    let task = session.dataTask(with: urlRequest) { [weak state] data, response, error in
-      SoraRuntime.queue.async { [weak state] in
-        guard let state, !state.finished else { return }
-        if let error {
+    var taskBox: URLSessionTask?
+    let task = fetcher.makeTask(
+      urlRequest,
+      limit: ExtensionHTTP.maxResponseBytes,
+      follow: follow,
+      allowRedirect: { allowsLocal || !ExtensionNetworkPolicy.isLocal($0) }
+    ) { [weak state] result in
+      guard let state else { return }
+      state.queue.async { [weak state] in
+        guard let state else { return }
+        if let finishedTask = taskBox { state.unregister(finishedTask) }
+        guard !state.isFinished else { return }
+        switch result {
+        case .failure(let error):
           SoraNetwork.deliverFailure(callback, state: state, url: requestedURL, message: error.localizedDescription)
-          return
-        }
-        let http = response as? HTTPURLResponse
-        var headers: [String: String] = [:]
-        if let http {
-          for (key, value) in http.allHeaderFields {
-            if let name = key as? String { headers[name] = String(describing: value) }
+        case .success(let value):
+          let http = value.1 as? HTTPURLResponse
+          var headers: [String: String] = [:]
+          if let http {
+            for (key, headerValue) in http.allHeaderFields {
+              if let name = key as? String { headers[name] = String(describing: headerValue) }
+            }
           }
+          let status = http?.statusCode ?? 200
+          // No "text": the prelude asks for it (or for the bytes) when the module reads the body.
+          let meta: [String: Any] = [
+            "status": status,
+            "statusText": SoraNetwork.statusText(status),
+            "url": value.1?.url?.absoluteString ?? requestedURL,
+            "headers": headers,
+            "bodyId": state.storeBody(value.0, encoding: encoding)
+          ]
+          _ = callback.call(withArguments: [meta])
         }
-        let status = http?.statusCode ?? 200
-        let body = data ?? Data()
-        let meta: [String: Any] = [
-          "status": status,
-          "statusText": SoraNetwork.statusText(status),
-          "url": response?.url?.absoluteString ?? requestedURL,
-          "headers": headers,
-          "text": SoraNetwork.decode(body, encoding: encoding),
-          "bodyId": state.storeBody(body)
-        ]
-        _ = callback.call(withArguments: [meta])
       }
     }
-    if !follow { task.delegate = SoraRedirectBlocker.shared }
-    state.tasks.append(task)
+    taskBox = task
+    guard state.register(task) else {
+      fetcher.discard(task)
+      return
+    }
     task.resume()
   }
 
   private static func deliverFailure(_ callback: JSValue, state: SoraCallState, url: String, message: String) {
-    guard !state.finished else { return }
+    guard !state.isFinished else { return }
     let body = ExtensionJSON.stringify(["error": message]) ?? "{}"
     let meta: [String: Any] = [
       "status": 500,
@@ -376,7 +561,7 @@ enum SoraNetwork {
       "url": url,
       "headers": ["content-type": "application/json"],
       "text": body,
-      "bodyId": state.storeBody(Data(body.utf8)),
+      "bodyId": state.storeBody(Data(body.utf8), encoding: nil),
       "networkError": message
     ]
     _ = callback.call(withArguments: [meta])
@@ -427,15 +612,5 @@ enum SoraNetwork {
     case 504: return "Gateway Timeout"
     default: return HTTPURLResponse.localizedString(forStatusCode: code).capitalized
     }
-  }
-}
-
-/// Per-task delegate used when a module calls fetchv2 with `redirect = false` (Sora API) or
-/// fetch with `redirect: 'manual'`.
-final class SoraRedirectBlocker: NSObject, URLSessionTaskDelegate {
-  static let shared = SoraRedirectBlocker()
-
-  func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-    completionHandler(nil)
   }
 }

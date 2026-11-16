@@ -27,8 +27,14 @@ final class ExtensionPickerModel {
   let defaultFailed: Bool
   let failReason: String?
 
+  /// Some extensions are still searching (the groups already found are shown meanwhile).
   var loading = true
+  /// Results per extension, starred first then in the order of the settings, added as they come.
   var groups: [ExtensionResultGroup] = []
+  /// Extensions still searching (names).
+  var pendingNames: [String] = []
+  /// Extensions that failed or did not answer in time (names).
+  var failedNames: [String] = []
   var playingResultID: String?
   var expandedGroups: Set<String> = []
   /// Error toast of selectResult ("No episodes found for this title", "Stream failed: ...").
@@ -62,10 +68,16 @@ final class ExtensionPickerModel {
     searchTask = Task { [weak self] in await self?.searchExtensions() }
   }
 
-  /// searchExtensions: every enabled extension, starred first; groups appear as they answer.
+  /// Longest wait for one extension's search: a stuck or very slow extension no longer holds the results back.
+  static let searchDeadline: TimeInterval = 40
+
+  /// searchExtensions: every enabled extension at once; each group is shown as soon as its extension answers,
+  /// starred first, then in the order of the settings.
   func searchExtensions() async {
     loading = true
     groups = []
+    pendingNames = []
+    failedNames = []
     let manager = ExtensionManager.shared
     await manager.awaitPendingLoads()
     let title = self.title
@@ -77,24 +89,51 @@ final class ExtensionPickerModel {
       return
     }
     let starred = manager.starredKey
-    await withTaskGroup(of: ExtensionResultGroup?.self) { group in
+    let deadline = Self.searchDeadline
+    var order: [String: Int] = [:]
+    for (index, ext) in enabled.enumerated() where order[ext.key] == nil {
+      order[ext.key] = index
+    }
+    var pending = enabled.map { (key: $0.key, name: $0.displayName) }
+    pendingNames = pending.map { $0.name }
+    await withTaskGroup(of: (key: String, group: ExtensionResultGroup?, failed: Bool).self) { group in
       for ext in enabled {
         group.addTask {
           do {
-            return try await PlaybackResolver.resultGroup(ext, title: title, media: media, starredKey: starred)
+            let found = try await PlaybackResolver.withDeadline(deadline) {
+              try await PlaybackResolver.resultGroup(ext, title: title, media: media, starredKey: starred)
+            }
+            return (key: ext.key, group: found, failed: false)
           } catch {
             #if DEBUG
             print("[Extensions] Extension \(ext.key) search failed: \(error.localizedDescription)")
             #endif
-            return nil
+            return (key: ext.key, group: nil, failed: !PlaybackResolver.isCancellation(error))
           }
         }
       }
-      for await result in group {
-        if let result { groups.append(result) }
+      for await answer in group {
+        let name = pending.first { $0.key == answer.key }?.name
+        pending.removeAll { $0.key == answer.key }
+        pendingNames = pending.map { $0.name }
+        if let found = answer.group {
+          insert(found, order: order)
+        } else if answer.failed, let name {
+          failedNames.append(name)
+        }
       }
     }
+    pendingNames = []
     loading = false
+  }
+
+  /// Keeps `groups` starred first, then in the order of the settings, whatever order the answers come in.
+  private func insert(_ group: ExtensionResultGroup, order: [String: Int]) {
+    func rank(_ item: ExtensionResultGroup) -> (Int, Int) {
+      (item.isStarred ? 0 : 1, order[item.extensionKey] ?? Int.max)
+    }
+    let index = groups.firstIndex { rank($0) > rank(group) } ?? groups.count
+    groups.insert(group, at: index)
   }
 
   func isExpanded(_ key: String) -> Bool { expandedGroups.contains(key) }
@@ -307,13 +346,17 @@ struct PlaybackRequestSheetView: View {
   let presentation: PlaybackRequestPresentation
 
   var body: some View {
+    // `.id`: every request gets fresh views, so a sheet opened again never shows the state (title, header
+    // image, expanded groups) of the previous request.
     switch presentation.kind {
     case .loading(let model):
       DefaultLoadingView(model: model)
+        .id(presentation.id)
         .presentationDetents([.height(260)])
         .presentationDragIndicator(.visible)
     case .picker(let model):
       ExtensionPickerView(model: model, onClose: { PlaybackRequestCoordinator.shared.dismiss() })
+        .id(presentation.id)
         .presentationDetents([.large])
     case .server(let choice):
       ServerPickerView(
@@ -321,6 +364,7 @@ struct PlaybackRequestSheetView: View {
         onSelect: { index in PlaybackRequestCoordinator.shared.chooseServer(choice, index: index) },
         onBack: { PlaybackRequestCoordinator.shared.dismiss() }
       )
+      .id(presentation.id)
       .presentationDetents([.medium, .large])
       .presentationDragIndicator(.visible)
     }

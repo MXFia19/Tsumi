@@ -201,8 +201,9 @@ struct NextEpisodeView: View {
   @ViewBuilder
   private func circular(_ airing: TsumiWidgetAiring?) -> some View {
     if let airing, airing.airingAt > entry.date {
-      // Ring draining until the episode airs (over the last week at most).
-      let start = max(entry.date.addingTimeInterval(-60), airing.airingAt.addingTimeInterval(-7 * 86400))
+      // Ring draining over the week before the episode airs (full until then). The start is fixed: anchored on the
+      // entry date, it refilled at every timeline reload.
+      let start = airing.airingAt.addingTimeInterval(-7 * 86400)
       ProgressView(timerInterval: start...airing.airingAt, countsDown: true) {
         Text("Episode \(airing.episode)")
       } currentValueLabel: {

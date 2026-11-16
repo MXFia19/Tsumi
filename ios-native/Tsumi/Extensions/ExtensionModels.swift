@@ -106,6 +106,11 @@ struct LoadedExtension: Identifiable {
   var key: String
   var manifest: ExtensionManifest
   var backend: Backend
+  /// Installed from this device or the local network: a Sora module may then fetch local addresses too
+  /// (ExtensionNetworkPolicy).
+  var allowsLocalNetwork = false
+  /// Manifest and script came over https.
+  var isSecure = true
 
   var id: String { key }
   var displayName: String { manifest.sourceName.isEmpty ? key : manifest.sourceName }
