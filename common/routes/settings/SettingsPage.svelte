@@ -5,6 +5,8 @@
   import { IPC, VERSION } from '@/modules/bridge.js'
   import Debug from 'debug'
   const debug = Debug('ui:settings-view')
+  // The tab opened last, selected again when Settings opens (for the session).
+  let lastTab = 0
 
   if (settings.value.enableDoH) IPC.emit('doh', settings.value.doHURL)
   export const platformMap = {
@@ -18,9 +20,7 @@
     sunos: 'SunOS',
     win32: 'Windows'
   }
-  export let version = '1.4.2'
-  // The tab opened last, selected again when Settings opens (for the session).
-  let lastTab = 0
+  export let version = VERSION.app || ''
   IPC.on('version', (data) => {
     version = data
     debug(

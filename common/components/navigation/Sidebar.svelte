@@ -1,7 +1,7 @@
 <script>
   import { nowPlaying as media } from '@/components/MediaHandler.svelte'
   import { hasUnreadNotifications } from '@/modals/NotificationsModal.svelte'
-  import { updateState, showUpdatePrompt } from '@/modals/UpdateModal.svelte'
+  import { updateState, showUpdatePrompt, updateProgress } from '@/modals/UpdateModal.svelte'
   import { settings } from '@/modules/settings.js'
   import { SUPPORTS } from '@/modules/support.js'
   import { status } from '@/modules/networking.js'
@@ -185,7 +185,7 @@
           })
         }}
         icon='download'
-        text='Update Downloading...'
+        text={$updateProgress > 0 && $updateProgress < 100 ? `Update Downloading... ${Math.round($updateProgress)}%` : 'Update Downloading...'}
         css='d-sm-h-none'
         _modal={modal.UPDATE_PROMPT}
         let:active

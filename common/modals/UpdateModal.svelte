@@ -51,8 +51,9 @@
     }
   })
 
-  const updateProgress = writable(0)
-  IPC.on('update-progress', progress => updateProgress.set(progress))
+  // Download progress in percent (0 to 100, 100 once downloaded), sent by the main process.
+  export const updateProgress = writable(0)
+  IPC.on('update-progress', progress => updateProgress.set(Math.max(0, Math.min(100, Number(progress) || 0))))
   setTimeout(() => IPC.emit('update'), 2_500).unref?.()
   setInterval(() => IPC.emit('update'), 300_000).unref?.()
 
@@ -65,13 +66,14 @@
 
   // "Install on quit" (App settings): the main process lets electron-updater install a downloaded update when the app
   // quits (autoUpdater.autoInstallOnAppQuit, electron/src/main/updater.js), sent at launch and on change.
+  // The main process side is wired with the electron changes (IPC 'updater:install-on-quit', boolean).
   if (!SUPPORTS.isAndroid) {
     let installOnQuit
     settings.subscribe(value => {
       const next = !!value?.updateInstallOnQuit
       if (next === installOnQuit) return
       installOnQuit = next
-      IPC.emit('update-install-on-quit', next)
+      IPC.emit('updater:install-on-quit', next)
     })
   }
 </script>

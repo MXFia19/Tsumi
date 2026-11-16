@@ -62,7 +62,7 @@
   import { persisted } from 'svelte-persisted-store'
   import { capitalize, defaults } from '@/modules/util.js'
   import { onDestroy } from 'svelte'
-  import { updateState, showUpdatePrompt } from '@/modals/UpdateModal.svelte'
+  import { updateState, showUpdatePrompt, updateProgress } from '@/modals/UpdateModal.svelte'
   import { platformMap } from '@/routes/settings/SettingsPage.svelte'
   import SettingCard from '@/routes/settings/components/SettingCard.svelte'
   import DownloadSettings from '@/routes/settings/components/DownloadSettings.svelte'
@@ -122,7 +122,7 @@
 <SettingCard title='About This App' description="Restart may be required for some settings to take effect. If you don't know what settings do what, use defaults." class='d-lg-none'>
   <div class='d-flex flex-column'>
     <span class='text-nowrap'>{version ? `v${version}` : ''} {platformMap[VERSION.platform] || 'dev'} {VERSION.arch || 'dev'} {capitalize(VERSION.session) || ''}</span>
-    <button type='button' use:click={() => { toast('Update is downloading...', { description: 'This may take a moment, the update will be ready shortly.' }) }} class='btn btn-primary mt-5 d-none align-items-center justify-content-center' style='background-color: var(--tertiary-color-light);' class:d-flex={$updateState === 'downloading'}><span class='text-truncate'>Update Downloading...</span></button>
+    <button type='button' use:click={() => { toast('Update is downloading...', { description: 'This may take a moment, the update will be ready shortly.' }) }} class='btn btn-primary mt-5 d-none align-items-center justify-content-center' style='background-color: var(--tertiary-color-light);' class:d-flex={$updateState === 'downloading'}><span class='text-truncate'>Update Downloading...{$updateProgress > 0 && $updateProgress < 100 ? ` ${Math.round($updateProgress)}%` : ''}</span></button>
     <button type='button' use:click={showUpdatePrompt} class='btn btn-primary mt-5 d-none align-items-center justify-content-center bg-success-light' class:d-flex={$updateState === 'ready' || $updateState === 'ignored' || $updateState === 'aborted'}><span class='text-truncate'>Update Available!</span></button>
   </div>
 </SettingCard>
