@@ -213,7 +213,9 @@ export default class Trakt {
     if (this.refreshing) return this.refreshing
     const token = this.token
     if (!token) return Promise.resolve(false)
-    this.refreshing = (async () => {
+    // A disconnect (or a new sign-in) while the request runs wins: its answer must not bring the old account back.
+    const current = () => this.token === token
+    const refreshing = (async () => {
       try {
         const res = await this.postAuth('/oauth/token', {
           refresh_token: token.refresh,
@@ -221,9 +223,12 @@ export default class Trakt {
           redirect_uri: TRAKT_REDIRECT_URI,
           grant_type: 'refresh_token'
         })
+        if (!current()) return false
         if (res.ok) {
           const user = token.user
-          this.saveToken(await res.json(), user)
+          const answer = await res.json()
+          if (!current()) return false
+          this.saveToken(answer, user)
           return true
         }
         if (res.status === 400 || res.status === 401) {
@@ -235,10 +240,11 @@ export default class Trakt {
       } catch {
         return false
       } finally {
-        this.refreshing = null
+        if (this.refreshing === refreshing) this.refreshing = null
       }
     })()
-    return this.refreshing
+    this.refreshing = refreshing
+    return refreshing
   }
 
   /** Waits for the spacing Trakt asks between two writes of a user. */
@@ -315,6 +321,8 @@ export default class Trakt {
 
   deleteToken () {
     this.token = null
+    // A refresh still running belongs to the removed token (refresh() ignores its answer).
+    this.refreshing = null
     try {
       rmSync(this.tokenPath, { force: true })
     } catch (error) {
