@@ -2205,9 +2205,26 @@
   // }
 
   const showOptions = writable(false)
+  // One player menu at a time: opening a dropdown (servers, subtitles, audio...) or the More menu closes the others,
+  // which otherwise stay open and overlap.
+  function closePlayerMenus (except = null) {
+    for (const open of document.querySelectorAll('.player .dropdown.show')) {
+      if (open === except) continue
+      open.classList.remove('show')
+      for (const active of open.querySelectorAll('.active')) {
+        if (!active.closest('.dropdown-menu')) active.classList.remove('active')
+      }
+    }
+  }
   function toggleDropdown ({ target }) {
+    const dropdown = target.closest('.dropdown')
+    if (!dropdown) return
+    if (!dropdown.classList.contains('show')) {
+      closePlayerMenus(dropdown)
+      showOptions.set(false)
+    }
     target.classList.toggle('active')
-    target.closest('.dropdown').classList.toggle('show')
+    dropdown.classList.toggle('show')
   }
 
   let completed = false
@@ -3048,6 +3065,7 @@
         <div
           class='dropdown dropleft with-arrow'
           use:click={() => {
+            if (!$showOptions) closePlayerMenus()
             showOptions.set(!$showOptions)
           }}
         >
