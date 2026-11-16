@@ -178,8 +178,13 @@ enum AnimeHelpers {
     let nodes = info.airingSchedule
     let progress = media.listEntry?.progress
     if playable {
-      if let next = media.nextAiring?.episode, next - 1 > 0 { return next - 1 }
-      if let last = lastAired(nodes)?.episode, last > 0 { return last }
+      let now = Date()
+      // A stored nextAiring whose time has passed already aired (the media was cached before): it is playable,
+      // instead of capping the playable episode one below it.
+      if let next = media.nextAiring, next.airingAt > now, next.episode - 1 > 0 { return next.episode - 1 }
+      let pastNext = media.nextAiring.map { $0.airingAt <= now ? $0.episode : 0 } ?? 0
+      let aired = max(lastAired(nodes, now: now)?.episode ?? 0, pastNext)
+      if aired > 0 { return aired }
       if media.status != .notYetReleased, let episodes = media.episodes, episodes > 0 { return episodes }
       return media.status == .releasing ? (progress ?? 1) : 0
     }
