@@ -303,6 +303,8 @@ final class AnimeScheduleService: @unchecked Sendable {
   private let manifestStore = ScheduleManifestStore()
   private let inflight = ServiceInflight()
   private let jitter = Double.random(in: 27...60)
+  /// Feeds whose release notifications are being computed (the home rows and the background check can overlap).
+  private let notifying = ServiceLocked<Set<ReleaseFeed>>([])
 
   private init() {}
 
@@ -352,7 +354,9 @@ final class AnimeScheduleService: @unchecked Sendable {
     return result
   }
 
-  /// feedChanged: downloads a feed (falls back to the cached copy) and records its manifest value.
+  /// feedChanged: downloads a feed (falls back to the cached copy) and records its manifest value. The manifest
+  /// value is only recorded after a successful download: a failed one is downloaded again at the next check instead
+  /// of keeping the stale cached feed until the feed changes upstream again.
   private func feedChanged<T: Codable>(_ feed: ReleaseFeed, schedule: Bool, manifest: ScheduleManifestCheck?, as type: T.Type) async throws -> T {
     let name = feedName(feed, schedule: schedule)
     let cacheKey = "anischedule." + name
@@ -362,12 +366,12 @@ final class AnimeScheduleService: @unchecked Sendable {
         try await self.getFeed(name, as: T.self)
       }
       await DiskCache.shared.set(cacheKey, content, ttl: 315)
+      if let current = manifest?.current {
+        await manifestStore.update(feed, schedule: schedule, value: current.value(feed, schedule: schedule))
+      }
     } catch {
       guard let cached = await DiskCache.shared.get(cacheKey, as: T.self, allowExpired: true) else { throw error }
       content = cached
-    }
-    if let current = manifest?.current {
-      await manifestStore.update(feed, schedule: schedule, value: current.value(feed, schedule: schedule))
     }
     return content
   }
@@ -459,6 +463,7 @@ final class AnimeScheduleService: @unchecked Sendable {
       try? await Task.sleep(nanoseconds: 3_000_000_000)
       await self.findNewNotifications()
       await self.findNewDelayedEpisodes()
+      await self.checkNewReleases()
       while !Task.isCancelled {
         let now = Date()
         let seconds = now.timeIntervalSince1970
@@ -520,6 +525,41 @@ final class AnimeScheduleService: @unchecked Sendable {
       DispatchQueue.main.async {
         NotificationCenter.default.post(name: AnimeScheduleService.feedsChanged, object: nil, userInfo: ["feeds": feeds])
       }
+      // The "Episode N is out" notifications must not depend on the home rows being on screen.
+      await checkNewReleases()
+    }
+  }
+
+  /// Release notifications without the UI (background refresh, manifest polling): the episodes each feed got since
+  /// its last check are resolved on AniList and notified like the home rows do (`recentEpisodes`).
+  func checkNewReleases() async {
+    var feeds: [ReleaseFeed] = [.sub, .dub]
+    if AppSettings.shared.values.adult == "hentai" { feeds.append(.hentai) }
+    for feed in feeds {
+      let entries = await airedList(feed)
+      guard !entries.isEmpty else { continue }
+      let lastNotified = ReleaseNotifyStore.shared.last(feed)
+      var fresh: [Int] = []
+      if lastNotified > 0 {
+        let threshold = Date(timeIntervalSince1970: lastNotified)
+        let recent = entries.filter { ($0.airedDate ?? .distantPast) >= threshold || ($0.addedDate ?? .distantPast) >= threshold }
+          .sorted { ($0.addedDate ?? .distantPast) > ($1.addedDate ?? .distantPast) }
+        fresh = Array(NSOrderedSet(array: recent.compactMap { $0.id }).compactMap { $0 as? Int }.prefix(300))
+        // Nothing new: the last check time stays (it only moves when something was notified).
+        if fresh.isEmpty { continue }
+      }
+      var byId: [Int: Media] = [:]
+      if !fresh.isEmpty {
+        var variables = AniListVariables()
+        variables.sort = nil
+        variables.id = fresh
+        // AniList unreachable: nothing is notified and the last check time stays, so it is tried again.
+        guard let medias = try? await AniListService.shared.searchAllIDs(variables) else { continue }
+        for media in medias {
+          if let id = media.anilistId { byId[id] = media }
+        }
+      }
+      await notifyReleases(feed, entries: entries, slice: [], byId: byId, missedIds: Set(fresh), lastNotified: lastNotified)
     }
   }
 
@@ -647,9 +687,15 @@ final class AnimeScheduleService: @unchecked Sendable {
     }
   }
 
-  private func notifyReleases(_ feed: ReleaseFeed, entries: [AiredFeedEntry], slice: [AiredFeedEntry], byId: [Int: Media], missedIds: Set<Int>, lastNotified: Double) async {
+  private func notifyReleases(_ feed: ReleaseFeed, entries: [AiredFeedEntry], slice: [AiredFeedEntry], byId: [Int: Media], missedIds: Set<Int>, lastNotified passedLastNotified: Double) async {
     let settings = AppSettings.shared.values
     if feed == .hentai && settings.adult != "hentai" { return }
+    // One pass per feed at a time (home rows and background check); a pass that started from an older check time
+    // than the stored one would notify the same episodes again.
+    let acquired = notifying.update { running -> Bool in running.insert(feed).inserted }
+    guard acquired else { return }
+    defer { notifying.update { _ = $0.remove(feed) } }
+    let lastNotified = max(passedLastNotified, ReleaseNotifyStore.shared.last(feed))
     let threshold = Date(timeIntervalSince1970: lastNotified)
     var combined: [AiredFeedEntry] = slice
     for entry in entries {
