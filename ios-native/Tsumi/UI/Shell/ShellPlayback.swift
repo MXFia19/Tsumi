@@ -266,8 +266,11 @@ enum ShellPlayback {
       AnimeProgressService.shared.set(mediaKey: snapshot.media.id, episode: snapshot.episode.number, currentTime: snapshot.currentTime, safeDuration: snapshot.duration)
       sync.progress(snapshot, playing: controller?.isPlaying ?? false)
     }
+    // One closure for both end hooks (a second assignment further down replaced this one, so Trakt never got
+    // its stop at 100%): the sync end, then Watch Together v2.4 (the host plays the next queued item).
     controller.onPlaybackEnded = { _, _ in
       sync.ended()
+      WatchTogetherClient.shared.playbackEnded()
     }
     // checkCompletion → Helper.updateEntry.
     controller.onAutocomplete = { media, episode in
@@ -329,10 +332,7 @@ enum ShellPlayback {
     controller.isWatchTogetherActive = {
       WatchTogetherClient.shared.isInLobby
     }
-    // Watch Together v2.4: at the end of an episode the host plays the next queued item ("Up next").
-    controller.onPlaybackEnded = { _, _ in
-      WatchTogetherClient.shared.playbackEnded()
-    }
+    // Watch Together v2.4 "Up next" at the end of an episode: in onPlaybackEnded above, with the sync end.
   }
 
   /// Display name of an installed extension / addon (Watch Together `status.source`), the key when unknown.
