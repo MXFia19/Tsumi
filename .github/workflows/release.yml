@@ -6,7 +6,7 @@ name: Release
 # - iOS: Tsumi.ipa (stable name: https://github.com/MXFia19/Tsumi/releases/latest/download/Tsumi.ipa), then
 #   docs/source.json (Feather / AltStore source on GitHub Pages) gets the new version, committed to main.
 #
-# Release: bump the version (electron/package.json, ios-native/project.yml), push it, then push a tag "vX.Y.Z" with
+# Release: bump the version (electron/package.json and ios-native/project.yml, checked to match), push it, then push a tag "vX.Y.Z" with
 # the same version: git tag v1.2.3 && git push perso v1.2.3
 # Test: Actions > Release > Run workflow with "draft" checked creates a draft release (no tag is created until a
 # draft is published, and docs/source.json is not committed). Delete the draft afterwards.
@@ -56,7 +56,7 @@ jobs:
             exit 1
           fi
           app_version=$(node -p "require('./electron/package.json').version")
-          ios_version=$(sed -n 's/^ *MARKETING_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' ios-native/project.yml | head -n 1)
+          ios_version=$(tr -d '\r' < ios-native/project.yml | sed -n 's/^ *MARKETING_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' | head -n 1)
           draft=false
           if [ "$DRAFT" = true ]; then draft=true; fi
           version="${TAG#v}"
@@ -69,8 +69,11 @@ jobs:
               exit 1
             fi
           fi
-          if [ "$ios_version" != "$version" ]; then
-            echo "::warning::ios-native/project.yml has MARKETING_VERSION $ios_version: the IPA is built as $version"
+          # PC and iPhone ship the same version: a forgotten MARKETING_VERSION bump stops the release here (the Windows
+          # build, main.yml, checks the same, drafts included).
+          if [ "$ios_version" != "$app_version" ]; then
+            echo "::error::ios-native/project.yml has MARKETING_VERSION ${ios_version:-missing} but electron/package.json is $app_version. Bump both."
+            exit 1
           fi
           {
             echo "tag=$TAG"
