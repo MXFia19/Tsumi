@@ -35,15 +35,15 @@
   {#await data}
     <BannerSk />
   {:then res}
-    {#if !res.errors}
-      <FullBanner
-        mediaList={shuffleAndFilter(
-          res?.data?.Page?.media?.filter((media) => media)
-        )}
-      />
+    <!-- Nothing to show (offline first launch, no title with a banner): an error card, not a banner of nothing. -->
+    {@const mediaList = res && !res.errors ? shuffleAndFilter(res.data?.Page?.media?.filter((media) => media) || []) : []}
+    {#if mediaList.length}
+      <FullBanner {mediaList} />
     {:else}
-      <ErrorCard promise={res} />
+      <ErrorCard promise={res?.errors ? res : null} />
     {/if}
+  {:catch error}
+    <ErrorCard promise={{ errors: [{ message: error?.message || String(error) }] }} />
   {/await}
 </div>
 
