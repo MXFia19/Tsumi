@@ -29,6 +29,9 @@ export default class Discord {
   enableRPC = 'disabled'
   /** @type {Discord['defaultStatus'] | undefined} */
   cachedPresence
+  /** A login to the Discord app is running / the next attempt is planned: never more than one of each. */
+  loggingIn = false
+  loginTimer = null
 
   /** @param {import('electron').BrowserWindow} window */
   constructor (window) {
@@ -44,8 +47,10 @@ export default class Discord {
         if (data !== 'disabled') {
           if (!this.discord?.user) this.loginRPC()
           else this.debouncedDiscordRPC(this.enableRPC === 'full' ? this.cachedPresence : undefined)
-        } else if (this.discord?.user) {
-          this.debouncedDiscordRPC(undefined, true)
+        } else {
+          clearTimeout(this.loginTimer)
+          this.loginTimer = null
+          if (this.discord?.user) this.debouncedDiscordRPC(undefined, true)
         }
       }
     })
@@ -68,14 +73,38 @@ export default class Discord {
       this.discord.subscribe('ACTIVITY_SPECTATE')
     })
 
-    this.discord.on('disconnected', () => { if (this.enableRPC !== 'disabled') this.loginRPC() })
+    // The Discord app closed (or restarted): connect again once it is back.
+    this.discord.on('disconnected', () => this.scheduleLogin())
 
     this.discord.on('ACTIVITY_JOIN', ({ secret }) => window.webContents.send('w2glink', secret))
     this.debouncedDiscordRPC = debounce((status, clearActivity) => this.setDiscordRPC(status, clearActivity), 4_500)
   }
 
+  /**
+   * Connects to the Discord app (local RPC). One attempt at a time: the settings and the 'disconnected' event used to
+   * start a retry loop each, which then multiplied.
+   */
   loginRPC () {
-    this.discord.login().catch(() => setTimeout(() => this.loginRPC(), 5_000).unref?.())
+    if (this.loggingIn || this.loginTimer || this.discord.isConnected || this.enableRPC === 'disabled') return
+    this.loggingIn = true
+    this.discord.login().catch(() => {
+      // Each failed connect leaves its 'connected' listener on the client (@xhayper/discord-rpc): drop them, nothing
+      // is connecting any more.
+      this.discord.removeAllListeners('connected')
+      this.scheduleLogin()
+    }).finally(() => {
+      this.loggingIn = false
+    })
+  }
+
+  /** Next login attempt in 5 seconds (the Discord app is not running yet, or it was closed). */
+  scheduleLogin () {
+    if (this.loginTimer || this.enableRPC === 'disabled') return
+    this.loginTimer = setTimeout(() => {
+      this.loginTimer = null
+      this.loginRPC()
+    }, 5_000)
+    this.loginTimer.unref?.()
   }
 
   clearRPCActivity () {
@@ -139,6 +168,8 @@ export default class Discord {
   }
 
   destroy () {
+    clearTimeout(this.loginTimer)
+    this.loginTimer = null
     this.social.shutdown()
   }
 }
