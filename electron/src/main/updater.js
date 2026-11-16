@@ -18,26 +18,50 @@ export default class Updater {
     // Releases of github.com/MXFia19/Tsumi ("publish" in electron/package.json): latest.yml of the latest release.
     // Failures (offline, rate limit...) are reported through the 'error' event.
     ipcMain.on('update', () => autoUpdater.checkForUpdates()?.catch(() => {}))
-    autoUpdater.on('error', () => this.window.webContents.send('update-aborted'))
+    autoUpdater.on('error', () => {
+      // The download failed: stop announcing it (the renderer would show "downloading" forever). The next check
+      // ('update', every 5 minutes) starts over.
+      clearInterval(this.availableInterval)
+      this.availableInterval = null
+      this.downloading = false
+      this.send('update-aborted')
+    })
     autoUpdater.on('update-available', (info) => {
       if (!this.downloading) {
         this.downloading = true
+        clearInterval(this.availableInterval)
         this.availableInterval = setInterval(() => {
-          if (!this.hasUpdate) this.window.webContents.send('update-available', info.version)
+          if (!this.hasUpdate) this.send('update-available', info.version)
         }, 1_000)
         this.availableInterval.unref?.()
       }
     })
+    // Percentage of the download (the progress bar of the update button).
+    autoUpdater.on('download-progress', (progress) => {
+      const percent = Number(progress?.percent)
+      if (Number.isFinite(percent)) this.send('update-progress', Math.min(100, Math.max(0, Math.round(percent))))
+    })
     autoUpdater.on('update-downloaded', (info) => {
       if (!this.hasUpdate) {
         this.hasUpdate = true
+        this.downloading = false
         clearInterval(this.availableInterval)
+        this.availableInterval = null
+        this.send('update-progress', 100)
         this.downloadedInterval = setInterval(() => {
-          if (this.hasUpdate) this.window.webContents.send('update-downloaded', info.version)
+          if (this.hasUpdate) this.send('update-downloaded', info.version)
         }, 1_000)
         this.downloadedInterval.unref?.()
       }
     })
+  }
+
+  /**
+   * @param {string} channel
+   * @param {...any} args
+   */
+  send (channel, ...args) {
+    if (!this.window.isDestroyed()) this.window.webContents.send(channel, ...args)
   }
 
   install (forceRunAfter = false) {
