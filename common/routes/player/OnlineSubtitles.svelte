@@ -145,7 +145,7 @@
     </div>
     <div class='px-15 pb-10 position-relative'>
       <Search size='1.6rem' class='search-icon position-absolute text-muted' />
-      <input bind:this={input} type='search' class='form-control bg-dark-light pl-35' placeholder='Filter by language or release' bind:value={filter} disabled={status !== 'ready'} />
+      <input bind:this={input} type='search' class='form-control bg-dark-light filter-input' placeholder='Filter by language or release' bind:value={filter} disabled={status !== 'ready'} />
     </div>
     <div class='list overflow-y-auto px-15 pb-15'>
       {#if status === 'loading'}
@@ -207,6 +207,10 @@
     left: 2.5rem;
     top: 1rem;
     pointer-events: none;
+  }
+  /* Room for the search icon (pl-35 only exists in the scoped styles of SearchBar.svelte). */
+  .filter-input {
+    padding-left: 3.6rem !important;
   }
   .group, .item {
     height: auto;
