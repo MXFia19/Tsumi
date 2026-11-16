@@ -120,9 +120,26 @@ final class BrowseScheduleModel {
     return copy
   }
 
-  func runIfNeeded() async {
+  /// Identity of the request (runKey without the local filters). The view keys its task on it: keying it on
+  /// runKey restarted the task on every typed letter, and a keystroke during the first load cancelled that
+  /// load while the new task returned early on the unchanged request (stuck on the skeletons).
+  var requestRunKey: RunKey {
+    requestKey(runKey)
+  }
+
+  func saveFilters() {
     filters.save(key: Self.storageKey)
-    let key = requestKey(runKey)
+  }
+
+  /// Pull-to-refresh: reloads now and returns once the new entries (or the error) are in.
+  func refresh() async {
+    lastRunKey = nil
+    await runIfNeeded()
+  }
+
+  func runIfNeeded() async {
+    saveFilters()
+    let key = requestRunKey
     if key == lastRunKey { return }
     if lastRunKey != nil {
       try? await Task.sleep(nanoseconds: 500_000_000)
@@ -206,17 +223,20 @@ struct ScheduleView: View {
     .background(BrowsePalette.background)
     .scrollDismissesKeyboard(.immediately)
     .refreshable {
-      await MainActor.run {
-        model.retry()
-      }
+      // Waits for the reload so the spinner stays until the new schedule is in.
+      await model.refresh()
     }
     .navigationTitle("Schedule")
     .navigationBarTitleDisplayMode(.inline)
     .sheet(isPresented: $showFilters) {
       BrowseFilterSheet(filters: $model.filters, context: model.context, onReset: { model.reset() })
     }
-    .task(id: model.runKey) {
+    .task(id: model.requestRunKey) {
       await model.runIfNeeded()
+    }
+    .onChange(of: model.filters) { _, _ in
+      // The local filters (title, excluded formats) do not restart the task: saved here.
+      model.saveFilters()
     }
   }
 }
