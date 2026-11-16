@@ -2,7 +2,7 @@
   import { settings } from '@/modules/settings.js'
   import {
     extensionManager,
-    callExtensionFunction
+    callExtension
   } from '@/modules/extension.js'
   import { sessionServer } from '@/modules/session.js'
   import { shareNowPlaying } from '@/routes/w2g/components/session.js'
@@ -55,6 +55,8 @@
   export let close
 
   let loading = true
+  // Extensions whose search has not answered yet: the results of the others are shown meanwhile.
+  let pendingSearches = 0
   let groupedResults = []
   let playingResult = null
   let expandedGroups = {}
@@ -62,10 +64,27 @@
   $: defaultFailed = search?.defaultFailed
   $: failReason = search?.failReason
 
-  async function searchExtensions () {
+  // Search and result selection in progress. A new search (menu reopened for another title / episode), closing the
+  // menu or Cancel aborts them (sandboxed modules are stopped), and every step checks it is still current.
+  let searchController = null
+  let selection = null // { result, controller }
+
+  function cancelSelection () {
+    selection?.controller.abort()
+    selection = null
+    playingResult = null
+  }
+
+  async function searchExtensions (forSearch) {
+    searchController?.abort()
+    cancelSelection()
+    const controller = new AbortController()
+    searchController = controller
+    const { signal } = controller
     loading = true
+    pendingSearches = 0
     groupedResults = []
-    const title = anilistClient.title(search?.media)
+    const title = anilistClient.title(forSearch?.media)
     if (!title) {
       loading = false
       return
@@ -84,21 +103,24 @@
     // If we get here without defaultFailed but with a default set, it means
     // playAnime was called with force=true, so also do normal search.
 
-    // Normal flow: search all extensions, starred first
+    // Normal flow: search all extensions; groups appear as soon as their extension answers, starred first, the
+    // others in the order of the extension list.
     const sorted = [...enabled].sort((a, b) => {
       if (a.key === starredKey && b.key !== starredKey) return -1
       if (b.key === starredKey && a.key !== starredKey) return 1
       return 0
     })
+    pendingSearches = sorted.length
 
-    const searches = sorted.map((ext) =>
-      callExtensionFunction(
+    const searches = sorted.map((ext, order) =>
+      callExtension(
         ext,
         'searchResults',
-        title,
-        ...(ext.type === 'stremio' ? [search?.media] : [])
+        [title, ...(ext.type === 'stremio' ? [forSearch?.media] : [])],
+        { signal }
       )
         .then((raw) => {
+          if (signal.aborted) return
           const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
           if (Array.isArray(parsed) && parsed.length) {
             const scored = parsed
@@ -117,39 +139,56 @@
                 extensionName: ext.manifest?.sourceName || ext.key,
                 extensionIcon: ext.manifest?.iconUrl,
                 isStarred: ext.key === starredKey,
+                order,
                 results: scored
               }
-            ]
+            ].sort((a, b) => a.order - b.order)
           }
         })
-        .catch((error) => debug(`Extension ${ext.key} search failed:`, error))
+        .catch((error) => { if (error?.name !== 'AbortError') debug(`Extension ${ext.key} search failed:`, error) })
+        .finally(() => { if (!signal.aborted) pendingSearches-- })
     )
     await Promise.allSettled(searches)
-    loading = false
+    if (!signal.aborted) loading = false
   }
 
   async function selectResult (result) {
     if (playingResult) return
+    const controller = new AbortController()
+    const current = { result, controller }
+    selection = current
     playingResult = result
-    const capturedMedia = search?.media
-    const capturedEpisode = search?.episode
+    const { signal } = controller
+    const active = () => selection === current && !signal.aborted
+    const capturedSearch = search
+    const capturedMedia = capturedSearch?.media
+    const capturedEpisode = capturedSearch?.episode
     const ext = extensionManager.extensions.get(result.extensionKey)
-    launchSource = ext?.manifest?.sourceName || result.extensionName || ''
-    launchOrigin = { extensionKey: result.extensionKey, sourceHref: result.href, sourceTitle: result.title }
+    const launch = {
+      source: ext?.manifest?.sourceName || result.extensionName || '',
+      origin: { extensionKey: result.extensionKey, sourceHref: result.href, sourceTitle: result.title }
+    }
+    const done = () => {
+      if (selection !== current) return
+      selection = null
+      playingResult = null
+    }
 
     try {
-      const rawEpisodes = await callExtensionFunction(
-        ext,
+      const rawEpisodes = await callExtension(
+        { key: result.extensionKey, ...ext },
         'extractEpisodes',
-        result.href
+        [result.href],
+        { signal }
       )
+      if (!active()) return
       const parsedEpisodes =
         typeof rawEpisodes === 'string' ? JSON.parse(rawEpisodes) : rawEpisodes
       const episodes = Array.isArray(parsedEpisodes) ? parsedEpisodes : []
 
       if (!episodes.length) {
         toast.error('No episodes found for this title')
-        playingResult = null
+        done()
         return
       }
 
@@ -215,11 +254,13 @@
 
       targetEp = targetEp || episodes[0]
 
-      const raw = await callExtensionFunction(
-        ext,
+      const raw = await callExtension(
+        { key: result.extensionKey, ...ext },
         'extractStreamUrl',
-        targetEp.href
+        [targetEp.href],
+        { signal }
       )
+      if (!active()) return
       let streamData
       try {
         streamData = parseStreamResponse(raw)
@@ -230,7 +271,7 @@
 
       if (!streamData?.url) {
         toast.error('No stream URL found for this episode')
-        playingResult = null
+        done()
         return
       }
 
@@ -248,11 +289,13 @@
             (s, i) => (s.title || `Server ${i + 1}`) === sessionPref
           )
           if (matchedIndex !== -1) {
-            playingResult = null
+            done()
             launchPlayer(
               capturedStreamData,
               episodeNum,
               capturedMedia,
+              capturedEpisode,
+              launch,
               matchedIndex,
               capturedStreamData.servers[matchedIndex]
             )
@@ -260,7 +303,7 @@
           }
         }
 
-        playingResult = null
+        done()
         modal.open(modal.SERVER_SELECTOR, {
           servers: capturedStreamData.servers,
           onSelect: (serverIndex) => {
@@ -269,6 +312,8 @@
               capturedStreamData,
               episodeNum,
               capturedMedia,
+              capturedEpisode,
+              launch,
               serverIndex,
               server
             )
@@ -282,32 +327,37 @@
         typeof capturedEpisode === 'object'
           ? capturedEpisode.number
           : targetEp.number || capturedEpisode
-      launchPlayer(streamData, episodeNum, capturedMedia, 0)
+      done()
+      launchPlayer(streamData, episodeNum, capturedMedia, capturedEpisode, launch, 0)
     } catch (error) {
+      if (!active() || error?.name === 'AbortError') return
       debug('Failed to get stream URL:', error)
       toast.error('Stream failed: ' + (error?.message || error))
-      playingResult = null
+      done()
     }
   }
 
-  // Name of the extension / addon the stream comes from (Watch Together shows it as the source).
-  let launchSource = ''
-  // Extension + search result of the stream ("Download Episode" of the player resolves a fresh link from it).
-  let launchOrigin = {}
-
+  /**
+   * @param {{ source: string, origin: object }} launch name of the extension / addon the stream comes from (Watch
+   *   Together shows it as the source) and its search result ("Download Episode" of the player resolves a fresh link
+   *   from it)
+   */
   function launchPlayer (
     streamData,
     episodeNum,
     capturedMedia,
+    capturedEpisode,
+    launch,
     serverIndex = 0,
     server = null
   ) {
     const url = server?.streamUrl || streamData.url
     const headers = server?.headers || streamData.headers || {}
+    const episodeRef = typeof capturedEpisode === 'object' && capturedEpisode !== null ? capturedEpisode : null
 
     $currentMedia = { media: capturedMedia, episode: episodeNum }
     // Watch Together: let the other participants start the same episode.
-    shareNowPlaying(capturedMedia, typeof search?.episode === 'object' ? search.episode : episodeNum)
+    shareNowPlaying(capturedMedia, episodeRef || episodeNum)
     files.set([
       {
         name: `${anilistClient.title(capturedMedia)} - Episode ${episodeNum}.mp4`,
@@ -325,9 +375,9 @@
           }
         },
         activeServerIndex: serverIndex,
-        sourceName: launchSource,
-        ...launchOrigin,
-        episodeRef: typeof search?.episode === 'object' ? search.episode : null
+        sourceName: launch.source,
+        ...launch.origin,
+        episodeRef
       }
     ])
 
@@ -335,7 +385,13 @@
     close()
   }
 
-  $: if (search) searchExtensions()
+  // Only a new search object starts a search: Svelte re-sends object props whenever the modal store changes (another
+  // modal opening, the server selector...), which must not restart the search or abort the stream being loaded.
+  let searchedFor = null
+  $: if (search && search !== searchedFor) {
+    searchedFor = search
+    searchExtensions(search)
+  }
 
   function toggleGroup (key) {
     expandedGroups[key] = !expandedGroups[key]
@@ -343,8 +399,9 @@
   }
 
   onDestroy(() => {
+    searchController?.abort()
+    cancelSelection()
     groupedResults = []
-    playingResult = null
     search = null
   })
 </script>
@@ -368,25 +425,25 @@
         <SmartImage
           class='img-cover w-full h-full'
           images={[
-            search.media.bannerImage,
-            ...(search.media.trailer?.id
+            search?.media?.bannerImage,
+            ...(search?.media?.trailer?.id
               ? [
                 `https://i.ytimg.com/vi/${search.media.trailer.id}/maxresdefault.jpg`,
                 `https://i.ytimg.com/vi/${search.media.trailer.id}/hqdefault.jpg`
               ]
               : []),
             () =>
-              getKitsuMappings(search.media.id).then((metadata) => [
+              getKitsuMappings(search?.media?.id).then((metadata) => [
                 metadata?.included?.[0]?.attributes?.coverImage?.original,
                 metadata?.included?.[0]?.attributes?.coverImage?.large,
                 metadata?.included?.[0]?.attributes?.coverImage?.small,
                 metadata?.included?.[0]?.attributes?.coverImage?.tiny
               ]),
             () =>
-              getEpisodeMetadataForMedia(search.media).then(
+              getEpisodeMetadataForMedia(search?.media).then(
                 (metadata) => metadata?.[1]?.image
               ),
-            search.media.coverImage?.extraLarge
+            search?.media?.coverImage?.extraLarge
           ]}
         />
       </div>
@@ -413,7 +470,14 @@
       </div>
     </div>
   {/if}
-  {#if loading}
+  {#if playingResult}
+    <div class='d-flex align-items-center bg-dark-light rounded p-15 mb-20'>
+      <Loader size='2rem' class='spinning text-muted mr-15 flex-shrink-0' />
+      <span class='text-white font-scale-16 text-truncate'>Loading {playingResult.title || 'stream'}...</span>
+      <button type='button' class='btn bg-dark rounded-2 ml-auto px-15 font-scale-14 flex-shrink-0' use:click={cancelSelection}>Cancel</button>
+    </div>
+  {/if}
+  {#if loading && !groupedResults.length}
     <div
       class='d-flex flex-column align-items-center justify-content-center mt-80'
     >
@@ -435,7 +499,7 @@
       </span>
     </div>
   {:else}
-    {#each groupedResults as group}
+    {#each groupedResults as group (group.extensionKey)}
       <div class='mb-20'>
         <div class='d-flex align-items-center mb-10'>
           {#if group.extensionIcon}
@@ -524,6 +588,12 @@
         {/if}
       </div>
     {/each}
+    {#if loading && pendingSearches > 0}
+      <div class='d-flex align-items-center text-muted font-scale-14 mb-20'>
+        <Loader size='1.6rem' class='spinning mr-10' />
+        <span>Waiting for {pendingSearches} more extension{pendingSearches === 1 ? '' : 's'}...</span>
+      </div>
+    {/if}
   {/if}
 </div>
 
@@ -571,6 +641,10 @@
   }
   .more-link {
     display: inline-block;
+  }
+  .px-15 {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
   }
   .more-link:hover {
     color: var(--white-color) !important;

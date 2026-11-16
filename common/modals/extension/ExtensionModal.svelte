@@ -33,5 +33,6 @@
 </script>
 
 <SoftModal class='m-0 w-full wm-1150 h-full rounded bg-very-dark pt-0 mx-20' bind:showModal={$modal[modal.EXTENSION_MENU]} {close} id={modal.EXTENSION_MENU}>
-  <ExtensionResults search={modal.value[modal.EXTENSION_MENU].data} {close} />
+  <!-- $modal, not modal.value: reopening the menu for another title / episode while it is open must update it. -->
+  <ExtensionResults search={$modal[modal.EXTENSION_MENU]?.data} {close} />
 </SoftModal>

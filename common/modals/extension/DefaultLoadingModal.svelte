@@ -1,13 +1,14 @@
 <script context='module'>
   import { modal } from '@/modules/navigation.js'
   import { settings } from '@/modules/settings.js'
-  import { extensionManager, callExtensionFunction } from '@/modules/extension.js'
+  import { extensionManager, callExtension } from '@/modules/extension.js'
   import { sessionServer } from '@/modules/session.js'
   import { shareNowPlaying } from '@/routes/w2g/components/session.js'
   import { anilistClient } from '@/modules/anilist.js'
   import { files, nowPlaying as currentMedia } from '@/components/MediaHandler.svelte'
   import { page } from '@/modules/navigation.js'
   import { parseStreamResponse } from '@/modules/streaming.js'
+  import { click } from '@/modules/click.js'
   import Debug from 'debug'
   const debug = Debug('ui:default-loading')
 
@@ -33,24 +34,52 @@
       80
     )
   }
+
+  /** Number shown for an episode argument: a number, or an episode object ({ number, season, localEpisode }). */
+  function episodeNumber (episode) {
+    return typeof episode === 'object' && episode !== null ? episode.number : episode
+  }
 </script>
 
 <script>
   import SoftModal from '@/components/modals/SoftModal.svelte'
   import { Loader } from 'lucide-svelte'
   import { onDestroy } from 'svelte'
-  $: data = $modal[modal.DEFAULT_LOADING]?.data
+
+  $: entry = $modal[modal.DEFAULT_LOADING]
+  $: data = entry?.data
   $: media = data?.media
   $: episode = data?.episode || 1
 
   let statusText = 'Connecting to extension...'
-  let running = false
+
+  // The request in progress: { entry, controller }. Closing the dialog (Esc, backdrop, Cancel, another modal) or
+  // opening it for another episode aborts it; after every await the request checks it is still the current one, so a
+  // cancelled request never opens the player or the extension menu.
+  let current = null
+
+  function stop () {
+    current?.controller.abort()
+    current = null
+  }
 
   function close () {
     modal.close(modal.DEFAULT_LOADING)
   }
 
-  function fail (reason, failMedia = media, failEpisode = episode) {
+  function cancel () {
+    stop()
+    close()
+  }
+
+  $: track(entry)
+  function track (value) {
+    if (current?.entry === value) return
+    stop()
+    if (value?.data?.media) autoPlay(value)
+  }
+
+  function fail (reason, failMedia, failEpisode) {
     close()
     modal.open(modal.EXTENSION_MENU, {
       media: failMedia,
@@ -60,24 +89,30 @@
     })
   }
 
-  // Name of the extension / addon the stream comes from (Watch Together shows it as the source).
-  let launchSource = ''
-  // Extension + search result of the stream ("Download Episode" of the player resolves a fresh link from it).
-  let launchOrigin = {}
-
+  /**
+   * @param {any} streamData
+   * @param {number} episodeNum
+   * @param {any} capturedMedia
+   * @param {any} capturedEpisode episode argument of the request (number or episode object)
+   * @param {{ source: string, origin: object }} launch name of the extension / addon the stream comes from (Watch
+   *   Together shows it) and its search result ("Download Episode" of the player resolves a fresh link from it)
+   */
   function launchPlayer (
     streamData,
     episodeNum,
     capturedMedia,
+    capturedEpisode,
+    launch,
     serverIndex = 0,
     server = null
   ) {
     const url = server?.streamUrl || streamData.url
     const headers = server?.headers || streamData.headers || {}
+    const episodeRef = typeof capturedEpisode === 'object' && capturedEpisode !== null ? capturedEpisode : null
 
     $currentMedia = { media: capturedMedia, episode: episodeNum }
     // Watch Together: let the other participants start the same episode.
-    shareNowPlaying(capturedMedia, typeof episode === 'object' ? episode : episodeNum)
+    shareNowPlaying(capturedMedia, episodeRef || episodeNum)
     files.set([
       {
         name: `${anilistClient.title(capturedMedia)} - Episode ${episodeNum}.mp4`,
@@ -95,9 +130,9 @@
           }
         },
         activeServerIndex: serverIndex,
-        sourceName: launchSource,
-        ...launchOrigin,
-        episodeRef: typeof episode === 'object' ? episode : null
+        sourceName: launch.source,
+        ...launch.origin,
+        episodeRef
       }
     ])
 
@@ -105,11 +140,15 @@
     close()
   }
 
-  async function autoPlay () {
-    if (running || !media) return
-    running = true
-    const capturedMedia = media
-    const capturedEpisode = episode
+  async function autoPlay (requestEntry) {
+    const controller = new AbortController()
+    const request = { entry: requestEntry, controller }
+    current = request
+    const { signal } = controller
+    const active = () => current === request && !signal.aborted
+
+    const capturedMedia = requestEntry.data.media
+    const capturedEpisode = requestEntry.data.episode || 1
     statusText = 'Connecting to extension...'
 
     const title = anilistClient.title(capturedMedia)
@@ -118,7 +157,7 @@
       .getEnabled()
       .find((e) => e.key === defaultKey)
 
-    launchSource = defaultExt?.manifest?.sourceName || defaultExt?.key || ''
+    const launch = { source: defaultExt?.manifest?.sourceName || defaultExt?.key || '', origin: {} }
     if (!defaultExt) {
       fail(
         'Default extension not found or disabled',
@@ -131,12 +170,13 @@
     try {
       statusText = 'Searching...'
       // Stremio addons look the title up by its TMDB id, so they get the media too.
-      const raw = await callExtensionFunction(
+      const raw = await callExtension(
         defaultExt,
         'searchResults',
-        title,
-        ...(defaultExt.type === 'stremio' ? [capturedMedia] : [])
+        [title, ...(defaultExt.type === 'stremio' ? [capturedMedia] : [])],
+        { signal }
       )
+      if (!active()) return
       const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
 
       if (!Array.isArray(parsed) || !parsed.length) {
@@ -157,14 +197,16 @@
         .sort((a, b) => b.score - a.score)
 
       const best = scored[0]
-      launchOrigin = { extensionKey: defaultExt.key, sourceHref: best.href, sourceTitle: best.title }
+      launch.origin = { extensionKey: defaultExt.key, sourceHref: best.href, sourceTitle: best.title }
       statusText = 'Extracting episodes...'
 
-      const rawEps = await callExtensionFunction(
+      const rawEps = await callExtension(
         defaultExt,
         'extractEpisodes',
-        best.href
+        [best.href],
+        { signal }
       )
+      if (!active()) return
       const parsedEps =
         typeof rawEps === 'string' ? JSON.parse(rawEps) : rawEps
       const episodes = Array.isArray(parsedEps) ? parsedEps : []
@@ -179,11 +221,10 @@
       }
 
       let targetEp
-      const targetNumber =
-        typeof episode === 'object' ? episode.number : Number(episode)
-      const targetLocal =
-        typeof episode === 'object' ? episode.localEpisode : null
-      const targetSeason = typeof episode === 'object' ? episode.season : null
+      const isObject = typeof capturedEpisode === 'object' && capturedEpisode !== null
+      const targetNumber = isObject ? capturedEpisode.number : Number(capturedEpisode)
+      const targetLocal = isObject ? capturedEpisode.localEpisode : null
+      const targetSeason = isObject ? capturedEpisode.season : null
 
       if (targetSeason != null && targetLocal != null) {
         targetEp = episodes.find(
@@ -236,11 +277,13 @@
       targetEp = targetEp || episodes[0]
       statusText = 'Loading stream...'
 
-      const rawStream = await callExtensionFunction(
+      const rawStream = await callExtension(
         defaultExt,
         'extractStreamUrl',
-        targetEp.href
+        [targetEp.href],
+        { signal }
       )
+      if (!active()) return
       let streamData
       try {
         streamData = parseStreamResponse(rawStream)
@@ -257,13 +300,10 @@
         return
       }
 
+      const episodeNum = isObject ? capturedEpisode.number : targetEp.number || capturedEpisode
+
       // Handle multiple servers
       if (streamData.servers && streamData.servers.length > 1) {
-        const episodeNum =
-          typeof episode === 'object'
-            ? episode.number
-            : targetEp.number || capturedEpisode
-
         const sessionPref = sessionServer.value
         if (sessionPref) {
           const matchedIndex = streamData.servers.findIndex(
@@ -274,6 +314,8 @@
               streamData,
               episodeNum,
               capturedMedia,
+              capturedEpisode,
+              launch,
               matchedIndex,
               streamData.servers[matchedIndex]
             )
@@ -289,6 +331,8 @@
               streamData,
               episodeNum,
               capturedMedia,
+              capturedEpisode,
+              launch,
               i,
               streamData.servers[i]
             ),
@@ -297,27 +341,15 @@
         return
       }
 
-      launchPlayer(
-        streamData,
-        typeof episode === 'object'
-          ? episode.number
-          : targetEp.number || capturedEpisode,
-        capturedMedia
-      )
+      launchPlayer(streamData, episodeNum, capturedMedia, capturedEpisode, launch)
     } catch (error) {
+      if (!active() || error?.name === 'AbortError') return
       debug('Default extension auto-play failed:', error)
       fail(error?.message || 'Stream failed', capturedMedia, capturedEpisode)
     }
   }
 
-  $: if (data && media) {
-    running = false
-    autoPlay()
-  }
-
-  onDestroy(() => {
-    running = false
-  })
+  onDestroy(stop)
 </script>
 
 <SoftModal
@@ -333,8 +365,9 @@
     <h5 class='mb-5 font-weight-bold text-white text-center title-truncate'>
       {anilistClient.title(media)}
     </h5>
-    <span class='text-muted font-scale-14 text-center'>Episode {episode}</span>
+    <span class='text-muted font-scale-14 text-center'>Episode {episodeNumber(episode)}</span>
     <span class='text-muted font-scale-14 mt-15'>{statusText}</span>
+    <button type='button' class='btn bg-dark-light rounded-2 mt-20 px-20 font-scale-14' use:click={cancel}>Cancel</button>
   </div>
 </SoftModal>
 
@@ -345,6 +378,10 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
     max-width: 100%;
+  }
+  .px-20 {
+    padding-left: 2rem;
+    padding-right: 2rem;
   }
   :global(.spinning) {
     animation: spin 1s linear infinite;
