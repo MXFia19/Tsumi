@@ -283,6 +283,23 @@ enum PlaybackResolver {
     return "Stream failed: " + error.localizedDescription
   }
 
+  /// Runs `operation`, failing after `seconds` ("did not answer in time"); the operation is then cancelled (the
+  /// module runtime and the addon requests stop on cancellation).
+  static func withDeadline<T: Sendable>(_ seconds: TimeInterval, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+      group.addTask {
+        try await operation()
+      }
+      group.addTask {
+        try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+        throw ExtensionFailure("The extension did not answer in time")
+      }
+      defer { group.cancelAll() }
+      guard let first = try await group.next() else { throw CancellationError() }
+      return first
+    }
+  }
+
   static func isCancellation(_ error: Error) -> Bool {
     if error is CancellationError { return true }
     if let urlError = error as? URLError, urlError.code == .cancelled { return true }

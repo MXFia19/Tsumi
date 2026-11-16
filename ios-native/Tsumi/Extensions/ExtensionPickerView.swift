@@ -106,7 +106,7 @@ struct ExtensionPickerView: View {
         .padding(.horizontal, 20)
         .padding(.bottom, 14)
       }
-      .task(id: model.media.id) {
+      .task(id: ObjectIdentifier(model)) {
         await loadHeaderImage()
       }
   }
@@ -117,6 +117,8 @@ struct ExtensionPickerView: View {
   /// episode 1 (ani.zip / Kitsu metadata), cover. The Kitsu and episode lookups only run when
   /// everything before them failed, like the lazy entries of the Svelte list.
   private func loadHeaderImage() async {
+    // Never the image of a previous request.
+    headerImage = nil
     let media = model.media
     if let image = await Self.firstImage(Self.headerURLs(media)) {
       headerImage = image
@@ -174,7 +176,7 @@ struct ExtensionPickerView: View {
 
   @ViewBuilder
   private var content: some View {
-    if model.loading {
+    if model.loading && model.groups.isEmpty {
       VStack(spacing: 20) {
         ProgressView()
           .controlSize(.large)
@@ -203,6 +205,28 @@ struct ExtensionPickerView: View {
       ForEach(model.groups) { group in
         groupSection(group)
       }
+      searchStatus
+    }
+  }
+
+  /// Under the results already shown: the extensions still searching, then the ones that failed.
+  @ViewBuilder
+  private var searchStatus: some View {
+    if model.loading && !model.pendingNames.isEmpty {
+      HStack(spacing: 10) {
+        ProgressView()
+          .tint(ExtensionPalette.muted)
+        Text("Still searching: \(model.pendingNames.joined(separator: ", "))")
+          .font(.subheadline)
+          .foregroundStyle(ExtensionPalette.muted)
+          .lineLimit(2)
+      }
+    }
+    if !model.failedNames.isEmpty {
+      Text("No answer from \(model.failedNames.joined(separator: ", ")).")
+        .font(.footnote)
+        .foregroundStyle(ExtensionPalette.dimmed)
+        .lineLimit(2)
     }
   }
 
