@@ -63,14 +63,30 @@ enum MovieReleases {
   static let theatricalTypes = [2, 3]
   static let digitalTypes = [4]
 
-  /// Country of the device ("FR"), the US without one.
-  static var region: String {
-    Locale.current.region?.identifier ?? "US"
+  /// LANGUAGE_COUNTRIES: main country of a language ("fr" -> FR), TMDB often has no dates for smaller countries.
+  static let languageCountries = [
+    "fr": "FR", "de": "DE", "es": "ES", "it": "IT", "nl": "NL", "pt": "PT", "pl": "PL", "sv": "SE", "da": "DK",
+    "nb": "NO", "no": "NO", "fi": "FI", "ru": "RU", "tr": "TR", "ja": "JP", "ko": "KR", "zh": "CN", "en": "US"
+  ]
+
+  /// releaseRegions: the device region, the main country of the first preferred language, the other countries
+  /// and languages, then the US. A Belgian device in French -> ["BE", "FR", "US"].
+  static var regions: [String] {
+    var named: [String] = []
+    if let device = Locale.current.region?.identifier, device.count == 2 { named.append(device.uppercased()) }
+    let languages = Locale.preferredLanguages
+    named += languages.compactMap { Locale(identifier: $0).region?.identifier }.filter { $0.count == 2 }.map { $0.uppercased() }
+    let spoken = languages.compactMap { languageCountries[String($0.prefix(2)).lowercased()] }
+    var result: [String] = []
+    for region in [named.first, spoken.first].compactMap({ $0 }) + Array(named.dropFirst()) + Array(spoken.dropFirst()) + ["US"] where !result.contains(region) {
+      result.append(region)
+    }
+    return result
   }
 
-  /// releaseDate: first release day ("YYYY-MM-DD") of one of `types` in `region`, else in the US, else (with
-  /// `anywhere`) in any country. Digital releases are often only listed for the US.
-  static func releaseDate(_ countries: [TMDBReleaseCountry], types: [Int], region: String?, anywhere: Bool = false) -> String? {
+  /// releaseDate: first release day ("YYYY-MM-DD") of one of `types` in the first of `regions` that has one, else
+  /// (with `anywhere`) in any country. Digital releases are often only listed for the US.
+  static func releaseDate(_ countries: [TMDBReleaseCountry], types: [Int], regions: [String], anywhere: Bool = false) -> String? {
     func days(_ country: String?) -> [String] {
       countries
         .filter { country == nil || $0.country == country }
@@ -79,7 +95,7 @@ enum MovieReleases {
         .map { String($0.date.prefix(10)) }
         .sorted()
     }
-    for country in [region, "US"].compactMap({ $0 }) {
+    for country in regions {
       if let first = days(country).first { return first }
     }
     return anywhere ? days(nil).first : nil
@@ -93,15 +109,15 @@ enum MovieReleases {
   }
 
   /// movieReleaseNodes: the theatrical and digital releases still to come within `days`, earliest first.
-  static func releases(_ countries: [TMDBReleaseCountry], region: String?, theatrical: Bool = true, digital: Bool = true, now: Date = Date(), days: Int = windowDays) -> [MovieRelease] {
+  static func releases(_ countries: [TMDBReleaseCountry], regions: [String], theatrical: Bool = true, digital: Bool = true, now: Date = Date(), days: Int = windowDays) -> [MovieRelease] {
     let until = now.addingTimeInterval(Double(days) * 86_400)
     var result: [MovieRelease] = []
     func add(_ kind: MovieRelease.Kind, _ day: String?) {
       guard let day, let date = releaseDay(day), date > now, date <= until else { return }
       result.append(MovieRelease(kind: kind, date: date))
     }
-    if theatrical { add(.theatrical, releaseDate(countries, types: theatricalTypes, region: region)) }
-    if digital { add(.digital, releaseDate(countries, types: digitalTypes, region: region, anywhere: true)) }
+    if theatrical { add(.theatrical, releaseDate(countries, types: theatricalTypes, regions: regions)) }
+    if digital { add(.digital, releaseDate(countries, types: digitalTypes, regions: regions, anywhere: true)) }
     return result.sorted { $0.date < $1.date }
   }
 }

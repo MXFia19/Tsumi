@@ -1,7 +1,7 @@
 import Bottleneck from 'bottleneck'
 import { cache, caches } from '@/modules/cache.js'
 import { anilistClient } from '@/modules/anilist.js'
-import { localeRegion, preferredRegion, movieReleaseNodes, MOVIE_WINDOW_DAYS } from '@/modules/schedule/movies.js'
+import { releaseRegions, movieReleaseNodes, MOVIE_WINDOW_DAYS } from '@/modules/schedule/movies.js'
 import Debug from 'debug'
 const debug = Debug('ui:tmdb')
 
@@ -421,23 +421,22 @@ class TMDBClient {
   }
 
   /**
-   * Upcoming movies of the schedule (modules/schedule/movies.js): theatrical releases in the region and digital
-   * releases (region and US) of the next MOVIE_WINDOW_DAYS days, most popular first, each with its release dates
-   * as airingSchedule nodes. Anime movies known to AniList are left out like in getSchedule.
-   * @param {{ page?: number, theatrical?: boolean, digital?: boolean, region?: string }} [options]
+   * Upcoming movies of the schedule (modules/schedule/movies.js): theatrical releases in the first two release
+   * regions and digital releases (first region and US) of the next MOVIE_WINDOW_DAYS days, most popular first,
+   * each with its release dates as airingSchedule nodes. Anime movies known to AniList are left out like in
+   * getSchedule.
+   * @param {{ page?: number, theatrical?: boolean, digital?: boolean, regions?: string[] }} [options]
    */
-  async getMovieSchedule ({ page = 1, theatrical = true, digital = true, region = preferredRegion(globalThis.navigator?.languages) || localeRegion(globalThis.navigator?.language) || 'US' } = {}) {
-    debug('TMDB Movie Schedule', page)
+  async getMovieSchedule ({ page = 1, theatrical = true, digital = true, regions = releaseRegions(globalThis.navigator?.languages?.length ? globalThis.navigator.languages : [globalThis.navigator?.language]) } = {}) {
+    debug('TMDB Movie Schedule', page, regions)
     try {
       const now = Date.now()
       const day = (time) => new Date(time).toISOString().slice(0, 10)
       const window = { 'release_date.gte': day(now), 'release_date.lte': day(now + MOVIE_WINDOW_DAYS * 86_400_000), sort_by: 'popularity.desc', include_adult: false, page }
+      const unique = (list) => list.filter((region, index) => region && list.indexOf(region) === index)
       const queries = []
-      if (theatrical) queries.push({ region, with_release_type: '2|3' })
-      if (digital) {
-        queries.push({ region, with_release_type: '4' })
-        if (region !== 'US') queries.push({ region: 'US', with_release_type: '4' })
-      }
+      if (theatrical) for (const region of unique([regions[0], regions[1] || 'US'])) queries.push({ region, with_release_type: '2|3' })
+      if (digital) for (const region of unique([regions[0], 'US'])) queries.push({ region, with_release_type: '4' })
       const pages = await Promise.all(queries.map(query => this.handleRequest('/discover/movie', { ...window, ...query }).catch(() => null)))
       const seen = new Set()
       const items = pages.flatMap(res => res?.results || []).filter(item => {
@@ -446,7 +445,7 @@ class TMDBClient {
         return true
       })
       const mediaList = (await Promise.all(items.map(async (item) => {
-        const nodes = movieReleaseNodes(await this.getReleaseDates(item.id), { region, theatrical, digital, now })
+        const nodes = movieReleaseNodes(await this.getReleaseDates(item.id), { regions, theatrical, digital, now })
         if (!nodes.length) return null
         const media = this.normalizeMedia({ ...item, media_type: 'movie' })
         media.airingSchedule = { nodes }

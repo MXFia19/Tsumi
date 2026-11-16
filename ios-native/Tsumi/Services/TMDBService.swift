@@ -676,10 +676,12 @@ final class TMDBService: @unchecked Sendable {
   }
 
   /// Upcoming movies of the schedule (getMovieSchedule of tmdb.js, MovieReleases): theatrical releases in the
-  /// device region and digital releases (region and US) of the next MovieReleases.windowDays days, most popular
-  /// first, each with its first release to come. Anime movies known to AniList are left out like in `schedule`.
+  /// first two release regions and digital releases (first region and US) of the next MovieReleases.windowDays
+  /// days, most popular first, each with its first release to come. Anime movies known to AniList are left out
+  /// like in `schedule`.
   func movieSchedule(page: Int = 1, theatrical: Bool, digital: Bool) async -> (entries: [(media: Media, release: MovieRelease)], hasNextPage: Bool) {
-    let region = MovieReleases.region
+    let regions = MovieReleases.regions
+    let first = regions.first ?? "US"
     let now = Date()
     let dayFormatter = DateFormatter()
     dayFormatter.calendar = Calendar(identifier: .gregorian)
@@ -694,10 +696,15 @@ final class TMDBService: @unchecked Sendable {
       "page": String(page)
     ]
     var queries: [[String: String]] = []
-    if theatrical { queries.append(["region": region, "with_release_type": "2|3"]) }
+    if theatrical {
+      for region in Self.uniqueRegions([first, regions.count > 1 ? regions[1] : "US"]) {
+        queries.append(["region": region, "with_release_type": "2|3"])
+      }
+    }
     if digital {
-      queries.append(["region": region, "with_release_type": "4"])
-      if region != "US" { queries.append(["region": "US", "with_release_type": "4"]) }
+      for region in Self.uniqueRegions([first, "US"]) {
+        queries.append(["region": region, "with_release_type": "4"])
+      }
     }
     let pages: [[String: Any]] = await withTaskGroup(of: (Int, [String: Any]?).self) { group in
       for (offset, query) in queries.enumerated() {
@@ -729,7 +736,7 @@ final class TMDBService: @unchecked Sendable {
         group.addTask {
           guard let id = media.tmdbId else { return nil }
           let dates = await self.releaseDates(movieId: id)
-          let releases = MovieReleases.releases(dates, region: region, theatrical: theatrical, digital: digital, now: now)
+          let releases = MovieReleases.releases(dates, regions: regions, theatrical: theatrical, digital: digital, now: now)
           guard let first = releases.first else { return nil }
           return (offset, media, first)
         }
@@ -747,6 +754,12 @@ final class TMDBService: @unchecked Sendable {
     }
     let hasNextPage = pages.contains { ($0.int("page") ?? 0) < ($0.int("total_pages") ?? 0) }
     return (entries, hasNextPage)
+  }
+
+  private static func uniqueRegions(_ list: [String]) -> [String] {
+    var result: [String] = []
+    for region in list where !result.contains(region) { result.append(region) }
+    return result
   }
 
   /// TVmaze lookup of the next episode by IMDb id.

@@ -38,35 +38,44 @@ export function localeRegion (locale) {
   return match ? match[1].toUpperCase() : null
 }
 
+/** Main country of a language without one ("fr" -> FR): TMDB often has no dates for smaller countries. */
+const LANGUAGE_COUNTRIES = { fr: 'FR', de: 'DE', es: 'ES', it: 'IT', nl: 'NL', pt: 'PT', pl: 'PL', sv: 'SE', da: 'DK', nb: 'NO', no: 'NO', fi: 'FI', ru: 'RU', tr: 'TR', ja: 'JP', ko: 'KR', zh: 'CN', en: 'US' }
+
 /**
- * Country of the first preferred language that names one (["fr", "fr-BE", "en-US"] -> "BE"), null without one.
+ * Countries whose release dates are used, in order: the first country named by the preferred languages (or the
+ * device region on iOS), the main country of the first language, the other named countries and languages, then
+ * the US. ["fr", "fr-BE", "en-US"] -> ["BE", "FR", "US"].
  * @param {readonly string[] | string[] | undefined} languages navigator.languages
+ * @returns {string[]}
  */
-export function preferredRegion (languages) {
-  for (const language of languages || []) {
-    const region = localeRegion(language)
-    if (region) return region
+export function releaseRegions (languages) {
+  const list = Array.isArray(languages) ? languages : []
+  const named = list.map(localeRegion).filter(Boolean)
+  const spoken = list.map(language => LANGUAGE_COUNTRIES[String(language).slice(0, 2).toLowerCase()]).filter(Boolean)
+  const regions = []
+  for (const region of [named[0], spoken[0], ...named.slice(1), ...spoken.slice(1), 'US']) {
+    if (region && !regions.includes(region)) regions.push(region)
   }
-  return null
+  return regions
 }
 
 /**
- * First release day ("YYYY-MM-DD") of one of `types` in `region`, else in the US, else (with `anywhere`) in any
- * country. Digital releases are often only listed for the US.
+ * First release day ("YYYY-MM-DD") of one of `types` in the first of `regions` that has one (a single region
+ * falls back to the US), else (with `anywhere`) in any country. Digital releases are often only listed for the US.
  * @param {any[]} results release_dates results
  * @param {number[]} types
- * @param {string | null} region
+ * @param {string[] | string | null} regions
  * @param {boolean} [anywhere]
  * @returns {string | null}
  */
-export function releaseDate (results, types, region, anywhere = false) {
+export function releaseDate (results, types, regions, anywhere = false) {
   const days = (country) => (Array.isArray(results) ? results : [])
     .filter(entry => !country || entry?.iso_3166_1 === country)
     .flatMap(entry => Array.isArray(entry?.release_dates) ? entry.release_dates : [])
     .filter(date => types.includes(Number(date?.type)) && /^\d{4}-\d{2}-\d{2}/.test(String(date?.release_date || '')))
     .map(date => date.release_date.slice(0, 10))
     .sort()
-  for (const country of [region, 'US']) {
+  for (const country of Array.isArray(regions) ? regions : [regions, 'US']) {
     if (!country) continue
     const found = days(country)
     if (found.length) return found[0]
@@ -84,9 +93,9 @@ export function releaseDay (day) {
  * Schedule nodes of a movie ({ episode: 1, airingAt in seconds, label, release }): its theatrical and digital
  * releases still to come within MOVIE_WINDOW_DAYS, earliest first.
  * @param {any[]} results release_dates results
- * @param {{ region?: string | null, theatrical?: boolean, digital?: boolean, now?: number, days?: number }} [options]
+ * @param {{ regions?: string[] | string | null, theatrical?: boolean, digital?: boolean, now?: number, days?: number }} [options]
  */
-export function movieReleaseNodes (results, { region = null, theatrical = true, digital = true, now = Date.now(), days = MOVIE_WINDOW_DAYS } = {}) {
+export function movieReleaseNodes (results, { regions = ['US'], theatrical = true, digital = true, now = Date.now(), days = MOVIE_WINDOW_DAYS } = {}) {
   const until = now + days * 86_400_000
   const nodes = []
   const add = (release, day) => {
@@ -94,7 +103,7 @@ export function movieReleaseNodes (results, { region = null, theatrical = true, 
     const time = releaseDay(day).getTime()
     if (time > now && time <= until) nodes.push({ episode: 1, airingAt: Math.floor(time / 1000), label: RELEASE_LABELS[release], release })
   }
-  if (theatrical) add('theatrical', releaseDate(results, THEATRICAL_TYPES, region))
-  if (digital) add('digital', releaseDate(results, DIGITAL_TYPES, region, true))
+  if (theatrical) add('theatrical', releaseDate(results, THEATRICAL_TYPES, regions))
+  if (digital) add('digital', releaseDate(results, DIGITAL_TYPES, regions, true))
   return nodes.sort((a, b) => a.airingAt - b.airingAt)
 }

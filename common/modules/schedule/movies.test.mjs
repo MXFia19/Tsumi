@@ -1,6 +1,6 @@
 // Upcoming movies of the schedule, pure logic. Run with: node common/modules/schedule/movies.test.mjs
 import assert from 'node:assert/strict'
-import { releaseKinds, localeRegion, preferredRegion, releaseDate, releaseDay, movieReleaseNodes, THEATRICAL_TYPES, DIGITAL_TYPES } from './movies.js'
+import { releaseKinds, localeRegion, releaseRegions, releaseDate, releaseDay, movieReleaseNodes, THEATRICAL_TYPES, DIGITAL_TYPES } from './movies.js'
 
 let passed = 0
 let failed = 0
@@ -41,11 +41,14 @@ test('localeRegion reads the country of a locale', () => {
   assert.equal(localeRegion(undefined), null)
 })
 
-test('preferredRegion takes the first language that names a country', () => {
-  assert.equal(preferredRegion(['fr', 'fr-BE', 'en-US']), 'BE')
-  assert.equal(preferredRegion(['en-GB']), 'GB')
-  assert.equal(preferredRegion(['fr', 'en']), null)
-  assert.equal(preferredRegion(undefined), null)
+test('releaseRegions orders the named country, the main country of the language, then the US', () => {
+  assert.deepEqual(releaseRegions(['fr', 'fr-BE', 'en-US']), ['BE', 'FR', 'US'])
+  assert.deepEqual(releaseRegions(['fr-FR']), ['FR', 'US'])
+  assert.deepEqual(releaseRegions(['en-GB']), ['GB', 'US'])
+  assert.deepEqual(releaseRegions(['de-AT', 'de']), ['AT', 'DE', 'US'])
+  assert.deepEqual(releaseRegions(['fr']), ['FR', 'US'])
+  assert.deepEqual(releaseRegions(['xx']), ['US'])
+  assert.deepEqual(releaseRegions(undefined), ['US'])
 })
 
 test('releaseDate prefers the region, then the US, then anywhere when allowed', () => {
@@ -59,6 +62,10 @@ test('releaseDate prefers the region, then the US, then anywhere when allowed', 
   assert.equal(releaseDate(onlyJapan, DIGITAL_TYPES, 'FR', true), '2026-12-01')
   assert.equal(releaseDate(onlyJapan, THEATRICAL_TYPES, 'JP'), '2026-11-01')
   assert.equal(releaseDate(null, DIGITAL_TYPES, 'FR', true), null)
+  // Region lists: Belgium has no dates for this movie, France does.
+  assert.equal(releaseDate(sunrise, THEATRICAL_TYPES, ['BE', 'FR', 'US']), '2026-11-18')
+  assert.equal(releaseDate(sunrise, THEATRICAL_TYPES, ['BE', 'US']), '2026-11-20')
+  assert.equal(releaseDate(sunrise, THEATRICAL_TYPES, ['BE']), null)
   assert.equal(releaseDate([{ iso_3166_1: 'US', release_dates: [{ type: 3, release_date: 'soon' }] }], THEATRICAL_TYPES, 'US'), null)
 })
 
@@ -71,21 +78,21 @@ test('releaseDay is local midnight', () => {
 })
 
 test('movieReleaseNodes lists the theatrical and digital releases to come', () => {
-  const nodes = movieReleaseNodes(sunrise, { region: 'FR', now })
+  const nodes = movieReleaseNodes(sunrise, { regions: ['FR', 'US'], now })
   assert.deepEqual(nodes.map(n => [n.release, n.label, n.episode]), [['theatrical', 'In theaters', 1], ['digital', 'On digital', 1]])
   assert.equal(nodes[0].airingAt, Math.floor(new Date(2026, 10, 18).getTime() / 1000))
   assert.equal(nodes[1].airingAt, Math.floor(new Date(2027, 0, 6).getTime() / 1000))
 })
 
 test('movieReleaseNodes follows the filter and the window', () => {
-  assert.deepEqual(movieReleaseNodes(sunrise, { region: 'FR', now, digital: false }).map(n => n.release), ['theatrical'])
-  assert.deepEqual(movieReleaseNodes(sunrise, { region: 'FR', now, theatrical: false }).map(n => n.release), ['digital'])
+  assert.deepEqual(movieReleaseNodes(sunrise, { regions: ['FR', 'US'], now, digital: false }).map(n => n.release), ['theatrical'])
+  assert.deepEqual(movieReleaseNodes(sunrise, { regions: ['FR', 'US'], now, theatrical: false }).map(n => n.release), ['digital'])
   // Digital release 51 days away: outside a 30 day window.
-  assert.deepEqual(movieReleaseNodes(sunrise, { region: 'FR', now, days: 30 }).map(n => n.release), ['theatrical'])
+  assert.deepEqual(movieReleaseNodes(sunrise, { regions: ['FR', 'US'], now, days: 30 }).map(n => n.release), ['theatrical'])
   // Once in theaters, only the digital release is left.
   const later = new Date(2026, 10, 25).getTime()
-  assert.deepEqual(movieReleaseNodes(sunrise, { region: 'FR', now: later }).map(n => n.release), ['digital'])
-  assert.deepEqual(movieReleaseNodes([], { region: 'FR', now }), [])
+  assert.deepEqual(movieReleaseNodes(sunrise, { regions: ['FR', 'US'], now: later }).map(n => n.release), ['digital'])
+  assert.deepEqual(movieReleaseNodes([], { regions: ['FR', 'US'], now }), [])
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)
