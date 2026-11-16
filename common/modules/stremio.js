@@ -1,4 +1,7 @@
 import { tmdbClient } from '@/modules/tmdb.js'
+import { settings } from '@/modules/settings.js'
+import { readCapped } from '@/modules/sandbox/network.js'
+import { LruCache, CatalogPager, pickStremioSubtitle, animeMetaId } from '@/modules/extensionUtils.js'
 import Debug from 'debug'
 
 const debug = Debug('ui:stremio')
@@ -17,7 +20,9 @@ const debug = Debug('ui:stremio')
  */
 
 const REQUEST_TIMEOUT = 45000
-const requestCache = new Map()
+// Catalog / meta responses, by URL, for a few minutes. Bounded (least recently used out): it used to keep every
+// response of the session.
+const requestCache = new LruCache(150)
 
 export function isStremioManifest (manifest) {
   return !!manifest && typeof manifest === 'object' && !manifest.scriptUrl && typeof manifest.id === 'string' && Array.isArray(manifest.resources)
@@ -85,8 +90,11 @@ function extraPath (extra) {
 /** GET a Stremio resource. ttl = 0 disables caching (stream links can expire). */
 async function stremioRequest (base, resource, type, id, extra = null, ttl = 5 * 60 * 1000) {
   const url = `${base}/${resource}/${encodeURIComponent(type)}/${encodeId(id)}${extraPath(extra)}.json`
-  const cached = ttl > 0 && requestCache.get(url)
-  if (cached && Date.now() - cached.time < ttl) return cached.promise
+  if (ttl > 0) {
+    const cached = requestCache.get(url)
+    if (cached && Date.now() - cached.time < cached.ttl) return cached.promise
+    if (cached) requestCache.delete(url)
+  }
 
   const promise = (async () => {
     const controller = new AbortController()
@@ -94,7 +102,8 @@ async function stremioRequest (base, resource, type, id, extra = null, ttl = 5 *
     try {
       const res = await fetch(url, { signal: controller.signal })
       if (!res.ok) throw new Error(`Addon returned HTTP ${res.status} for ${resource}`)
-      return await res.json()
+      // Capped like module responses: a broken or hostile addon cannot fill the memory.
+      return JSON.parse(new TextDecoder().decode(await readCapped(res)))
     } catch (error) {
       if (error?.name === 'AbortError') throw new Error(`Addon did not answer in time (${resource})`)
       throw error
@@ -104,8 +113,9 @@ async function stremioRequest (base, resource, type, id, extra = null, ttl = 5 *
   })()
 
   if (ttl > 0) {
-    requestCache.set(url, { time: Date.now(), promise })
-    promise.catch(() => requestCache.delete(url))
+    const entry = { time: Date.now(), ttl, promise }
+    requestCache.set(url, entry)
+    promise.catch(() => { if (requestCache.peek(url) === entry) requestCache.delete(url) })
   }
   return promise
 }
@@ -151,6 +161,45 @@ function resolveMediaIds (media) {
   }
   if (!tmdbId) return null
   return { tmdbId: Number(tmdbId), tmdbType, stremioType: tmdbType === 'movie' ? 'movie' : 'series', season, offset }
+}
+
+/** True when the addon explicitly lists this id prefix (kitsu:, mal:, anilist:...) for the resource and type. */
+function listsIdPrefix (manifest, resource, type, id) {
+  const info = resourceInfo(manifest, resource)
+  if (!info || (type && info.types.length && !info.types.includes(type))) return false
+  return !!info.idPrefixes?.some(prefix => prefix && String(id).startsWith(prefix))
+}
+
+/** Kitsu id of an AniList anime, from the existing mappings (ani.zip, then Kitsu's own mapping). */
+async function kitsuIdOf (anilistId) {
+  try {
+    const { getAniMappings, getKitsuMappings } = await import('@/modules/anime/anime.js')
+    const ani = await Promise.resolve().then(() => getAniMappings(anilistId)).catch(() => null)
+    if (ani?.mappings?.kitsu_id) return Number(ani.mappings.kitsu_id) || null
+    const kitsu = await Promise.resolve().then(() => getKitsuMappings(anilistId)).catch(() => null)
+    return Number(kitsu?.data?.[0]?.relationships?.item?.data?.id || kitsu?.included?.[0]?.id) || null
+  } catch (error) {
+    debug('Kitsu mapping failed', anilistId, error)
+    return null
+  }
+}
+
+/**
+ * Anime-only addons (ids kitsu:1, mal:1, anilist:1): the id of an AniList entry they accept, for its stream type or
+ * the "anime" type some of them use.
+ */
+async function pickAnimeAddonId (manifest, media) {
+  if (!media || media.isTmdb || !Number.isInteger(Number(media.id))) return null
+  const baseType = media.format === 'MOVIE' ? 'movie' : 'series'
+  for (const type of [baseType, 'anime']) {
+    if (listsIdPrefix(manifest, 'stream', type, `anilist:${media.id}`)) return { type, id: `anilist:${media.id}` }
+    if (media.idMal && listsIdPrefix(manifest, 'stream', type, `mal:${media.idMal}`)) return { type, id: `mal:${media.idMal}` }
+    if (listsIdPrefix(manifest, 'stream', type, 'kitsu:1')) {
+      const kitsuId = await kitsuIdOf(media.id)
+      if (kitsuId) return { type, id: `kitsu:${kitsuId}` }
+    }
+  }
+  return null
 }
 
 /** Pick an id the addon accepts for this resource: tmdb:123 first, then the IMDb id. */
@@ -245,33 +294,105 @@ export async function metaToMedia (meta, fallbackType) {
   return media
 }
 
-async function metasToPage (metas, fallbackType, hasNextPage) {
-  const media = (await Promise.all(metas.map(meta => metaToMedia(meta, fallbackType).catch(() => null)))).filter(Boolean)
-  return { data: { Page: { media, pageInfo: { hasNextPage } } } }
+// Kitsu anime id -> { anilist, mal } ids (null: Kitsu knows no mapping).
+const kitsuCache = new LruCache(1000)
+
+/** AniList / MAL ids of Kitsu anime, 20 per request (Kitsu's mappings, the provider getKitsuMappings already uses). */
+async function kitsuToAnime (kitsuIds) {
+  const missing = kitsuIds.filter(id => !kitsuCache.has(id))
+  for (let i = 0; i < missing.length; i += 20) {
+    const chunk = missing.slice(i, i + 20)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 20000)
+    try {
+      const res = await fetch(`https://kitsu.app/api/edge/anime?filter[id]=${chunk.join(',')}&include=mappings&fields[anime]=mappings&fields[mappings]=externalSite,externalId&page[limit]=20`, { signal: controller.signal })
+      if (!res.ok) throw new Error(`Kitsu returned HTTP ${res.status}`)
+      const json = JSON.parse(new TextDecoder().decode(await readCapped(res)))
+      const mappings = new Map((json?.included || []).filter(item => item?.type === 'mappings').map(item => [item.id, item.attributes]))
+      for (const anime of json?.data || []) {
+        const ids = { anilist: null, mal: null }
+        for (const ref of anime?.relationships?.mappings?.data || []) {
+          const mapping = mappings.get(ref.id)
+          if (mapping?.externalSite === 'anilist/anime') ids.anilist = Number(mapping.externalId) || null
+          if (mapping?.externalSite === 'myanimelist/anime') ids.mal = Number(mapping.externalId) || null
+        }
+        kitsuCache.set(Number(anime.id), ids.anilist || ids.mal ? ids : null)
+      }
+      for (const id of chunk) if (!kitsuCache.has(id)) kitsuCache.set(id, null)
+    } catch (error) {
+      debug('Kitsu id lookup failed', error)
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  return new Map(kitsuIds.map(id => [id, kitsuCache.get(id) || null]))
 }
 
 /**
+ * AniList media of the anime metas of a catalog page (ids kitsu:, mal:, anilist:), so anime-only addons show their
+ * items like the rest of the app (AniList cards, details, playback). Batched: one AniList request per 50 ids.
+ * @returns {Promise<Map<string, any>>} meta id -> AniList media
+ */
+async function animeMediaFor (metas) {
+  const parsed = metas.map(meta => [meta, animeMetaId(meta?.id)]).filter(([, ids]) => ids)
+  if (!parsed.length) return new Map()
+  const kitsu = await kitsuToAnime([...new Set(parsed.filter(([, ids]) => ids.source === 'kitsu').map(([, ids]) => ids.id))])
+  const wanted = parsed.map(([meta, ids]) => {
+    if (ids.source === 'anilist') return [meta, { anilist: ids.id }]
+    if (ids.source === 'mal') return [meta, { mal: ids.id }]
+    const mapped = kitsu.get(ids.id)
+    return [meta, mapped?.anilist ? { anilist: mapped.anilist } : mapped?.mal ? { mal: mapped.mal } : null]
+  }).filter(([, ids]) => ids)
+
+  const byId = new Map()
+  const byMal = new Map()
+  try {
+    const { anilistClient } = await import('@/modules/anilist.js')
+    const load = async (key, list) => {
+      for (let i = 0; i < list.length; i += 50) {
+        const res = await anilistClient.searchIDS({ [key]: list.slice(i, i + 50), perPage: 50 })
+        for (const media of res?.data?.Page?.media || []) {
+          byId.set(media.id, media)
+          if (media.idMal) byMal.set(media.idMal, media)
+        }
+      }
+    }
+    const anilistIds = [...new Set(wanted.map(([, ids]) => ids.anilist).filter(Boolean))]
+    const malIds = [...new Set(wanted.map(([, ids]) => ids.mal).filter(Boolean))]
+    if (anilistIds.length) await load('id', anilistIds)
+    if (malIds.length) await load('idMal', malIds)
+  } catch (error) {
+    debug('AniList lookup of catalog anime failed', error)
+  }
+  return new Map(wanted.map(([meta, ids]) => [meta.id, ids.anilist ? byId.get(ids.anilist) : byMal.get(ids.mal)]).filter(([, media]) => media))
+}
+
+async function metasToPage (metas, fallbackType, hasNextPage) {
+  const anime = await animeMediaFor(metas)
+  const media = (await Promise.all(metas.map(meta => anime.get(meta.id) || metaToMedia(meta, fallbackType).catch(() => null)))).filter(Boolean)
+  return { data: { Page: { media, pageInfo: { hasNextPage } } } }
+}
+
+// Pager of each catalog (+ filters) in use, see CatalogPager (extensionUtils.js).
+const catalogPagers = new LruCache(40)
+
+/**
  * Load one page of a catalog in the format Tsumi's sections expect
- * ({ data: { Page: { media, pageInfo } } }). Stremio pages with "skip".
+ * ({ data: { Page: { media, pageInfo } } }). Stremio pages with "skip" = number of items received so far.
  */
 export async function loadCatalogPage (ext, catalog, page = 1, perPage = 50, extra = {}) {
   const { base } = ext.stremio
-  const canSkip = catalogSupports(catalog, 'skip')
-  if (page > 1 && !canSkip) return { data: { Page: { media: [], pageInfo: { hasNextPage: false } } } }
-
-  const metas = []
-  let skip = (page - 1) * perPage
-  let lastBatch = 0
-  for (let i = 0; i < 6 && metas.length < perPage; i++) {
-    const res = await stremioRequest(base, 'catalog', catalog.type, catalog.id, { ...extra, ...(skip > 0 ? { skip } : {}) })
-    const batch = res?.metas || []
-    lastBatch = batch.length
-    if (!batch.length) break
-    metas.push(...batch)
-    skip += batch.length
-    if (!canSkip) break
+  const key = `${base}|${catalog.type}|${catalog.id}|${JSON.stringify(extra || {})}`
+  let pager = catalogPagers.get(key)
+  if (!pager) {
+    pager = new CatalogPager(
+      async (skip) => (await stremioRequest(base, 'catalog', catalog.type, catalog.id, { ...extra, ...(skip > 0 ? { skip } : {}) }))?.metas || [],
+      { canSkip: catalogSupports(catalog, 'skip') }
+    )
+    catalogPagers.set(key, pager)
   }
-  return metasToPage(metas.slice(0, perPage), catalog.type, canSkip && lastBatch > 0)
+  const { items, hasNextPage } = await pager.page(page, perPage)
+  return metasToPage(items, catalog.type, hasNextPage)
 }
 
 /* ---------------------------------------------------------------------------
@@ -292,6 +413,16 @@ async function searchResults (ext, title, media) {
         href: encodeRef({ type: ids.stremioType, id, season: ids.season, offset: ids.offset })
       }]
     }
+  }
+
+  // Anime-only addons: AniList entries map to their kitsu: / mal: / anilist: ids.
+  const anime = await pickAnimeAddonId(manifest, media)
+  if (anime) {
+    return [{
+      title: title || media?.title?.userPreferred || anime.id,
+      image: media?.coverImage?.extraLarge || media?.coverImage?.medium || '',
+      href: encodeRef({ type: anime.type, id: anime.id, episodes: Number(media?.episodes) || null })
+    }]
   }
 
   // Otherwise fall back to the addon's own search.
@@ -334,6 +465,10 @@ async function extractEpisodes (ext, href) {
     }
   }
   if (!videos.length) videos = await videosFromTmdb(ref.id)
+  // Anime ids without a meta resource: "kitsu:1:5" is episode 5 (Stremio convention), the count comes from AniList.
+  if (!videos.length && animeMetaId(ref.id) && ref.episodes > 0) {
+    videos = Array.from({ length: ref.episodes }, (_, i) => ({ id: `${ref.id}:${i + 1}`, episode: i + 1 }))
+  }
 
   let episodes = videos
     .filter(video => video.season == null || Number(video.season) > 0)
@@ -363,12 +498,6 @@ function streamTitle (stream, index) {
   return [...name, ...details].join(' · ') || `Server ${index + 1}`
 }
 
-function pickSubtitle (subtitles) {
-  if (!Array.isArray(subtitles) || !subtitles.length) return null
-  const french = subtitles.find(sub => /^(fr|fre|fra|french)/i.test(sub.lang || ''))
-  return (french || subtitles[0])?.url || null
-}
-
 async function extractStreamUrl (ext, href) {
   const ref = decodeRef(href)
   const res = await stremioRequest(ext.stremio.base, 'stream', ref.type, ref.id, null, 0)
@@ -383,7 +512,8 @@ async function extractStreamUrl (ext, href) {
       streamUrl: stream.url,
       headers: stream.behaviorHints?.proxyHeaders?.request || {}
     })),
-    subtitles: pickSubtitle(playable[0].subtitles)
+    // Only a subtitle in the Preferred Subtitle Language: another one would also block the automatic online subtitles.
+    subtitles: pickStremioSubtitle(playable[0].subtitles, settings.value.subtitleLanguage)
   }
 }
 

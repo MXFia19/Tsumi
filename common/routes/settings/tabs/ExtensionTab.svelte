@@ -2,12 +2,14 @@
   import { click } from '@/modules/click.js'
   import ConfirmButton from '@/components/inputs/ConfirmButton.svelte'
   import { manager } from '@/modules/extension.js'
-  import { TriangleAlert, FileQuestion, Trash2, CircleX, Plus, Star, SquarePlus, GripVertical, Crown, X } from 'lucide-svelte'
+  import { maskUrl } from '@/modules/sandbox/network.js'
+  import { onDestroy } from 'svelte'
+  import { TriangleAlert, FileQuestion, Trash2, CircleX, Plus, Star, SquarePlus, GripVertical, Crown, X, Globe, RefreshCw, Loader, CircleAlert, CircleArrowUp } from 'lucide-svelte'
 
   export let settings
 
-  $: pendingSource = false
-  $: failedSource = null
+  let pendingSource = false
+  let failedSource = null
   $: allExtensions = Object.entries(settings.extensions || {}).map(([key, config]) => ({
     key,
     url: config.url,
@@ -24,22 +26,48 @@
       return 0
     })
 
+  // Load state of each extension (loading / ready / error), refreshed when the manager notifies.
+  let statusTick = 0
+  onDestroy(manager.subscribe(() => { statusTick++ }))
+  function statusOf (key, tick) {
+    return manager.getStatus(key)
+  }
+
   let sourceUrl = ''
   let showAddDialog = false
   let dragOverDefault = false
+  // Extension loaded by "Add" and shown before it is installed (name, version, hosts it says it uses).
+  let preview = null
 
-  async function addSource () {
+  function openAddDialog () {
+    showAddDialog = !showAddDialog
+    failedSource = null
+    preview = null
+  }
+
+  async function checkSource () {
     if (!sourceUrl?.length || pendingSource) return
     pendingSource = true
     failedSource = null
+    preview = null
     try {
-      await manager.addExtension(sourceUrl)
+      preview = await manager.previewExtension(sourceUrl)
+    } catch (error) {
+      failedSource = error.message || 'Failed to load extension'
+    }
+    pendingSource = false
+  }
+
+  function installPreview () {
+    if (!preview) return
+    try {
+      manager.installExtension(preview)
       sourceUrl = ''
+      preview = null
       showAddDialog = false
     } catch (error) {
       failedSource = error.message || 'Failed to add extension'
     }
-    pendingSource = false
   }
 
   async function removeSource (key) {
@@ -86,7 +114,7 @@
 
 <div class='wm-1200 d-flex align-items-center mb-20'>
   <h4 class='mb-0 font-weight-bold'>Extensions</h4>
-  <button type='button' class='btn btn-primary d-flex align-items-center justify-content-center rounded-2 ml-auto px-15 h-36 font-scale-16' use:click={() => { showAddDialog = !showAddDialog; failedSource = null }}>
+  <button type='button' class='btn btn-primary d-flex align-items-center justify-content-center rounded-2 ml-auto px-15 h-36 font-scale-16' use:click={openAddDialog}>
     <Plus size='1.6rem' class='mr-5' />
     <span>Add Extension</span>
   </button>
@@ -102,22 +130,65 @@
         </button>
       </div>
       <div class='alert bg-warning border-warning-dim text-warning-very-dim p-10 pl-15 mb-10 d-flex'>
-        <TriangleAlert size='1.8rem' />
-        <span class='ml-10'>Extensions are sandboxed and should be safe, but avoid adding <u>unknown</u> or <u>untrusted</u> sources.</span>
+        <TriangleAlert size='1.8rem' class='flex-shrink-0' />
+        <span class='ml-10'>Modules run isolated from the app and cannot reach your local network, but they still see what you search and play: avoid adding <u>unknown</u> or <u>untrusted</u> sources.</span>
       </div>
       {#if failedSource}
         <div class='alert bg-error border-error-light p-10 pl-15 mb-10 d-flex'>
-          <CircleX size='1.8rem' />
-          <span class='ml-10'>{failedSource}</span>
+          <CircleX size='1.8rem' class='flex-shrink-0' />
+          <span class='ml-10 text-break'>{failedSource}</span>
         </div>
       {/if}
       <div class='input-group'>
-        <input placeholder='Sora module or Stremio addon manifest URL' type='url' class='form-control bg-dark-light mw-full rounded-2 h-36 border text-truncate long-input' disabled={pendingSource} class:cursor-wait={pendingSource} bind:value={sourceUrl} on:keydown={(e) => { if (e.key === 'Enter') addSource() }} />
-        <button class='ml-10 btn btn-primary d-flex align-items-center justify-content-center rounded-2 w-100 h-36 font-scale-16' disabled={pendingSource || !sourceUrl?.length} class:cursor-wait={pendingSource} type='button' use:click={() => addSource()}>
-          <SquarePlus class='mr-5' size='1.6rem' /><span>Add</span>
+        <input placeholder='Sora module or Stremio addon manifest URL' type='url' class='form-control bg-dark-light mw-full rounded-2 h-36 border text-truncate long-input' disabled={pendingSource} class:cursor-wait={pendingSource} bind:value={sourceUrl} on:input={() => { preview = null }} on:keydown={(e) => { if (e.key === 'Enter') checkSource() }} />
+        <button class='ml-10 btn btn-primary d-flex align-items-center justify-content-center rounded-2 w-100 h-36 font-scale-16' disabled={pendingSource || !sourceUrl?.length} class:cursor-wait={pendingSource} type='button' use:click={() => checkSource()}>
+          {#if pendingSource}<Loader size='1.6rem' class='mr-5 spinning' />{:else}<SquarePlus class='mr-5' size='1.6rem' />{/if}<span>Add</span>
         </button>
       </div>
 
+      {#if preview}
+        {@const loaded = preview.loaded}
+        <div class='card m-0 mt-15 p-15 bg-dark-light border'>
+          <div class='d-flex align-items-center'>
+            {#if loaded.manifest?.iconUrl}
+              <img class='w-43 h-43 rounded flex-shrink-0' src={loaded.manifest.iconUrl} alt='' />
+            {:else}
+              <FileQuestion size='4.3rem' class='flex-shrink-0' />
+            {/if}
+            <div class='ml-10 overflow-hidden'>
+              <div class='font-size-18 font-weight-bold text-truncate'>{loaded.manifest?.sourceName || 'Extension'}</div>
+              <div class='text-muted font-scale-14'>
+                {loaded.type === 'stremio' ? 'Stremio addon' : 'Sora module'}{#if loaded.manifest?.version} · {loaded.manifest.version}{/if}{#if loaded.manifest?.language} · {loaded.manifest.language}{/if}
+              </div>
+            </div>
+          </div>
+          {#if preview.existingKey}
+            <div class='text-muted font-scale-14 mt-10 d-flex align-items-center'>
+              <CircleArrowUp size='1.6rem' class='mr-5 flex-shrink-0' />
+              <span>Already installed{preview.installedVersion ? ` (${preview.installedVersion})` : ''}: it will be updated in place.</span>
+            </div>
+          {/if}
+          <div class='font-scale-14 mt-10'>
+            <div class='d-flex align-items-center font-weight-bold mb-5'><Globe size='1.6rem' class='mr-5' />{loaded.type === 'stremio' ? 'Addon server' : 'Sites this module mentions'}</div>
+            {#if preview.domains.length}
+              <div class='domains text-muted'>{preview.domains.join(', ')}</div>
+              {#if loaded.type !== 'stremio'}<div class='text-muted font-scale-12 mt-5'>Taken from its manifest and script: a module can still build other addresses while it runs.</div>{/if}
+            {:else}
+              <div class='text-muted'>Not known in advance.</div>
+            {/if}
+          </div>
+          {#if preview.insecureScript}
+            <div class='text-warning font-scale-14 mt-10 d-flex'>
+              <TriangleAlert size='1.6rem' class='mr-5 flex-shrink-0' />
+              <span>The script is downloaded without encryption (http), so it could be altered on the way.</span>
+            </div>
+          {/if}
+          <div class='d-flex justify-content-end mt-15'>
+            <button type='button' class='btn bg-dark rounded-2 mr-10 h-36 px-15' use:click={() => { preview = null }}>Cancel</button>
+            <button type='button' class='btn btn-primary rounded-2 h-36 px-15' use:click={installPreview}>{preview.existingKey ? 'Update' : 'Install'}</button>
+          </div>
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -140,9 +211,10 @@
         <Crown size='1.6rem' class='mr-5' style='color: var(--primary-color)' />
         <span class='font-weight-bold font-scale-16'>Default Extension</span>
       </div>
-      <div class='text-muted font-scale-14 mb-10'>Drag an extension here to set it as default. The default extension is used automatically — Tsumi will pick the best match and start playing without manual selection.</div>
+      <div class='text-muted font-scale-14 mb-10'>Use the crown button of an extension, or drag it here, to set it as default. The default extension is used automatically — Tsumi will pick the best match and start playing without manual selection.</div>
 
       {#if defaultExt}
+        {@const status = statusOf(defaultExt.key, statusTick)}
         <div class='card m-0 p-15 mb-10 bg-dark-light border position-relative default-card' class:extension-disabled={!defaultExt.enabled} role='region' on:dragover={handleDragOver} on:dragleave={handleDragLeave} on:drop={handleDrop}>
           <div class='d-flex'>
             {#if defaultExt.manifest?.iconUrl}
@@ -153,18 +225,40 @@
             <div class='ml-10 mb-5 mb-md-0 overflow-hidden'>
               <div class='font-size-18 font-weight-bold text-truncate'>{defaultExt.manifest?.sourceName || defaultExt.key}</div>
               {#if defaultExt.manifest?.language}<div class='text-muted pre-wrap'>{defaultExt.manifest.language}</div>{/if}
-              <div class='text-muted font-scale-12 text-truncate'>{defaultExt.url}</div>
+              <!-- Host only: manifest URLs can carry a private token. -->
+              <div class='text-muted font-scale-12 text-truncate'>{maskUrl(defaultExt.url)}</div>
             </div>
             <div class='d-flex align-items-center ml-auto gap-10'>
               <button type='button' class='btn btn-square d-flex align-items-center justify-content-center bg-transparent shadow-none border-0 p-0' use:click={() => manager.unsetDefault()} title='Remove as Default'>
                 <X size='1.8rem' color='var(--gray-color-very-dim)' />
               </button>
+              {#if settings.extensions?.[defaultExt.key]}
+                <!-- A disabled default extension is skipped by playback: it can be enabled again here. -->
+                <div class='custom-switch' title={defaultExt.enabled ? 'Disable' : 'Enable'}>
+                  <input type='checkbox' id={`extension-${defaultExt.key}`} bind:checked={settings.extensions[defaultExt.key].enabled} />
+                  <label for={`extension-${defaultExt.key}`}><br /></label>
+                </div>
+              {/if}
             </div>
           </div>
           <div class='d-flex flex-wrap align-items-end'>
             {#if defaultExt.manifest?.version}<span class='badge border-0 bg-light pl-10 pr-10 mt-10 font-scale-16'>{defaultExt.manifest.version}</span>{/if}
             {#if defaultExt.manifest?.streamType}<span class='badge border-0 bg-light pl-10 pr-10 ml-10 mt-10 font-scale-16'>{defaultExt.manifest.streamType}</span>{/if}
           </div>
+          {#if !defaultExt.enabled}
+            <div class='text-warning font-scale-14 mt-10'>Disabled: playback opens the extension list instead.</div>
+          {/if}
+          {#if status?.state === 'loading'}
+            <div class='text-muted font-scale-14 mt-10 d-flex align-items-center'><Loader size='1.4rem' class='mr-5 spinning' />Loading...</div>
+          {:else if status?.state === 'error'}
+            <div class='text-danger font-scale-14 mt-10 d-flex align-items-center'>
+              <CircleAlert size='1.6rem' class='mr-5 flex-shrink-0' />
+              <span class='text-break'>{status.error}</span>
+              <button type='button' class='btn btn-sm bg-dark rounded-2 ml-10 d-flex align-items-center flex-shrink-0' use:click={() => manager.retry(defaultExt.key)}><RefreshCw size='1.4rem' class='mr-5' />Retry</button>
+            </div>
+          {:else if status?.updatedFrom}
+            <div class='text-muted font-scale-14 mt-10 d-flex align-items-center'><CircleArrowUp size='1.6rem' class='mr-5' />Updated from {status.updatedFrom}</div>
+          {/if}
         </div>
       {:else}
         <div class='drop-zone rounded-2 p-20 d-flex align-items-center justify-content-center mb-10'
@@ -173,7 +267,7 @@
           on:dragover={handleDragOver}
           on:dragleave={handleDragLeave}
           on:drop={handleDrop}>
-          <span class='text-muted font-scale-14'>Drag an extension here to set it as default</span>
+          <span class='text-muted font-scale-14'>Click the crown of an extension, or drag it here, to set it as default</span>
         </div>
       {/if}
     </div>
@@ -182,8 +276,9 @@
     <div class='d-flex align-items-center mb-10'>
       <span class='font-weight-bold font-scale-16'>Extensions</span>
     </div>
-    {#each otherExtensions as ext}
+    {#each otherExtensions as ext (ext.key)}
       {@const isStarred = settings.starredExtension === ext.key}
+      {@const status = statusOf(ext.key, statusTick)}
       <div class='card m-0 p-15 mb-10 bg-dark-light border position-relative' class:extension-disabled={!ext.enabled} style='border-color: {isStarred ? 'var(--warning-color)' : 'var(--dark-color-light)'} !important' draggable='true' role='listitem' on:dragstart={(e) => handleDragStart(e, ext.key)}>
         <div class='d-flex'>
           <div class='d-flex align-items-center mr-10 drag-handle' title='Drag to set as default'>
@@ -197,9 +292,13 @@
           <div class='ml-10 mb-5 mb-md-0 overflow-hidden'>
             <div class='font-size-18 font-weight-bold text-truncate'>{ext.manifest?.sourceName || ext.key}</div>
             {#if ext.manifest?.language}<div class='text-muted pre-wrap'>{ext.manifest.language}</div>{/if}
-            <div class='text-muted font-scale-12 text-truncate'>{ext.url}</div>
+            <!-- Host only: manifest URLs can carry a private token. -->
+            <div class='text-muted font-scale-12 text-truncate'>{maskUrl(ext.url)}</div>
           </div>
           <div class='d-flex align-items-center ml-auto gap-10'>
+            <button type='button' class='btn btn-square d-flex align-items-center justify-content-center bg-transparent shadow-none border-0 p-0' use:click={() => manager.setDefault(ext.key)} title='Set as default extension'>
+              <Crown size='1.8rem' color='var(--gray-color-very-dim)' />
+            </button>
             <button type='button' class='btn btn-square d-flex align-items-center justify-content-center bg-transparent shadow-none border-0 p-0' use:click={() => toggleStar(ext.key)} title={isStarred ? 'Unstar' : 'Star — always show at the top of search results'}>
               <Star size='1.8rem' fill={isStarred ? 'var(--warning-color)' : 'none'} color={isStarred ? 'var(--warning-color)' : 'var(--gray-color-very-dim)'} />
             </button>
@@ -220,6 +319,17 @@
           {#if ext.manifest?.quality}<span class='badge border-0 bg-light pl-10 pr-10 ml-10 mt-10 font-scale-16'>{ext.manifest.quality}</span>{/if}
           {#if ext.manifest?.type && ext.manifest.type !== 'stremio'}<span class='badge border-0 bg-light pl-10 pr-10 ml-10 mt-10 font-scale-16'>{ext.manifest.type}</span>{/if}
         </div>
+        {#if status?.state === 'loading'}
+          <div class='text-muted font-scale-14 mt-10 d-flex align-items-center'><Loader size='1.4rem' class='mr-5 spinning' />Loading...</div>
+        {:else if status?.state === 'error'}
+          <div class='text-danger font-scale-14 mt-10 d-flex align-items-center'>
+            <CircleAlert size='1.6rem' class='mr-5 flex-shrink-0' />
+            <span class='text-break'>{status.error}</span>
+            <button type='button' class='btn btn-sm bg-dark rounded-2 ml-10 d-flex align-items-center flex-shrink-0' use:click={() => manager.retry(ext.key)}><RefreshCw size='1.4rem' class='mr-5' />Retry</button>
+          </div>
+        {:else if status?.updatedFrom}
+          <div class='text-muted font-scale-14 mt-10 d-flex align-items-center'><CircleArrowUp size='1.6rem' class='mr-5' />Updated from {status.updatedFrom}</div>
+        {/if}
       </div>
     {/each}
   {/if}
@@ -259,6 +369,14 @@
   .w-500 {
     width: 50rem;
     max-width: 90vw;
+  }
+  .text-break {
+    word-break: break-word;
+  }
+  .domains {
+    word-break: break-word;
+    max-height: 9rem;
+    overflow-y: auto;
   }
   .add-overlay {
     background: rgba(0, 0, 0, 0.7);

@@ -1,10 +1,16 @@
 import { writable } from 'simple-store-svelte'
 import { settings } from '@/modules/settings.js'
 import { ELECTRON } from '@/modules/bridge.js'
-import { isStremioManifest, loadStremioAddon, callStremioFunction, normalizeManifestUrl } from '@/modules/stremio.js'
+import { isStremioManifest, loadStremioAddon, callStremioFunction, normalizeManifestUrl, addonBaseUrl } from '@/modules/stremio.js'
+import { runSandboxed, abortError } from '@/modules/sandbox/sandbox.js'
+import { checkModuleUrl, checkManifestUrl, isLocalUrl, maskUrl, moduleDomains, readCapped, scriptUrlCandidates } from '@/modules/sandbox/network.js'
+import { installKey, shortHash } from '@/modules/extensionUtils.js'
 import Debug from 'debug'
 
 const debug = Debug('ui:extension:manager')
+
+// A module call (search, episodes, stream) that has not answered by then is stopped.
+const EXTENSION_TIMEOUT = 30000
 
 let cachedProxyPort = null
 async function getProxyPort () {
@@ -15,6 +21,11 @@ async function getProxyPort () {
   } catch {
     return null
   }
+}
+
+/** Fetch endpoint of the main process proxy (electron/src/main/streamProxy.js). */
+function proxyFetchUrl (port) {
+  return `http://localhost:${port}/fetch`
 }
 
 export async function extensionFetch (url, options = {}) {
@@ -35,153 +46,147 @@ export async function extensionFetch (url, options = {}) {
   }
 }
 
-async function getExtension (url, isJson = false) {
+/** Text of a manifest / script, capped like module responses. */
+async function getText (url) {
   const response = await fetch(url)
-  if (!response.ok) throw new Error(`HTTP ${response.status} fetching ${url}`)
-  return isJson ? await response.json() : await response.text()
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return new TextDecoder().decode(await readCapped(response))
 }
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
-
-function buildFetchv2Polyfill (proxyPort) {
-  const normAndWrap = `
-function __normArgs(url, headers, method, body) {
-  let h = headers || {};
-  let m = method;
-  let b = body;
-  // Handle options-object style: fetchv2(url, { headers, method, body })
-  if (h.headers && typeof h.headers === 'object') {
-    m = m || h.method;
-    b = b !== undefined ? b : h.body;
-    h = h.headers;
-  }
-  return { url, headers: h, method: (m || 'GET').toUpperCase(), body: b };
+/**
+ * Network rules of one module: it may reach the user's machine or local network only when it is served from there
+ * itself (a module being developed on localhost).
+ */
+function modulePolicy (extension) {
+  return { allowLocal: isLocalUrl(extension?.url) || isLocalUrl(extension?.scriptUrl) }
 }
-function __wrapResponse(response) {
-  const plain = {};
-  response.headers.forEach(function(v, k) { plain[k] = v; });
-  if (plain['x-set-cookie']) {
-    try {
-      var cookies = JSON.parse(plain['x-set-cookie']);
-      var val = Array.isArray(cookies) ? cookies.join(', ') : cookies;
-      plain['set-cookie'] = val;
-      plain['Set-Cookie'] = val;
-    } catch(_) {
-      plain['set-cookie'] = plain['x-set-cookie'];
-      plain['Set-Cookie'] = plain['x-set-cookie'];
+
+/**
+ * A request of a sandboxed module (fetch / fetchv2 in the worker, see sandbox/runtime.js), after the network rules.
+ * fetchv2 goes through the main process proxy when it is running, so the headers a page cannot set (User-Agent,
+ * Referer, Cookie) work; fetch behaves like the browser fetch modules used to call.
+ */
+async function moduleRequest (request, signal, policy) {
+  const url = checkModuleUrl(request.url, policy)
+  const method = String(request.method || 'GET').toUpperCase()
+  const headers = request.headers && typeof request.headers === 'object' ? request.headers : {}
+  const body = method === 'GET' || method === 'HEAD' ? null : (request.body ?? null)
+  const proxyPort = request.kind === 'fetchv2' && (body === null || typeof body === 'string') ? await getProxyPort() : null
+
+  let response
+  if (proxyPort) {
+    response = await fetch(proxyFetchUrl(proxyPort), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url.href, headers, method, ...(body !== null ? { body } : {}) }),
+      signal
+    })
+  } else {
+    const redirect = request.redirect === 'manual' || request.redirect === 'error' ? request.redirect : 'follow'
+    response = await fetch(url.href, { method, headers, body: body ?? undefined, redirect, credentials: 'omit', signal })
+    // A redirect can lead anywhere: the module never reads a local address it could not request itself.
+    if (response.redirected && response.url) {
+      try {
+        checkModuleUrl(response.url, policy)
+      } catch (error) {
+        try { await response.body?.cancel() } catch {}
+        throw error
+      }
     }
   }
   return {
-    ok: response.ok,
     status: response.status,
     statusText: response.statusText,
-    headers: plain,
-    text: function() { return response.text(); },
-    json: function() { return response.json(); },
-    arrayBuffer: function() { return response.arrayBuffer(); },
-    blob: function() { return response.blob(); }
-  };
-}
-`
-
-  if (!proxyPort) {
-    // Fallback: direct fetch (User-Agent and other forbidden headers won't work)
-    return `
-${normAndWrap}
-async function fetchv2(url, headers, method, body) {
-  var args = __normArgs(url, headers, method, body);
-  var options = {
-    method: args.method,
-    headers: args.headers
-  };
-  if (args.body != null && args.method !== 'GET' && args.method !== 'HEAD') {
-    options.body = typeof args.body === 'string' ? args.body : JSON.stringify(args.body);
+    url: proxyPort ? url.href : (response.url || url.href),
+    redirected: response.redirected,
+    type: response.type,
+    headers: [...response.headers],
+    body: await readCapped(response)
   }
-  var response = await fetch(args.url, options);
-  return __wrapResponse(response);
-}
-`
-  }
-
-  // Route through the Node.js proxy so all headers (User-Agent, Cookie, Referer) work
-  return `
-${normAndWrap}
-async function fetchv2(url, headers, method, body) {
-  var args = __normArgs(url, headers, method, body);
-  var proxyBody = {
-    url: args.url,
-    headers: args.headers,
-    method: args.method
-  };
-  if (args.body != null) {
-    proxyBody.body = args.body;
-  }
-  var response = await fetch('http://localhost:${proxyPort}/fetch', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(proxyBody)
-  });
-  return __wrapResponse(response);
-}
-`
 }
 
-export async function executeExtensionFunction (scriptCode, functionName, ...args) {
-  const proxyPort = await getProxyPort()
-  const fetchv2Polyfill = buildFetchv2Polyfill(proxyPort)
-
-  const code = `
-    ${fetchv2Polyfill}
-    ${scriptCode}
-    return await ${functionName}(${args.map(a => JSON.stringify(a)).join(', ')})
-  `
-
-  const fn = new AsyncFunction(code)
-
-  const timeout = new Promise((_, reject) => {
-    const id = setTimeout(() => {
-      clearTimeout(id)
-      reject(new Error('Extension execution timeout'))
-    }, 30000)
+// Arguments cross to the sandbox as JSON values (what the module code used to receive through JSON.stringify).
+function plainArgs (args) {
+  return args.map(arg => {
+    const json = JSON.stringify(arg)
+    return json === undefined ? undefined : JSON.parse(json)
   })
+}
 
-  return Promise.race([fn(), timeout])
+function runModule (extension, functionName, args, signal) {
+  const policy = modulePolicy(extension)
+  return runSandboxed({
+    script: extension.script,
+    functionName,
+    args: plainArgs(args),
+    timeout: EXTENSION_TIMEOUT,
+    signal,
+    onRequest: (request, requestSignal) => moduleRequest(request, requestSignal, policy),
+    log: (...messages) => debug(`[${extension.manifest?.sourceName || extension.key || 'module'}]`, ...messages)
+  })
+}
+
+/** Runs a function of a module script in the sandbox (no local network access). */
+export async function executeExtensionFunction (scriptCode, functionName, ...args) {
+  return runModule({ script: scriptCode }, functionName, args)
+}
+
+/** Settles with `promise`, or rejects with an AbortError as soon as `signal` aborts. */
+function raceSignal (promise, signal) {
+  if (!signal) return promise
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortError())
+    if (signal.aborted) return onAbort()
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+  })
 }
 
 export async function loadExtension (manifestUrl) {
-  const resolvedManifestUrl = new URL(normalizeManifestUrl(manifestUrl), window.location.href).href
+  const resolvedManifestUrl = checkManifestUrl(normalizeManifestUrl(manifestUrl))
 
+  // Errors show the host only: Stremio manifest URLs often carry the user's configuration or a private token.
   let manifest
   try {
-    manifest = await getExtension(resolvedManifestUrl, true)
+    manifest = JSON.parse(await getText(resolvedManifestUrl))
   } catch (error) {
-    throw new Error(`Failed to load manifest from ${resolvedManifestUrl}: ${error.message}`)
+    throw new Error(`Failed to load the manifest from ${maskUrl(resolvedManifestUrl)}: ${error.message}`)
   }
 
   // Stremio addons have no script: they are queried over HTTP instead.
   if (isStremioManifest(manifest)) {
-    return loadStremioAddon(resolvedManifestUrl, manifest)
+    return { ...loadStremioAddon(resolvedManifestUrl, manifest), url: resolvedManifestUrl }
   }
 
-  if (!manifest.sourceName || !manifest.scriptUrl) {
+  if (!manifest || !manifest.sourceName || !manifest.scriptUrl) {
     throw new Error('Invalid manifest: expected a Sora module (sourceName + scriptUrl) or a Stremio addon')
   }
 
-  const resolvedScriptUrl = new URL(manifest.scriptUrl, resolvedManifestUrl).href
-
-  let script
-  try {
-    script = await getExtension(resolvedScriptUrl, false)
-  } catch (error) {
-    throw new Error(`Failed to load script from ${resolvedScriptUrl}: ${error.message}`)
+  // http(s) only, https first (scriptUrlCandidates).
+  const candidates = scriptUrlCandidates(manifest.scriptUrl, resolvedManifestUrl)
+  let lastError
+  for (const scriptUrl of candidates) {
+    try {
+      return { manifest, script: await getText(scriptUrl), url: resolvedManifestUrl, scriptUrl }
+    } catch (error) {
+      lastError = error
+    }
   }
-
-  return { manifest, script }
+  throw new Error(`Failed to load the script from ${maskUrl(candidates[candidates.length - 1])}: ${lastError?.message}`)
 }
 
-export async function callExtensionFunction (extension, functionName, ...args) {
+/**
+ * Calls a function of an extension. Sora modules run in the sandbox (sandbox/sandbox.js); Stremio addons are plain
+ * HTTP requests. `signal` stops the call (the module's worker is terminated).
+ * @param {any} extension
+ * @param {string} functionName
+ * @param {any[]} [args]
+ * @param {{ signal?: AbortSignal }} [options]
+ */
+export async function callExtension (extension, functionName, args = [], { signal } = {}) {
+  if (signal?.aborted) throw abortError()
   if (extension?.type === 'stremio') {
-    return callStremioFunction(extension, functionName, ...args)
+    return raceSignal(callStremioFunction(extension, functionName, ...args), signal)
   }
 
   if (!extension?.script) {
@@ -189,11 +194,7 @@ export async function callExtensionFunction (extension, functionName, ...args) {
   }
 
   try {
-    const result = await executeExtensionFunction(
-      extension.script,
-      functionName,
-      ...args
-    )
+    const result = await runModule(extension, functionName, args, signal)
 
     if (typeof result === 'string') {
       try {
@@ -205,8 +206,32 @@ export async function callExtensionFunction (extension, functionName, ...args) {
 
     return result
   } catch (error) {
-    debug(`Failed to call ${functionName} on extension:`, error)
+    if (error?.name !== 'AbortError') debug(`Failed to call ${functionName} on extension:`, error)
     throw error
+  }
+}
+
+export function callExtensionFunction (extension, functionName, ...args) {
+  return callExtension(extension, functionName, args)
+}
+
+/** Hosts an extension says it contacts, shown before installing it. */
+function extensionDomains (loaded) {
+  if (loaded.type === 'stremio') {
+    try {
+      return [new URL(loaded.stremio.base).hostname]
+    } catch {
+      return []
+    }
+  }
+  return moduleDomains(loaded.manifest, loaded.script, loaded.scriptUrl)
+}
+
+function sameManifestUrl (a, b) {
+  try {
+    return checkManifestUrl(normalizeManifestUrl(a)) === checkManifestUrl(normalizeManifestUrl(b))
+  } catch {
+    return false
   }
 }
 
@@ -214,6 +239,8 @@ class ExtensionManager {
   constructor () {
     this.extensions = new Map()
     this.loading = new Map()
+    // key -> { state: 'loading' | 'ready' | 'error', error?: string, updatedFrom?: string } (shown in Settings)
+    this.status = new Map()
     this.enabled = writable({})
     this.subscribers = new Set()
     settings.subscribe(value => {
@@ -221,6 +248,8 @@ class ExtensionManager {
         this.syncFromSettings(value.extensions)
       }
     })
+    // Extensions that failed to load (offline at start, server down) are loaded again once the connection is back.
+    window.addEventListener('online', () => this.retryFailed())
   }
 
   notify () {
@@ -233,37 +262,68 @@ class ExtensionManager {
     return () => this.subscribers.delete(cb)
   }
 
+  /** Settings key for a loaded extension: the entry it updates, else a new key (installKey, same scheme as iOS). */
+  keyFor (loaded, addressHash) {
+    return installKey(
+      { type: loaded.type === 'stremio' ? 'stremio' : 'sora', name: loaded.manifest?.sourceName, version: loaded.manifest?.version, url: loaded.url, addressHash },
+      Object.entries(settings.value.extensions || {}),
+      sameManifestUrl
+    )
+  }
+
+  /**
+   * Loads an extension without installing it, for the install dialog: what it is, the hosts it says it uses, and the
+   * installed entry it would update (same manifest URL, or same Sora module name).
+   */
+  async previewExtension (manifestUrl) {
+    const loaded = await loadExtension(manifestUrl)
+    // Short hash of the addon address, only used in the key when name-version is already taken.
+    const addressHash = await shortHash(addonBaseUrl(loaded.url))
+    const key = this.keyFor(loaded, addressHash)
+    const existingKey = settings.value.extensions?.[key] ? key : null
+    return {
+      loaded,
+      addressHash,
+      existingKey,
+      installedVersion: existingKey ? settings.value.extensions[existingKey].manifest?.version || null : null,
+      domains: extensionDomains(loaded),
+      insecureScript: !!loaded.scriptUrl?.startsWith('http:') && !isLocalUrl(loaded.scriptUrl)
+    }
+  }
+
+  /** Installs a previewed extension; an installed entry it matches is updated in place (same key). */
+  installExtension (preview) {
+    const { loaded } = preview
+    const key = this.keyFor(loaded, preview.addressHash)
+    this.extensions.set(key, loaded)
+    this.status.set(key, { state: 'ready' })
+    settings.set({
+      ...settings.value,
+      extensions: {
+        ...settings.value.extensions,
+        [key]: {
+          url: loaded.url,
+          enabled: true,
+          manifest: loaded.manifest
+        }
+      }
+    })
+    this.notify()
+    return key
+  }
+
   async addExtension (manifestUrl) {
     try {
-      // Keep everything loadExtension returns (Stremio addons also carry type + stremio).
-      const loaded = await loadExtension(manifestUrl)
-      const { manifest } = loaded
-      const key = `${manifest.sourceName}-${manifest.version}`
-
-      this.extensions.set(key, loaded)
-
-      settings.set({
-        ...settings.value,
-        extensions: {
-          ...settings.value.extensions,
-          [key]: {
-            url: manifestUrl,
-            enabled: true,
-            manifest
-          }
-        }
-      })
-
-      this.notify()
-      return key
+      return this.installExtension(await this.previewExtension(manifestUrl))
     } catch (error) {
-      console.error('Failed to add extension:', error)
+      console.error('Failed to add extension:', error?.message || error)
       throw error
     }
   }
 
   async removeExtension (key) {
     this.extensions.delete(key)
+    this.status.delete(key)
 
     const updated = { ...settings.value.extensions }
     delete updated[key]
@@ -322,24 +382,71 @@ class ExtensionManager {
     this.notify()
   }
 
+  /**
+   * The stored manifest follows the one served (a module update changes its version, name, icon...), under the same
+   * key: no duplicate entry, and the default / starred choice stays.
+   * @returns {{ updatedFrom?: string }}
+   */
+  updateStoredManifest (key, loaded) {
+    const config = settings.value.extensions?.[key]
+    if (!config || JSON.stringify(config.manifest) === JSON.stringify(loaded.manifest)) return {}
+    settings.set({
+      ...settings.value,
+      extensions: {
+        ...settings.value.extensions,
+        [key]: { ...config, manifest: loaded.manifest }
+      }
+    })
+    const before = config.manifest?.version
+    return before && before !== loaded.manifest?.version ? { updatedFrom: before } : {}
+  }
+
+  load (key, url) {
+    if (this.loading.has(key)) return this.loading.get(key)
+    this.status.set(key, { state: 'loading' })
+    const promise = loadExtension(url)
+      .then(loaded => {
+        if (!settings.value.extensions?.[key]) return // removed meanwhile
+        this.extensions.set(key, loaded)
+        this.status.set(key, { state: 'ready', ...this.updateStoredManifest(key, loaded) })
+      })
+      .catch(error => {
+        debug(`Failed to load extension ${key}:`, error)
+        this.status.set(key, { state: 'error', error: error?.message || 'Failed to load' })
+      })
+      .finally(() => {
+        this.loading.delete(key)
+        this.notify()
+      })
+    this.loading.set(key, promise)
+    this.notify()
+    return promise
+  }
+
   async syncFromSettings (extensionConfigs) {
     for (const [key, config] of Object.entries(extensionConfigs)) {
-      if (!this.extensions.has(key) && !this.loading.has(key) && config?.url) {
-        this.loading.set(
-          key,
-          loadExtension(config.url)
-            .then(loaded => {
-              this.extensions.set(key, loaded)
-              this.loading.delete(key)
-              this.notify()
-            })
-            .catch(error => {
-              debug(`Failed to sync extension ${key}:`, error)
-              this.loading.delete(key)
-            })
-        )
+      if (!this.extensions.has(key) && !this.loading.has(key) && config?.url && this.status.get(key)?.state !== 'error') {
+        this.load(key, config.url)
       }
     }
+  }
+
+  /** Loads one extension again (Retry button of Settings). */
+  retry (key) {
+    const config = settings.value.extensions?.[key]
+    if (!config?.url) return Promise.resolve()
+    this.extensions.delete(key)
+    return this.load(key, config.url)
+  }
+
+  retryFailed () {
+    for (const [key, status] of this.status) {
+      if (status.state === 'error') this.retry(key)
+    }
+  }
+
+  getStatus (key) {
+    return this.status.get(key) || (this.extensions.has(key) ? { state: 'ready' } : null)
   }
 
   getEnabled () {
@@ -385,12 +492,16 @@ export const extensionManager = new ExtensionManager()
 export const manager = {
   subscribe: (cb) => extensionManager.subscribe(cb),
   addExtension: (url) => extensionManager.addExtension(url),
+  previewExtension: (url) => extensionManager.previewExtension(url),
+  installExtension: (preview) => extensionManager.installExtension(preview),
   removeExtension: (key) => extensionManager.removeExtension(key),
   toggleExtension: (key, enabled) => extensionManager.toggleExtension(key, enabled),
   setDefault: (key) => extensionManager.setDefault(key),
   unsetDefault: () => extensionManager.unsetDefault(),
   setStar: (key) => extensionManager.setStar(key),
   unsetStar: () => extensionManager.unsetStar(),
+  retry: (key) => extensionManager.retry(key),
+  getStatus: (key) => extensionManager.getStatus(key),
   getEnabled: () => extensionManager.getEnabled(),
   callDefault: (...args) => extensionManager.callDefault(...args),
   callAll: (...args) => extensionManager.callAll(...args)
