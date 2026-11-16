@@ -157,7 +157,7 @@ async function handleMalToken (code, state) {
   })
   if (!response.ok) {
     toast.error('Failed to sign in with MyAnimeList. Please try again.', { description: JSON.stringify(response.status) })
-    debug('Failed to get MyAnimeList User Token:', JSON.stringify(response))
+    debug('Failed to get MyAnimeList User Token:', response.status)
     return
   }
   const oauth = await response.json()
@@ -174,7 +174,8 @@ export async function refreshMalToken (token) {
   const { clientID } = await import('./myanimelist.js')
   const currentProfile = malToken?.token === token
   const refresh = currentProfile ? malToken.refresh : profiles.value.find(profile => profile.token === token)?.refresh
-  debug(`Attempting to refresh authorization token ${token} with the refresh token ${refresh}`)
+  // Never the tokens themselves: the log can be exported and shared (Settings > App > Export Logs).
+  debug(`Attempting to refresh the MyAnimeList authorization token of ${currentProfile ? 'the current profile' : 'another profile'}`)
   let response
   if (refresh && refresh.length > 0) {
     response = await fetch('https://myanimelist.net/v1/oauth2/token', {
@@ -195,7 +196,7 @@ export async function refreshMalToken (token) {
       const { promptSession } = await import('./auth/expiry.js')
       promptSession(expiredProfile, 'expired') // "Your MyAnimeList session has expired": Log in again / Log out
     }
-    debug(`Failed to refresh MyAnimeList User Token ${!refresh || refresh.length <= 0 ? 'as the refresh token could not be fetched!' : 'the refresh token has likely expired: ' + JSON.stringify(response)}`)
+    debug(`Failed to refresh MyAnimeList User Token ${!refresh || refresh.length <= 0 ? 'as the refresh token could not be fetched!' : 'the refresh token has likely expired: ' + response?.status}`)
     if (currentProfile) {
       malToken.reauth = true
       localStorage.setItem('MALviewer', JSON.stringify(malToken))
@@ -221,7 +222,7 @@ export async function refreshMalToken (token) {
       })
     )
   }
-  debug(`Successfully refreshed authorization token, updated to token ${oauth.access_token} with the refresh token ${oauth.refresh_token}`)
+  debug('Successfully refreshed the MyAnimeList authorization token')
   return oauth
 }
 

@@ -7,7 +7,7 @@ import { youtubeServer } from './youtube.js'
 import Jimp from 'jimp'
 import fs from 'fs'
 
-import { BrowserWindow, Notification, Tray, Menu, nativeImage, app, dialog, ipcMain, powerMonitor, shell, session } from 'electron'
+import { BrowserWindow, Notification, Tray, Menu, nativeImage, app, dialog, ipcMain, powerMonitor, session } from 'electron'
 let electronShutdownHandler
 try {
   electronShutdownHandler = require('@paymoapp/electron-shutdown-handler')
@@ -15,7 +15,7 @@ try {
   console.warn('electron-shutdown-handler not available (native module not built), graceful shutdown on Windows will be limited')
 }
 
-import { development, getWindowState, saveWindowState, getDefaultBounds, openExternal } from './util.js'
+import { development, getWindowState, saveWindowState, getDefaultBounds, openExternal, store } from './util.js'
 import { isAppUrl, isExternalUrl, isWebUrl } from './security.js'
 import Discord from './discord.js'
 import Trakt from './trakt.js'
@@ -32,6 +32,10 @@ import { setupContextMenu } from './contextMenu.js'
 
 /** The page of the app: the only one the main window may show (it has the IPC bridge, see preload.js). */
 const APP_URL = development ? 'http://localhost:5000/app.html' : pathToFileURL(join(__dirname, 'app.html')).href
+
+/** Renderer crashes kept (in persist.json, so an app relaunch doesn't forget them) and how many are tolerated. */
+const CRASH_WINDOW_MS = 10 * 60_000
+const MAX_CRASHES = 5
 
 /** Link of a notification (click or button): tsumi:// (handled by the app), http(s) or mailto. */
 function isNotificationLink (url) {
@@ -264,18 +268,7 @@ export default class App {
 
     if (development) this.mainWindow.webContents.openDevTools({ mode: 'detach' })
 
-    let crashcount = 0
-    this.mainWindow.webContents.on('render-process-gone', async (e, { reason }) => {
-      if (reason === 'crashed') {
-        if (++crashcount > 10) {
-          await dialog.showMessageBox({ message: 'Crashed too many times.', title: 'Tsumi', detail: 'App crashed too many times. For a fix visit https://github.com/50n50/Tsumi/wiki/faq/', icon: '/renderer/public/icon_filled.png' })
-          shell.openExternal('https://github.com/50n50/Tsumi/wiki/faq/')
-        } else {
-          app.relaunch()
-        }
-        app.quit()
-      }
-    })
+    this.mainWindow.webContents.on('render-process-gone', (e, { reason }) => this.onRendererGone(reason))
 
     let authWindow
     ipcMain.on('open-auth', (event, url) => {
@@ -355,6 +348,35 @@ export default class App {
       this.protocol.handleProtocol(url)
     } else {
       openExternal(url)
+    }
+  }
+
+  /**
+   * The renderer process died. A crash relaunches the app, an out-of-memory or killed renderer reloads the page (the
+   * window would stay blank otherwise). The crashes are counted in persist.json over CRASH_WINDOW_MS, so relaunching
+   * can't loop forever: after MAX_CRASHES the app explains and quits.
+   * @param {string} reason
+   */
+  async onRendererGone (reason) {
+    if (this.destroyed || !['crashed', 'oom', 'killed', 'abnormal-exit', 'memory-eviction'].includes(reason)) return
+    console.warn(`Renderer process gone: ${reason}`)
+    const now = Date.now()
+    const stored = store.get('rendererCrashes')
+    const crashes = (Array.isArray(stored) ? stored : []).filter(time => now - time < CRASH_WINDOW_MS)
+    crashes.push(now)
+    store.set('rendererCrashes', crashes)
+    if (crashes.length > MAX_CRASHES) {
+      store.set('rendererCrashes', [])
+      await dialog.showMessageBox({ message: 'Crashed too many times.', title: 'Tsumi', detail: 'App crashed too many times. For a fix visit https://github.com/50n50/Tsumi/wiki/faq/', icon: this.icon })
+      openExternal('https://github.com/50n50/Tsumi/wiki/faq/')
+      this.destroy()
+      return
+    }
+    if (reason === 'crashed') {
+      app.relaunch()
+      this.destroy()
+    } else if (!this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.reload()
     }
   }
 
