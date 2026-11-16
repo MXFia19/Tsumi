@@ -3,7 +3,8 @@ import SwiftUI
 import WidgetKit
 
 // "Continue Watching": next episodes to watch from the Watching / Rewatching list. Tapping a title opens its
-// details in the app (tsumi://anime/<id>).
+// details in the app (tsumi://anime/<id>); on the medium and large widgets, the play button of an AniList title whose
+// next episode is out plays it (tsumi://search/<id>, the app plays progress + 1).
 
 struct ContinueWatchingEntry: TimelineEntry {
   let date: Date
@@ -113,18 +114,27 @@ struct ContinueWatchingView: View {
   private func medium(_ shows: [TsumiWidgetShow]) -> some View {
     HStack(alignment: .top, spacing: 10) {
       ForEach(shows) { show in
-        Link(destination: show.link) {
-          VStack(alignment: .leading, spacing: 3) {
-            TsumiWidgetCover(image: entry.data.image(show.cover), color: show.color)
-              .frame(maxWidth: .infinity)
-              .frame(height: 84)
-            Text(show.title)
-              .font(.system(size: 12, weight: .semibold))
-              .foregroundStyle(.white)
-              .lineLimit(1)
-            episodeLine(show)
-              .font(.system(size: 11, weight: .medium))
-              .lineLimit(1)
+        // Two sibling links (a link inside a link has no defined target): details, and play over the cover.
+        ZStack(alignment: .topTrailing) {
+          Link(destination: show.link) {
+            VStack(alignment: .leading, spacing: 3) {
+              TsumiWidgetCover(image: entry.data.image(show.cover), color: show.color)
+                .frame(maxWidth: .infinity)
+                .frame(height: 84)
+              Text(show.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+              episodeLine(show)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+            }
+          }
+          if let play = playLink(show) {
+            Link(destination: play) {
+              playBadge
+            }
+            .padding(5)
           }
         }
       }
@@ -148,30 +158,52 @@ struct ContinueWatchingView: View {
         Spacer(minLength: 0)
       }
       ForEach(shows) { show in
-        Link(destination: show.link) {
-          HStack(spacing: 10) {
-            TsumiWidgetCover(image: entry.data.image(show.cover), color: show.color, cornerRadius: 6)
-              .frame(width: 34, height: 48)
-            VStack(alignment: .leading, spacing: 3) {
-              Text(show.title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-              episodeLine(show)
-                .font(.system(size: 11, weight: .medium))
-                .lineLimit(1)
-              if show.total != nil {
-                ProgressView(value: show.fraction)
-                  .tint(TsumiWidgetStyle.accent)
+        HStack(spacing: 10) {
+          Link(destination: show.link) {
+            HStack(spacing: 10) {
+              TsumiWidgetCover(image: entry.data.image(show.cover), color: show.color, cornerRadius: 6)
+                .frame(width: 34, height: 48)
+              VStack(alignment: .leading, spacing: 3) {
+                Text(show.title)
+                  .font(.system(size: 13, weight: .semibold))
+                  .foregroundStyle(.white)
+                  .lineLimit(1)
+                episodeLine(show)
+                  .font(.system(size: 11, weight: .medium))
+                  .lineLimit(1)
+                if show.total != nil {
+                  ProgressView(value: show.fraction)
+                    .tint(TsumiWidgetStyle.accent)
+                }
               }
+              Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+          }
+          if let play = playLink(show) {
+            Link(destination: play) {
+              playBadge
+            }
           }
         }
       }
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+  }
+
+  /// Play link of a title whose next episode is out (AniList titles only: the app's play link takes an AniList id).
+  private func playLink(_ show: TsumiWidgetShow) -> URL? {
+    guard show.isAvailable(at: entry.date) else { return nil }
+    return TsumiWidgetLinks.play(mediaKey: show.id)
+  }
+
+  private var playBadge: some View {
+    Image(systemName: "play.fill")
+      .font(.system(size: 11, weight: .bold))
+      .foregroundStyle(.white)
+      .frame(width: 26, height: 26)
+      .background(TsumiWidgetStyle.accent, in: Circle())
+      .accessibilityLabel("Play next episode")
   }
 
   /// "Ep 6 of 12", or "Ep 7 in 2 days" when it has not aired yet.

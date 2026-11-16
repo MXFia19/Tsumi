@@ -166,6 +166,12 @@ enum TsumiWidgetLinks {
   /// Schedule tab.
   static let schedule: URL = URL(string: "tsumi://schedule/") ?? openApp
 
+  /// Plays the next episode of an AniList title (tsumi://search/<id>: the app plays progress + 1); nil for other keys.
+  static func play(mediaKey: String) -> URL? {
+    guard mediaKey.hasPrefix("al-"), let id = Int(mediaKey.dropFirst(3)) else { return nil }
+    return URL(string: "tsumi://search/\(id)")
+  }
+
   /// Link of a media key ("al-<id>" / "mal-<id>"); nil for other sources.
   static func link(mediaKey: String) -> URL? {
     if mediaKey.hasPrefix("al-"), let id = Int(mediaKey.dropFirst(3)) { return anime(id) }
