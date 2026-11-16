@@ -93,18 +93,28 @@ function handleEscape (event) {
 
 const FOCUSABLE = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"], [disabled])'
 
-/** Focus the first visible control of a layer, unless focus is already inside it. */
+/** Focus the control of a layer marked data-autofocus, else its first visible control, unless focus is already inside. */
 function focusInside (node) {
   const active = document.activeElement
   if (active && active !== document.body && node.contains(active)) return
-  for (const element of node.querySelectorAll(FOCUSABLE)) {
-    if (element.checkVisibility?.({ visibilityProperty: true }) === false) continue
+  for (const element of [...node.querySelectorAll('[data-autofocus]'), ...node.querySelectorAll(FOCUSABLE)]) {
+    if (element.matches(':disabled') || element.checkVisibility?.({ visibilityProperty: true }) === false) continue
     element.focus({ preventScroll: true })
     if (document.activeElement === element) return
   }
 }
 
+// Focus goes back to where it was after keyboard / D-pad use only: with a mouse, the focused card would open its
+// preview (cards preview on focus) although the pointer is elsewhere.
+let keyboardUsed = false
 let listening = false
+function listen () {
+  if (listening) return
+  listening = true
+  window.addEventListener('keydown', handleEscape)
+  window.addEventListener('keydown', () => { keyboardUsed = true }, true)
+  window.addEventListener('pointerdown', () => { keyboardUsed = false }, true)
+}
 
 /**
  * Svelte action of a modal layer root: `use:modalLayer={{ open, close, priority }}`.
@@ -112,10 +122,7 @@ let listening = false
  * @param {{ open?: boolean, close?: () => void, priority?: number }} params
  */
 export function modalLayer (node, params = {}) {
-  if (!listening) {
-    listening = true
-    window.addEventListener('keydown', handleEscape)
-  }
+  listen()
   /** @type {Layer | null} */
   let layer = null
   let close = params.close
@@ -134,8 +141,9 @@ export function modalLayer (node, params = {}) {
     layer = null
     // Back to where focus was, when focus is still in the closed layer (or lost) and the element is still shown.
     const active = document.activeElement
-    if ((!active || active === document.body || node.contains(active)) && restore?.isConnected && restore !== document.body) {
-      restore.focus({ preventScroll: true })
+    if (!active || active === document.body || node.contains(active)) {
+      if (keyboardUsed && restore?.isConnected && restore !== document.body) restore.focus({ preventScroll: true })
+      else if (active && node.contains(active)) active.blur() // not left in a hidden layer
     }
   }
 

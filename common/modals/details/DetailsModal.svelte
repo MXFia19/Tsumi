@@ -483,6 +483,7 @@
                 <div class='d-flex flex-row flex-wrap play'>
                   <button
                     class='btn btn-lg btn-secondary w-250 text-dark font-weight-bold shadow-none border-0 d-flex align-items-center justify-content-center mr-20 mt-20'
+                    data-autofocus
                     use:click={() => play(media)}
                     disabled={staticMedia.status === 'NOT_YET_RELEASED'}
                   >
