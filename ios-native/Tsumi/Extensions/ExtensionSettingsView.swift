@@ -2,7 +2,10 @@ import SwiftUI
 
 /// Settings > Extensions (common/routes/settings/tabs/ExtensionTab.svelte): add by manifest URL
 /// (Sora module or Stremio addon), default extension zone (drag & drop, or tap to choose), list with
-/// star, delete (with confirmation), enable switch and badges (version, stream type, quality, type).
+/// star, delete (with confirmation), enable switch (also on the default card) and badges (version, stream type,
+/// quality, type, plain http). Each card shows the load state: loading, error with Retry (failed loads are also
+/// retried when the device gets back online), update waiting for approval, update applied. Only the host of a
+/// manifest URL is shown (the URL can carry a private token).
 @MainActor
 struct ExtensionSettingsView: View {
   @State private var showAddDialog = false
@@ -190,6 +193,13 @@ struct ExtensionSettingsView: View {
         ExtensionIconView(url: ext.manifest.iconURL)
         identity(ext)
         Spacer(minLength: 8)
+        // The default card replaces the list entry: its switch is here, so a disabled default can be enabled again.
+        Toggle("", isOn: Binding(
+          get: { ext.enabled },
+          set: { manager.toggleExtension(ext.key, enabled: $0) }
+        ))
+        .labelsHidden()
+        .accessibilityLabel("Enabled")
         Button {
           manager.unsetDefault()
         } label: {
@@ -202,6 +212,7 @@ struct ExtensionSettingsView: View {
         .accessibilityLabel("Remove as Default")
       }
       badgeRow(versionAndStreamOnly: true, ext)
+      statusRow(ext)
     }
     .padding(15)
     .background(ExtensionPalette.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -240,6 +251,7 @@ struct ExtensionSettingsView: View {
         }
       }
       badgeRow(versionAndStreamOnly: false, ext)
+      statusRow(ext)
     }
     .padding(15)
     .background(ExtensionPalette.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -276,7 +288,8 @@ struct ExtensionSettingsView: View {
           .font(.subheadline)
           .foregroundStyle(ExtensionPalette.muted)
       }
-      Text(ext.url)
+      // Host only: the rest of a manifest URL can be a private token.
+      Text(ExtensionURLMask.host(ext.url))
         .font(.caption)
         .foregroundStyle(ExtensionPalette.muted)
         .lineLimit(1)
@@ -330,12 +343,90 @@ struct ExtensionSettingsView: View {
       if let quality = ext.manifest.quality, !quality.isEmpty { badges.append(quality) }
       if let type = ext.manifest.type, !type.isEmpty, type != "stremio" { badges.append(type) }
     }
+    if isInsecure(ext) { badges.append("http (not secure)") }
     return HStack(spacing: 10) {
       ForEach(Array(badges.enumerated()), id: \.offset) { _, badge in
         ExtensionBadge(text: badge)
       }
     }
     .padding(.top, badges.isEmpty ? 0 : 10)
+  }
+
+  /// Manifest or script loaded over plain http.
+  private func isInsecure(_ ext: InstalledExtension) -> Bool {
+    if let loaded = manager.loadedExtension(ext.key) { return !loaded.isSecure }
+    return ext.url.lowercased().hasPrefix("http:")
+  }
+
+  // MARK: Load state
+
+  private func hasStatus(_ key: String) -> Bool {
+    manager.loadingKeys.contains(key) || manager.loadErrors[key] != nil || manager.pendingUpdates[key] != nil || manager.updateNotes[key] != nil
+  }
+
+  /// Loading, last error (with Retry), update waiting for approval (with Update), update applied.
+  @ViewBuilder
+  private func statusRow(_ ext: InstalledExtension) -> some View {
+    let key = ext.key
+    if hasStatus(key) {
+      VStack(alignment: .leading, spacing: 8) {
+        if manager.loadingKeys.contains(key) {
+          HStack(spacing: 6) {
+            ProgressView()
+              .controlSize(.mini)
+              .tint(ExtensionPalette.muted)
+            Text("Loading…")
+              .font(.caption)
+              .foregroundStyle(ExtensionPalette.muted)
+          }
+        } else if let error = manager.loadErrors[key] {
+          HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+              .font(.caption)
+              .foregroundStyle(ExtensionPalette.danger)
+            VStack(alignment: .leading, spacing: 2) {
+              Text(error)
+                .font(.caption)
+                .foregroundStyle(ExtensionPalette.danger)
+                .lineLimit(3)
+              Text(fallbackText(key))
+                .font(.caption2)
+                .foregroundStyle(ExtensionPalette.muted)
+            }
+            Spacer(minLength: 4)
+            Button("Retry") { manager.retry(key) }
+              .font(.caption.weight(.semibold))
+              .buttonStyle(.borderless)
+          }
+        }
+        if let pending = manager.pendingUpdates[key] {
+          HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill")
+              .font(.caption)
+              .foregroundStyle(ExtensionPalette.warning)
+            Text("Update available (\(pending.summary)). Its code came over plain http, so it is not used until you update.")
+              .font(.caption)
+              .foregroundStyle(ExtensionPalette.warning)
+              .lineLimit(3)
+            Spacer(minLength: 4)
+            Button("Update") { manager.applyUpdate(key) }
+              .font(.caption.weight(.semibold))
+              .buttonStyle(.borderless)
+          }
+        } else if let note = manager.updateNotes[key] {
+          Label(note, systemImage: "checkmark.circle.fill")
+            .font(.caption)
+            .foregroundStyle(ExtensionPalette.success)
+        }
+      }
+      .padding(.top, 10)
+    }
+  }
+
+  private func fallbackText(_ key: String) -> String {
+    if manager.loadedExtension(key) == nil { return "Not available until it loads." }
+    if manager.offlineKeys.contains(key) { return "Using the copy saved on this device." }
+    return "Using the copy loaded earlier."
   }
 
   // MARK: Add dialog
