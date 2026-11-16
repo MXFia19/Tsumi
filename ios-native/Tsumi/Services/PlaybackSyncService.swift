@@ -26,8 +26,9 @@ struct RemotePosition: Hashable {
 
   /// Watched percentage (0-100), 0 when unknown.
   var watchedPercent: Int {
-    if let duration, duration > 0, let time, time >= 0 { return min(100, Int((time / duration * 100).rounded(.up))) }
-    if let percent, percent > 0 { return min(100, Int(percent.rounded(.up))) }
+    // Clamped before the Int conversion, which crashes on huge values (a note edited by hand).
+    if let duration, duration > 0, let time, time >= 0, time.isFinite { return Int(min(100, (time / duration * 100).rounded(.up))) }
+    if let percent, percent > 0, percent.isFinite { return Int(min(100, percent.rounded(.up))) }
     return 0
   }
 }

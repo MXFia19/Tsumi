@@ -30,6 +30,8 @@ enum PlaybackPositionNote {
   static let offerMinAgeDifference: TimeInterval = 5
   /// Periodic write while playing.
   static let periodicWrite: TimeInterval = 120
+  /// Longest position or duration read or written (99:59:59).
+  static let maxClock: Double = 99 * 3600 + 59 * 60 + 59
   /// Write after a pause (cancelled when playback resumes before).
   static let pauseWriteDelay: TimeInterval = 3
 
@@ -53,7 +55,7 @@ enum PlaybackPositionNote {
 
   /// 754 → "12:34", 3723 → "1:02:03".
   static func formatClock(_ seconds: Double) -> String {
-    let total = seconds.isFinite ? max(0, Int(seconds.rounded(.down))) : 0
+    let total = seconds.isFinite ? Int(min(max(0, seconds), maxClock).rounded(.down)) : 0
     let hours = total / 3600
     let minutes = (total % 3600) / 60
     let secs = total % 60
@@ -70,7 +72,8 @@ enum PlaybackPositionNote {
       guard !part.isEmpty, part.allSatisfy({ $0.isASCII && $0.isNumber }), let value = Double(part) else { return nil }
       total = total * 60 + value
     }
-    return total
+    // A note edited by hand can hold any number of hours: a huge one would crash the Int conversions later.
+    return total <= maxClock ? total : nil
   }
 
   /// Device name as written in the line: no separator, no line break, 24 characters at most.

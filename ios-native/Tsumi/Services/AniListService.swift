@@ -377,6 +377,12 @@ final class AniListService: @unchecked Sendable {
       attempt += 1
       await limiter.acquire()
       let (data, response) = try await HTTP.data(Self.endpoint, method: "POST", headers: headers, body: body, timeout: 60, allowErrorStatus: true)
+      // The limiter follows the quota AniList reports instead of assuming 90 a minute.
+      await limiter.observe(
+        limit: Int(response.value(forHTTPHeaderField: "X-RateLimit-Limit") ?? ""),
+        remaining: Int(response.value(forHTTPHeaderField: "X-RateLimit-Remaining") ?? ""),
+        resetAt: Double(response.value(forHTTPHeaderField: "X-RateLimit-Reset") ?? "").map { Date(timeIntervalSince1970: $0) }
+      )
       let outage = AniListOutageMonitor.shared
       if response.statusCode == 429 || response.statusCode == 500 {
         if attempt >= 4 {
