@@ -163,13 +163,7 @@
     </div>
   </div>
 </SettingCard>
-<SettingCard title='Chapter Source Preference' description='The chapter source to use during video playback. If your preferred source isn’t available, another source will be used automatically.'>
-  <select class='form-control bg-dark mw-150 w-150 text-truncate' bind:value={settings.playerChapterSkip}>
-    <option value='embedded' selected>Embedded</option>
-    <option value='aniskip'>Aniskip</option>
-  </select>
-</SettingCard>
-<SettingCard title='Auto-Skip Intro/Outro' description='Attempt to automatically skip intro and outro. This WILL sometimes skip incorrect chapters, as some of the chapter data is community sourced.'>
+<SettingCard title='Auto-Skip Intro/Outro' description='Attempt to automatically skip intros, recaps, credits and previews. Skip times come from the video file when it has chapters, otherwise from AniSkip (anime) and TheIntroDB (shows, movies and anime). This WILL sometimes skip incorrect chapters, as some of the chapter data is community sourced.'>
   <div class='custom-switch'>
     <input type='checkbox' id='player-skip' bind:checked={settings.playerSkip} />
     <label for='player-skip'>{settings.playerSkip ? 'On' : 'Off'}</label>

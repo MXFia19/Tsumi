@@ -614,7 +614,6 @@ export const defaults = {
   playerPath: '',
   playerSeek: 2,
   playerSkip: false,
-  playerChapterSkip: 'embedded',
   // Hold to speed up (modules/holdspeed.js): holding Play/Pause or the video plays at playerHoldSpeed (1.5 | 2 | 3).
   playerHoldSpeedUp: true,
   playerHoldSpeed: 2,

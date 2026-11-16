@@ -46,13 +46,15 @@ struct AniZipEpisode: Codable, Hashable {
   var rating: String?
   var airedBeforeEpisodeNumber: Int?
   var tvdbId: Int?
+  /// TVDB show the episode belongs to (TheIntroDB lookups, PlayerIntroDB).
+  var tvdbShowId: Int?
   var kitsuId: String?
 
   init() {}
 
   private enum CodingKeys: String, CodingKey {
     case title, episode, episodeNumber, absoluteEpisodeNumber, seasonNumber, airDate, airDateUtc, airdate, runtime
-    case length, overview, summary, image, rating, airedBeforeEpisodeNumber, tvdbId, kitsuId
+    case length, overview, summary, image, rating, airedBeforeEpisodeNumber, tvdbId, tvdbShowId, kitsuId
   }
 
   init(from decoder: Decoder) throws {
@@ -75,6 +77,7 @@ struct AniZipEpisode: Codable, Hashable {
     rating = container.svcLossyString(.rating)
     airedBeforeEpisodeNumber = container.svcLossyInt(.airedBeforeEpisodeNumber)
     tvdbId = container.svcLossyInt(.tvdbId)
+    tvdbShowId = container.svcLossyInt(.tvdbShowId)
     kitsuId = container.svcLossyString(.kitsuId)
   }
 }

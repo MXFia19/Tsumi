@@ -175,8 +175,8 @@ L13 (2.28), L14 (2.29), L15 (7.21), L17 (4.16), L18 (4.17), the PiP restore devi
 | 6.10 | Skip button hidden while controls are hidden (immersed) | PP CSS 2960-2966 | `PlayerView.controlLayers`: shown only with the controls | done (L6) |
 | 6.11 | `skip()` logic (chapter end, +85 s in long chapters, 90 s at start, end near the end) and KeyS "Skip Intro/90s" | PP 812-839, 1031-1035 | `skip()`, KeyS, More menu "Skip Intro/90s" | done |
 | 6.12 | Auto skip | PP 1391 | `playerSkip` ("Auto-Skip Intro/Outro"), once per chapter | done (the Svelte code read `playerAutoSkip`, a key that does not exist, so its auto-skip never ran) |
-| 6.13 | "Chapter Source" menu (Embedded / Aniskip) | PP 2454-2515 | More menu → `setChapterSource(_:)` | done |
-| 6.14 | "Chapter Source Preference" setting (`playerChapterSkip`) | PT 146-151 | `PlayerPreferences.chapterSource` (UserDefaults, not in Core settings) | app (settings screen binds to it) |
+| 6.13 | "Chapter Source" menu (Embedded / Aniskip) | — | — | removed on both apps: file chapters, then AniSkip (anime), then TheIntroDB (`PlayerIntroDB`, common/modules/introdb) |
+| 6.14 | "Chapter Source Preference" setting (`playerChapterSkip`) | — | — | removed on both apps |
 
 ## 7. Audio and subtitle tracks (PP + SUB)
 
@@ -249,7 +249,7 @@ L13 (2.28), L14 (2.29), L15 (7.21), L17 (4.16), L18 (4.17), the PiP restore devi
 | 11.3 | `playerAutocomplete` / `playerAutocompleteThreshold` | PT 116-131 | `checkCompletion()` | done |
 | 11.4 | `playerSeek` ("Seek Duration") | PT 138-145 | `forward`/`rewind`, double tap, remote skip interval | done |
 | 11.5 | `playerSkip` ("Auto-Skip Intro/Outro") | PT 152-157 | `checkSkippableChapters` | done |
-| 11.6 | `playerChapterSkip` | PT 146-151 | `PlayerPreferences.chapterSource` | done (see 6.14) |
+| 11.6 | `playerChapterSkip` | — | — | removed (see 6.14) |
 | 11.7 | `subtitleLanguage` / `audioLanguage` | PT 73-101; PP 180 | `applySubtitlePreference` / `selectPreferredAudio` | done |
 | 11.8 | `volume` | PP 110, 117 | `configurePlayer`, `adjustVolume` | done |
 | 11.9 | `playerDeband`, `font`, `missingFont`, `disableSubtitleBlur`, `subtitleRenderHeight`, `enableExternal`, `playerPath` | PT 40-70, 132-137, 159-178 | — | n.a. (see 1.15, 7.19, 9.2) |
@@ -272,6 +272,5 @@ L13 (2.28), L14 (2.29), L15 (7.21), L17 (4.16), L18 (4.17), the PiP restore devi
 - `onAutocomplete` → list progress update (Helper.updateEntry equivalent).
 - Orientation lock: return `PlayerOrientation.supportedMask` from the app delegate's
   `application(_:supportedInterfaceOrientationsFor:)`.
-- Settings screen: bind "Chapter Source Preference" to `PlayerPreferences.chapterSource` and "Auto Picture in
-  Picture" to `PlayerPreferences.autoPictureInPicture`; "Reset" calls `PlayerPreferences.resetAll()` (chapter
-  source, auto PiP, last subtitle per media, playback rate).
+- Settings screen: bind "Auto Picture in Picture" to `PlayerPreferences.autoPictureInPicture`; "Reset" calls
+  `PlayerPreferences.resetAll()` (auto PiP, last subtitle per media, playback rate, old chapter source key).

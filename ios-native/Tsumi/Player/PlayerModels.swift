@@ -265,21 +265,6 @@ enum PlayerExternalApp: String, CaseIterable, Identifiable {
   }
 }
 
-/// "Chapter Source Preference" setting (playerChapterSkip in the Svelte settings).
-enum PlayerChapterSource: String, CaseIterable, Identifiable {
-  case embedded
-  case aniskip
-
-  var id: String { rawValue }
-
-  var label: String {
-    switch self {
-    case .embedded: return "Embedded"
-    case .aniskip: return "Aniskip"
-    }
-  }
-}
-
 /// Corner where the in-app miniplayer docks (Miniplayer.svelte `position`: "top left", "bottom right"...).
 enum PlayerMiniPlayerCorner: String, CaseIterable {
   case topLeading
@@ -303,28 +288,19 @@ enum PlayerMiniPlayerCorner: String, CaseIterable {
 /// Player-only preferences that are not part of Core `SettingsValues` (stored in UserDefaults).
 /// The settings screen can bind to these static properties directly.
 enum PlayerPreferences {
-  private static let chapterSourceKey = "tsumi.player.chapterSource"
   private static let autoPictureInPictureKey = "tsumi.player.autoPictureInPicture"
   private static let lastSubtitleKey = "tsumi.player.lastSubtitle"
   private static let playbackRateKey = "tsumi.player.playbackRate"
   private static let miniPlayerCornerKey = "tsumi.player.miniPlayerCorner"
 
-  /// Settings reset: removes the chapter source, auto Picture in Picture, last subtitle per media and playback
-  /// rate keys, so every value falls back to its default. The miniplayer position is a cache, not a setting.
+  /// Settings reset: removes the auto Picture in Picture, last subtitle per media and playback rate keys, so every
+  /// value falls back to its default (and the chapter source key of older versions). The miniplayer position is a
+  /// cache, not a setting.
   static func resetAll() {
     let defaults = UserDefaults.standard
-    for key in [chapterSourceKey, autoPictureInPictureKey, lastSubtitleKey, playbackRateKey] {
+    for key in ["tsumi.player.chapterSource", autoPictureInPictureKey, lastSubtitleKey, playbackRateKey] {
       defaults.removeObject(forKey: key)
     }
-  }
-
-  /// playerChapterSkip ('embedded' | 'aniskip'), default 'embedded' like common/modules/util.js.
-  static var chapterSource: PlayerChapterSource {
-    get {
-      guard let raw = UserDefaults.standard.string(forKey: chapterSourceKey) else { return .embedded }
-      return PlayerChapterSource(rawValue: raw) ?? .embedded
-    }
-    set { UserDefaults.standard.set(newValue.rawValue, forKey: chapterSourceKey) }
   }
 
   /// Start Picture in Picture automatically when the app goes to background while playing.

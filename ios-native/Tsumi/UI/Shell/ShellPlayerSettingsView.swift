@@ -66,8 +66,6 @@ struct ShellPlayerSettingsView: View {
 /// "Playback Settings" group.
 @MainActor
 struct ShellPlaybackSettingsSection: View {
-  @State private var chapterSource = PlayerPreferences.chapterSource.rawValue
-
   var body: some View {
     let autocomplete = AppSettings.shared.values.playerAutocomplete
     let holdSpeedUp = AppSettings.shared.values.playerHoldSpeedUp
@@ -101,15 +99,9 @@ struct ShellPlaybackSettingsSection: View {
       ) {
         ShellClampedNumberField(value: ShellBind.value(\.playerSeek), range: 0.2...360, step: 0.1, unit: "sec")
       }
-      ShellSettingPicker(
-        title: "Chapter Source Preference",
-        description: "The chapter source to use during video playback. If your preferred source isn’t available, another source will be used automatically.",
-        options: PlayerChapterSource.allCases.map { ShellOption($0.rawValue, $0.label) },
-        selection: $chapterSource
-      )
       ShellSettingToggle(
         title: "Auto-Skip Intro/Outro",
-        description: "Attempt to automatically skip intro and outro. This WILL sometimes skip incorrect chapters, as some of the chapter data is community sourced.",
+        description: "Attempt to automatically skip intros, recaps, credits and previews. Skip times come from the video file when it has chapters, otherwise from AniSkip (anime) and TheIntroDB (shows, movies and anime). This WILL sometimes skip incorrect chapters, as some of the chapter data is community sourced.",
         isOn: ShellBind.value(\.playerSkip)
       )
       ShellSettingToggle(
@@ -127,9 +119,6 @@ struct ShellPlaybackSettingsSection: View {
       }
     } header: {
       Text("Playback Settings")
-    }
-    .onChange(of: chapterSource) { _, value in
-      PlayerPreferences.chapterSource = PlayerChapterSource(rawValue: value) ?? .embedded
     }
   }
 

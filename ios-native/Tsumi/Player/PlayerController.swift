@@ -88,8 +88,6 @@ final class PlayerController {
   private(set) var subtitleDelay: Double = 0
   private(set) var activeSubtitleCues: [PlayerSubtitleCue] = []
   private(set) var chapters: [PlayerChapter] = []
-  private(set) var embeddedChapters: [PlayerChapter] = []
-  private(set) var chapterSource: PlayerChapterSource
   /// Name of the skippable chapter being played ("Opening", "Ending"...), drives the "Skip ..." button.
   private(set) var currentSkippable: String?
   /// The autocomplete threshold was reached for this episode.
@@ -200,7 +198,6 @@ final class PlayerController {
   init(session: PlaybackSession, episodeList: [EpisodeInfo] = []) {
     self.session = session
     self.episodeList = episodeList
-    self.chapterSource = PlayerPreferences.chapterSource
     // Playback speed kept between episodes (PlayerPage.svelte keeps `playbackRate`).
     self.playbackRate = PlayerPreferences.playbackRate
     configurePlayer()
@@ -495,7 +492,6 @@ final class PlayerController {
     session = newSession
     completed = false
     chapters = []
-    embeddedChapters = []
     currentSkippable = nil
     autoSkippedChapterStart = nil
     fillerPrompt = nil
@@ -1490,47 +1486,37 @@ final class PlayerController {
 
   // MARK: - Chapters and skipping
 
-  /// findChapters: embedded chapters first, AniSkip when there are none or when it is the preferred source.
+  /// findChapters: the file's own chapters when it has some, otherwise AniSkip for anime, then TheIntroDB (shows,
+  /// movies, and the anime episodes AniSkip does not know).
   private func loadChapters() {
     guard let asset = currentAsset else { return }
     let generation = episodeGeneration
     Task { [weak self] in
       let embedded = await PlayerChapterLoader.embeddedChapters(of: asset)
       guard let self, generation == self.episodeGeneration else { return }
-      self.embeddedChapters = embedded
       if !embedded.isEmpty {
         self.chapters = PlayerChapterLogic.sanitise(embedded, duration: self.safeDuration)
+        return
       }
-      if self.chapters.isEmpty || self.chapterSource == .aniskip {
-        await self.findAniSkipChapters()
-      }
+      await self.findOnlineChapters()
     }
   }
 
-  private func findAniSkipChapters() async {
+  private func findOnlineChapters() async {
     let media = session.media
-    guard media.isAnime, let malId = media.malId else { return }
+    let episode = session.episode
     let total = safeDuration
     guard total > 0 else { return }
     let generation = episodeGeneration
-    let result = await PlayerAniSkip.chapters(malId: malId, episode: session.episode.number, duration: total)
-    guard generation == episodeGeneration, !isClosed, !result.isEmpty else { return }
-    chapters = PlayerChapterLogic.sanitise(result, duration: safeDuration)
-  }
-
-  /// "Chapter Source" menu (Embedded / Aniskip).
-  func setChapterSource(_ source: PlayerChapterSource) {
-    chapterSource = source
-    PlayerPreferences.chapterSource = source
-    currentSkippable = nil
-    switch source {
-    case .embedded:
-      chapters = PlayerChapterLogic.sanitise(embeddedChapters, duration: safeDuration)
-    case .aniskip:
-      Task { [weak self] in
-        await self?.findAniSkipChapters()
-      }
+    var found: [PlayerChapter] = []
+    if media.isAnime, let malId = media.malId {
+      found = await PlayerAniSkip.chapters(malId: malId, episode: episode.number, duration: total)
     }
+    if found.isEmpty, generation == episodeGeneration, !isClosed {
+      found = await PlayerIntroDB.chapters(media: media, episode: episode, duration: total)
+    }
+    guard generation == episodeGeneration, !isClosed, !found.isEmpty, chapters.isEmpty else { return }
+    chapters = PlayerChapterLogic.sanitise(found, duration: safeDuration)
   }
 
   /// checkSkippableChapters + auto skip (`playerSkip`, "Auto-Skip Intro/Outro").

@@ -166,7 +166,7 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | 6.10 | Auto-Complete Threshold (1-100 %, only when auto-complete is on) | PT 122-131 | `ShellClampedNumberField` → `playerAutocompleteThreshold` | done |
 | 6.11 | Deband Video | PT 132-137 | — | n.a. (AVPlayer, player 1.15) |
 | 6.12 | Seek Duration (0.2-360 s, step 0.1) | PT 138-145 | `ShellClampedNumberField` → `playerSeek` | done |
-| 6.13 | Chapter Source Preference (Embedded / Aniskip) | PT 146-151 | picker → `PlayerPreferences.chapterSource` | done |
+| 6.13 | Chapter Source Preference (Embedded / Aniskip) | — | — | removed on both apps (automatic: file chapters, AniSkip, TheIntroDB) |
 | 6.14 | Auto-Skip Intro/Outro | PT 152-157 | toggle → `playerSkip` | done |
 | 6.15 | Enable External Player / External Video Player executable | PT 159-178 | — | n.a. (desktop / Android; the player offers VLC / Infuse from its menu) |
 | 6.16 | (iOS) Auto Picture in Picture | player 8.7 | toggle → `PlayerPreferences.autoPictureInPicture` | done (iOS addition) |
@@ -361,7 +361,7 @@ dismissed before the next one is presented (PlayerView does not restart for a ne
 | W40 | `applyRemoteState` (W2G 20) | `onRemotePlayer` → `PlayerPresentation.shared.controller?.applyRemoteState` | done |
 | W41 | `applyRemoteIndex` (W2G 19) | `onRemoteIndex` → `ShellPlayback.applyRemoteIndex` | done |
 | W42 | Player host attached once | `ShellPlayerHost` (replaces `.playerPresentationHost()`, same `PlayerPresentation` state) | done |
-| W43 | `PlayerPreferences.chapterSource` in Settings (player 6.14) | Settings > Player | done |
+| W43 | `PlayerPreferences.chapterSource` in Settings (player 6.14) | — | removed (chapter source is automatic) |
 | W44 | `PlayerPreferences.autoPictureInPicture` in Settings | Settings > Player | done |
 | W45 | Card progress bars from `AnimeProgressService` (player 5.6) | Browse block | n.a. here |
 

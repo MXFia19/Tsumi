@@ -16,6 +16,7 @@
   import { toTS, matchPhrase, videoRx, isValidNumber } from '@/modules/util.js'
   import { toast } from 'svelte-sonner'
   import { getChaptersAniSkip } from '@/modules/anime/anime.js'
+  import { getChaptersIntroDB } from '@/modules/introdb/index.js'
   import { mediaCache } from '@/modules/cache.js'
   import Seekbar from 'perfect-seekbar'
   import { click } from '@/modules/click.js'
@@ -35,7 +36,7 @@
   import 'rvfc-polyfill'
   import { IPC, ELECTRON, ANDROID } from '@/modules/bridge.js'
   import WPC from '@/modules/wpc.js'
-  import { X, Captions, CircleHelp, Contrast, FastForward, Keyboard, EllipsisVertical, SquareArrowOutUpRight, List, Eye, FilePlus2, ListMusic, ListVideo, Maximize, Minimize, Pause, PictureInPicture, PictureInPicture2, Play, Proportions, RefreshCcw, Rewind, RotateCcw, RotateCw, ScreenShare, SkipBack, SkipForward, Volume1, Volume2, VolumeX, SlidersVertical, SquarePen, Milestone, Server } from 'lucide-svelte'
+  import { X, Captions, CircleHelp, Contrast, FastForward, Keyboard, EllipsisVertical, SquareArrowOutUpRight, List, Eye, FilePlus2, ListMusic, ListVideo, Maximize, Minimize, Pause, PictureInPicture, PictureInPicture2, Play, Proportions, RefreshCcw, Rewind, RotateCcw, RotateCw, ScreenShare, SkipBack, SkipForward, Volume1, Volume2, VolumeX, SlidersVertical, SquarePen, Server } from 'lucide-svelte'
   import Debug from 'debug'
   // Chromecast (PC) and online subtitles: logic in modules/cast.js and modules/onlinesubs/.
   import CastButton from './CastButton.svelte'
@@ -479,7 +480,6 @@
       currentTime = 0
       targetTime = 0
       chapters = []
-      embeddedChapters = []
       currentSkippable = null
       completed = false
       if (subs) {
@@ -1563,26 +1563,23 @@
   })
 
   let chapters = []
-  let embeddedChapters = []
   WPC.listen('chapters', (detail) => {
-    if (detail.length) {
-      chapters = detail
-      embeddedChapters = detail
-    }
+    if (detail.length) chapters = detail
   })
+  // Chapters: the file's own (embedded) when it has some, otherwise AniSkip for anime, then TheIntroDB (shows,
+  // movies, and the anime episodes AniSkip does not know).
   async function findChapters () {
-    if (
-      (!chapters.length ||
-        settings.value.playerChapterSkip.match(/aniskip/i)) &&
-      current?.media?.media
-    ) {
-      const _chapters = await getChaptersAniSkip(current, safeduration)
-      if (_chapters?.length) chapters = _chapters
-    }
+    const target = current
+    const media = target?.media?.media
+    if (chapters.length || !media) return
+    const duration = safeduration
+    let found = await getChaptersAniSkip(target, duration).catch(() => [])
+    if (!found?.length) found = await getChaptersIntroDB(media, target.media.episode, duration).catch(() => [])
+    if (target === current && !chapters.length && found?.length) chapters = found
   }
 
   let currentSkippable = null
-  $: currentSkippable && $settings.playerAutoSkip && skip()
+  $: currentSkippable && $settings.playerSkip && skip() // "Auto-Skip Intro/Outro" (PlayerTab.svelte)
   function checkSkippableChapters () {
     const current = findChapter(currentTime)
     if (current) {
@@ -1590,6 +1587,7 @@
     }
   }
   const MAX_TOTAL_SKIP_TIME = 180
+  const MAX_TRUSTED_SKIP_TIME = 20 * 60 // TheIntroDB chapters (trusted) are meant for skipping: movie credits run long.
   const skippableChaptersRx = [
     ['Intro', /^intro$/im],
     ['Opening', /^op$|opening$|title$|^ncop/im],
@@ -1600,7 +1598,7 @@
     ['Recap', /recap/im]
   ]
   function isChapterSkippable (chapter) {
-    if ((chapter.end - chapter.start) / 1_000 > MAX_TOTAL_SKIP_TIME) { return null } // Anything longer than 180s (3m) is likely invalid, skipping this chapter would be a mistake!
+    if ((chapter.end - chapter.start) / 1_000 > (chapter.trusted ? MAX_TRUSTED_SKIP_TIME : MAX_TOTAL_SKIP_TIME)) { return null } // Anything longer than 180s (3m) is likely invalid, skipping this chapter would be a mistake!
     for (const [name, regex] of skippableChaptersRx) {
       if (
         /** @type {RegExp} */ chapter.text &&
@@ -2700,68 +2698,6 @@
             >
               <FilePlus2 size='2rem' strokeWidth={2.5} />
               <div class='ml-10'>Add Subtitles</div>
-            </div>
-            <div
-              class='dropdown dropleft with-arrow pointer bg-dark option font-size-16 bd-highlight'
-              class:d-none={externalPlayback}
-            >
-              <div
-                role='button'
-                class='d-flex align-items-center justify-content-center py-5 px-10'
-                aria-label='Change the Source of the Video Chapters'
-                title='Change the Source of the Video Chapters'
-                use:click={toggleDropdown}
-              >
-                <Milestone size='2rem' strokeWidth={2.5} /><span class='ml-10'
-                >Chapter Source</span
-                >
-              </div>
-              <div
-                class='dropdown-menu dropdown-menu-right text-capitalize text-nowrap rounded'
-              >
-                <div class='custom-radio overflow-hidden pt-5 pl-5'>
-                  <input
-                    name='chapter-embed-set'
-                    type='radio'
-                    id='chapter-embed-radio'
-                    tabindex='-1'
-                    value='embedded'
-                    checked={$settings.playerChapterSkip === 'embedded'}
-                  />
-                  <label
-                    for='chapter-embed-radio'
-                    use:click={(target) => {
-                      $settings.playerChapterSkip = 'embedded'
-                      chapters = embeddedChapters
-                      setTimeout(() => {
-                        toggleDropdown(target)
-                        showOptions.set(false)
-                      })
-                    }}
-                    class='pb-5'>Embedded</label
-                  >
-                  <input
-                    name='chapter-aniskip-set'
-                    type='radio'
-                    id='chapter-aniskip-radio'
-                    tabindex='-1'
-                    value='aniskip'
-                    checked={$settings.playerChapterSkip === 'aniskip'}
-                  />
-                  <label
-                    for='chapter-aniskip-radio'
-                    use:click={(target) => {
-                      $settings.playerChapterSkip = 'aniskip'
-                      findChapters()
-                      setTimeout(() => {
-                        toggleDropdown(target)
-                        showOptions.set(false)
-                      })
-                    }}
-                    class='pb-5'>Aniskip</label
-                  >
-                </div>
-              </div>
             </div>
             <div
               role='button'

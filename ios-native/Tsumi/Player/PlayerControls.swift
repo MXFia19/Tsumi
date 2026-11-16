@@ -287,18 +287,6 @@ struct PlayerControlsOverlay: View {
         Label("Skip Intro/90s", systemImage: "forward.end.alt")
       }
       Menu {
-        ForEach(PlayerChapterSource.allCases) { source in
-          Button {
-            onInteraction()
-            controller.setChapterSource(source)
-          } label: {
-            menuLabel(source.label, selected: controller.chapterSource == source)
-          }
-        }
-      } label: {
-        Label("Chapter Source", systemImage: "bookmark")
-      }
-      Menu {
         ForEach(PlayerExternalApp.allCases) { app in
           Button(app.name) {
             controller.openInExternalPlayer(app)

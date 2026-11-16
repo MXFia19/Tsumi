@@ -183,7 +183,6 @@ struct ShellSettingsManagementSection: View {
 @MainActor
 enum ShellSettingsTransfer {
   static let cardsKey = "cards"
-  static let chapterSourceKey = "playerChapterSkip"
   static let autoPictureInPictureKey = "autoPictureInPicture"
   static let extensionsKey = "extensions"
 
@@ -196,7 +195,6 @@ enum ShellSettingsTransfer {
     if values.releasesNotifyNotOnList { releases.append(SettingsValues.notOnListValue) }
     object["releasesNotify"] = releases
     object[cardsKey] = UserDefaults.standard.string(forKey: BrowseCardMode.storageKey) ?? BrowseCardMode.small.rawValue
-    object[chapterSourceKey] = PlayerPreferences.chapterSource.rawValue
     object[autoPictureInPictureKey] = PlayerPreferences.autoPictureInPicture
     object[extensionsKey] = exportedExtensions()
     guard let output = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else { return nil }
@@ -227,7 +225,7 @@ enum ShellSettingsTransfer {
     } else if let inner = (root["appInfo"] as? [String: Any])?["settings"] as? [String: Any] {
       root = inner
     }
-    let known = Set(SettingsValues.allKeys + [cardsKey, chapterSourceKey, autoPictureInPictureKey, extensionsKey])
+    let known = Set(SettingsValues.allKeys + [cardsKey, autoPictureInPictureKey, extensionsKey])
     guard root.keys.contains(where: { known.contains($0) }),
           let rootData = try? JSONSerialization.data(withJSONObject: root),
           var values = try? JSONDecoder().decode(SettingsValues.self, from: rootData) else { return false }
@@ -238,9 +236,6 @@ enum ShellSettingsTransfer {
     AppSettings.shared.values = values
     if let cards = root[cardsKey] as? String, let mode = BrowseCardMode(rawValue: cards) {
       UserDefaults.standard.set(mode.rawValue, forKey: BrowseCardMode.storageKey)
-    }
-    if let chapter = root[chapterSourceKey] as? String, let source = PlayerChapterSource(rawValue: chapter) {
-      PlayerPreferences.chapterSource = source
     }
     if let autoPiP = root[autoPictureInPictureKey] as? Bool {
       PlayerPreferences.autoPictureInPicture = autoPiP

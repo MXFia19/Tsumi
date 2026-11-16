@@ -34,7 +34,8 @@ A feature marked *Windows* or *iPhone* exists on that app only.
 - **Subtitles**: ASS / SSA styles and fonts, preferred subtitle language, delay adjustment in 0.5 s steps
 - **Online subtitles**: search subtitles for the episode (anime included) when the source has none or not in your
   language, or add them automatically
-- **Skip intro / outro** (automatic option) and chapters
+- **Skip intros, recaps, credits and previews** (automatic option): the chapters of the video, otherwise
+  [AniSkip](https://aniskip.com) for anime and [TheIntroDB](https://theintrodb.org) for shows, movies and anime
 - **Autoplay the next episode**, auto-complete an episode on your list past a threshold
 - Playback speed, audio tracks, seek duration, keyboard shortcuts and seek bar thumbnails *(Windows)*,
   video debanding *(Windows)*, external player *(Windows)*
@@ -183,6 +184,11 @@ the Feather source (`docs/source.json`). The download page and the source are se
 - [Shiru](https://github.com/RockinChaos/Shiru) by RockinChaos, which Tsumi is built on
 - [Miru / Hayase](https://hayase.watch/) by ThaUnknown, the project at the origin of Shiru
 - [TheUnknownEngima/Tsumi](https://github.com/TheUnknownEngima/Tsumi), the fork this repository comes from
+
+## Skip times
+
+Skip times come from [AniSkip](https://aniskip.com) and [TheIntroDB](https://theintrodb.org), both community
+databases: you can submit missing timestamps on their sites.
 
 ## Trakt
 

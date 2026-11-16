@@ -9,6 +9,8 @@ struct PlayerChapter: Hashable, Identifiable, Sendable {
   var start: Double
   var end: Double
   var text: String
+  /// TheIntroDB chapter: meant for skipping, so it may be longer than maxTotalSkipTime (movie credits).
+  var trusted = false
 
   var id: String { "\(start)-\(end)-\(text)" }
   var length: Double { end - start }
@@ -25,6 +27,8 @@ struct PlayerSkipInterval: Hashable, Sendable {
 enum PlayerChapterLogic {
   /// MAX_TOTAL_SKIP_TIME: anything longer than 3 minutes is likely invalid.
   static let maxTotalSkipTime: Double = 180
+  /// MAX_TRUSTED_SKIP_TIME: TheIntroDB chapters (trusted) are meant for skipping, movie credits run long.
+  static let maxTrustedSkipTime: Double = 20 * 60
 
   /// skippableChaptersRx: returns "Intro", "Opening", "Outro", "Ending", "Credits", "Preview" or "Recap".
   static func matchName(_ text: String) -> String? {
@@ -47,7 +51,7 @@ enum PlayerChapterLogic {
 
   /// isChapterSkippable.
   static func skippableName(_ chapter: PlayerChapter) -> String? {
-    guard chapter.length <= maxTotalSkipTime else { return nil }
+    guard chapter.length <= (chapter.trusted ? maxTrustedSkipTime : maxTotalSkipTime) else { return nil }
     return matchName(chapter.text)
   }
 
@@ -116,7 +120,7 @@ enum PlayerChapterLogic {
   /// sanitiseChapters (the part that fixes the chapter list; display mapping is in displayNames).
   static func sanitise(_ input: [PlayerChapter], duration: Double) -> [PlayerChapter] {
     guard !input.isEmpty, duration > 0, duration.isFinite else { return input }
-    var chapters = input.map { PlayerChapter(start: abs($0.start), end: abs($0.end), text: $0.text) }
+    var chapters = input.map { PlayerChapter(start: abs($0.start), end: abs($0.end), text: $0.text, trusted: $0.trusted) }
     let first = chapters[0]
     if first.start != 0 && chapters.contains(where: { $0.start == 0 }) {
       chapters.sort { $0.start < $1.start }
@@ -131,13 +135,13 @@ enum PlayerChapterLogic {
     chapters = snapshot.enumerated().map { index, chapter in
       guard chapter.start == chapter.end else { return chapter }
       let nextStart = index + 1 < snapshot.count ? snapshot[index + 1].start : duration
-      return PlayerChapter(start: chapter.start, end: nextStart, text: chapter.text)
+      return PlayerChapter(start: chapter.start, end: nextStart, text: chapter.text, trusted: chapter.trusted)
     }
     chapters[chapters.count - 1].end = duration
     chapters[0].start = 0
     chapters = mergeMicroSkippable(chapters)
     return chapters.filter { $0.start <= duration }.map { chapter in
-      PlayerChapter(start: chapter.start, end: min(chapter.end, duration), text: chapter.text)
+      PlayerChapter(start: chapter.start, end: min(chapter.end, duration), text: chapter.text, trusted: chapter.trusted)
     }
   }
 
@@ -220,7 +224,7 @@ enum PlayerAniSkip {
   }
 }
 
-/// Embedded chapters of the stream (MP4/MOV chapter tracks), the "Embedded" chapter source.
+/// Embedded chapters of the stream (MP4/MOV chapter tracks), used before AniSkip and TheIntroDB.
 enum PlayerChapterLoader {
   static func embeddedChapters(of asset: AVAsset) async -> [PlayerChapter] {
     let languages = Locale.preferredLanguages

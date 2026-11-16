@@ -137,7 +137,7 @@ Every key in `SettingsValues` has at least one reader outside the settings scree
 **Read, but stored outside `SettingsValues`, so not exported, imported or reset (M4):**
 - `cards`: `@AppStorage tsumi.browse.cards`
 - `cardAudio`, `hentaiAnnounce`: `ServiceSettingsExtras`
-- `playerChapterSkip`: `PlayerPreferences.chapterSource`
+- `playerChapterSkip`: removed (chapter source is automatic)
 - `extensions`: `ExtensionManager`, `tsumi.extensions.v1`
 
 **n.a. on iOS:**
