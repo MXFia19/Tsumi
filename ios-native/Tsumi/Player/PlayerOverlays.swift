@@ -371,7 +371,7 @@ struct PlayerSubtitleOffsetPanel: View {
         Button("Done", action: onClose)
           .buttonStyle(.borderedProminent)
       }
-      Text("Positive values show subtitles earlier. Applies to external subtitles.")
+      Text("Positive values show subtitles earlier. Applies to external subtitles and is remembered for this show.")
         .font(.caption)
         .foregroundStyle(.white.opacity(0.6))
         .multilineTextAlignment(.center)

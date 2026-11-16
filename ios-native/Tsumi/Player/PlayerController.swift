@@ -1698,7 +1698,10 @@ final class PlayerController {
   }
 
   private func upNextEpisode() -> EpisodeRef? {
+    // Only with the full screen player in view (miniplayer, Picture in Picture, details sheet over it: autoplay
+    // at the end as before).
     guard phase == .ready, !hasEnded, !isScrubbing, loadingEpisode == nil, fillerPrompt == nil,
+          !isMinimized, !isPictureInPictureActive, !isExternalOverlayPresented,
           upNextDoneGeneration != episodeGeneration, AppSettings.shared.values.playerAutoplay,
           !(isWatchTogetherActive?() ?? false),
           PlayerChapterLogic.isInOutroTail(currentTime, chapters: chapters) else { return nil }
