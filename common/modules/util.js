@@ -632,7 +632,9 @@ export const defaults = {
   downloadQuality: 'highest',
   extensions: {},
   defaultExtension: null,
-  starredExtension: null
+  starredExtension: null,
+  // Let electron-updater install a downloaded update when the app quits (UpdateModal.svelte, electron updater.js).
+  updateInstallOnQuit: false
 }
 
 /**

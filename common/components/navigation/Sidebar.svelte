@@ -1,7 +1,7 @@
 <script>
   import { nowPlaying as media } from '@/components/MediaHandler.svelte'
   import { hasUnreadNotifications } from '@/modals/NotificationsModal.svelte'
-  import { updateState } from '@/modals/UpdateModal.svelte'
+  import { updateState, showUpdatePrompt } from '@/modals/UpdateModal.svelte'
   import { settings } from '@/modules/settings.js'
   import { SUPPORTS } from '@/modules/support.js'
   import { status } from '@/modules/networking.js'
@@ -203,9 +203,7 @@
       </SidebarLink>
     {:else if $updateState === 'ready' || $updateState === 'ignored' || $updateState === 'aborted'}
       <SidebarLink
-        click={() => {
-          $updateState = 'ready'
-        }}
+        click={showUpdatePrompt}
         icon='download'
         text='Update Available!'
         css='d-sm-h-none'

@@ -40,7 +40,8 @@
   export let body = ''
 
   export function sanitize (body) {
-    return DOMPurify.sanitize(marked.parse(body.trim(), {
+    // A GitHub release can have no description (body null).
+    return DOMPurify.sanitize(marked.parse(String(body ?? '').trim(), {
       pedantic: false,
       breaks: true,
       gfm: true

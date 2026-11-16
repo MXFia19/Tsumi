@@ -3,18 +3,32 @@
   import { cache, caches } from '@/modules/cache.js'
   import { SUPPORTS } from '@/modules/support.js'
   import { IPC, VERSION } from '@/modules/bridge.js'
+  import { validateImportedSettings } from '@/modules/settingsimport.js'
 
   async function importSettings () {
+    let imported
     try {
-      const settings = JSON.parse(await navigator.clipboard.readText())
-      await cache.write(caches.GENERAL, 'settings', settings)
-      location.reload()
+      // Checked against the defaults: a wrong value would break the app after the reload.
+      imported = validateImportedSettings(JSON.parse(await navigator.clipboard.readText()), defaults)
     } catch (error) {
       toast.error('Failed to import settings', {
-        description: 'Failed to import settings from clipboard, make sure the copied data is valid JSON.',
+        description: `Failed to import settings from clipboard, ${error instanceof SyntaxError ? 'make sure the copied data is valid JSON.' : error?.message || 'the copied data is not valid.'}`,
         duration: 5_000
       })
+      return
     }
+    try {
+      await cache.write(caches.GENERAL, 'settings', imported.settings)
+    } catch (error) {
+      toast.error('Failed to import settings', { description: `The settings could not be saved: ${error?.message || error}`, duration: 5_000 })
+      return
+    }
+    if (!imported.ignored.length) return location.reload()
+    toast.warning('Settings imported', {
+      description: `${imported.ignored.length} unknown or invalid ${imported.ignored.length === 1 ? 'setting was' : 'settings were'} left out: ${imported.ignored.slice(0, 5).join(', ')}${imported.ignored.length > 5 ? '…' : ''}. Restarting...`,
+      duration: 4_000
+    })
+    setTimeout(() => location.reload(), 3_000)
   }
 
   IPC.on('log-exported', detail => {
@@ -48,7 +62,7 @@
   import { persisted } from 'svelte-persisted-store'
   import { capitalize, defaults } from '@/modules/util.js'
   import { onDestroy } from 'svelte'
-  import { updateState } from '@/modals/UpdateModal.svelte'
+  import { updateState, showUpdatePrompt } from '@/modals/UpdateModal.svelte'
   import { platformMap } from '@/routes/settings/SettingsPage.svelte'
   import SettingCard from '@/routes/settings/components/SettingCard.svelte'
   import DownloadSettings from '@/routes/settings/components/DownloadSettings.svelte'
@@ -109,10 +123,16 @@
   <div class='d-flex flex-column'>
     <span class='text-nowrap'>{version ? `v${version}` : ''} {platformMap[VERSION.platform] || 'dev'} {VERSION.arch || 'dev'} {capitalize(VERSION.session) || ''}</span>
     <button type='button' use:click={() => { toast('Update is downloading...', { description: 'This may take a moment, the update will be ready shortly.' }) }} class='btn btn-primary mt-5 d-none align-items-center justify-content-center' style='background-color: var(--tertiary-color-light);' class:d-flex={$updateState === 'downloading'}><span class='text-truncate'>Update Downloading...</span></button>
-    <button type='button' use:click={() => { $updateState = 'ready' }} class='btn btn-primary mt-5 d-none align-items-center justify-content-center bg-success-light' class:d-flex={$updateState === 'ready' || $updateState === 'ignored' || $updateState === 'aborted'}><span class='text-truncate'>Update Available!</span></button>
+    <button type='button' use:click={showUpdatePrompt} class='btn btn-primary mt-5 d-none align-items-center justify-content-center bg-success-light' class:d-flex={$updateState === 'ready' || $updateState === 'ignored' || $updateState === 'aborted'}><span class='text-truncate'>Update Available!</span></button>
   </div>
 </SettingCard>
 {#if !SUPPORTS.isAndroid}
+  <SettingCard title='Install Updates On Quit' description='Installs a downloaded update when you quit the app, without the update prompt having to be accepted. The update prompt still shows up when an update is ready.'>
+    <div class='custom-switch'>
+      <input type='checkbox' id='app-update-on-quit' bind:checked={settings.updateInstallOnQuit} />
+      <label for='app-update-on-quit'>{settings.updateInstallOnQuit ? 'On' : 'Off'}</label>
+    </div>
+  </SettingCard>
   <SettingCard title='Exit Action' description='Choose the functionality of the close button for the app. You can choose to receive a Prompt to Minimize or Exit, default to Minimize, or default to Exiting the app.'>
     <div>
       <select class='form-control bg-dark mw-150 w-150 text-truncate' bind:value={settings.closeAction}>

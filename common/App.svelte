@@ -31,6 +31,7 @@
   import Profiles from '@/components/Profiles.svelte'
   import NotificationsModal from '@/modals/NotificationsModal.svelte'
   import MinimizeModal from '@/modals/MinimizeModal.svelte'
+  import UpdateModal from '@/modals/UpdateModal.svelte'
   import YearReview from '@/routes/yearreview/YearReview.svelte'
   import Navbar from '@/components/navigation/Navbar.svelte'
   import Status from '@/components/Status.svelte'
@@ -90,6 +91,8 @@
 </script>
 
 <MinimizeModal />
+<!-- Opens the update prompt when an update is ready (updateState), Sidebar / App settings reopen it. -->
+<UpdateModal />
 <YearReview />
 <div
   class='page-wrapper with-transitions bg-dark position-relative pl-safe-area'
