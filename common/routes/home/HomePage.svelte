@@ -18,6 +18,15 @@
 
   const bannerData = writable(getTitles())
   setInterval(() => getTitles(true), 5 * 60 * 1000)
+  // The banner follows its own settings only (it was fetched again on every settings change and Home visit).
+  const bannerSettings = (value) => JSON.stringify([value?.bannerProvider, value?.adult, value?.hentaiBanner])
+  let bannerKey = bannerSettings(settings.value)
+  settings.subscribe((value) => {
+    const key = bannerSettings(value)
+    if (key === bannerKey) return
+    bannerKey = key
+    getTitles(true)
+  })
 
   async function getTitles (refresh) {
     const provider = settings.value.bannerProvider || 'mix'
@@ -102,22 +111,26 @@
   }
 
   let mappedSections = {}
-  let manager = new SectionsManager()
+  const manager = new SectionsManager()
+  // Rows shown by Home. A store: module variables are not reactive, the rows did not follow a remap while on Home.
+  const shownSections = writable([])
   mapSections()
-  WPC.listen('remap-sections', () => {
-    manager.clear()
-    mappedSections = {}
-    mapSections()
-    manager = manager
-  })
+  // Sections rebuilt (modules/sections.js: home sections, custom sections, Hide My Anime, Adult Content...).
+  WPC.listen('remap-sections', mapSections)
 
   function mapSections () {
     manager.clear()
     mappedSections = {}
     for (const section of sections.value) { mappedSections[section.title] = section }
+    const added = new Set()
     for (const sectionTitle of settings.value.homeSections) {
-      if (mappedSections[sectionTitle[0]]) { manager.add(mappedSections[sectionTitle[0]]) }
+      // A title listed twice would show the same row twice (and break the keyed rows).
+      if (mappedSections[sectionTitle[0]] && !added.has(sectionTitle[0])) {
+        added.add(sectionTitle[0])
+        manager.add(mappedSections[sectionTitle[0]])
+      }
     }
+    shownSections.value = [...manager.sections]
   }
 
   const continueWatching = 'Continue Watching'
@@ -233,6 +246,7 @@
   import Banner from '@/components/banner/Banner.svelte'
   import YearReviewBanner from '@/routes/yearreview/YearReviewBanner.svelte'
   import { bannerImages, hideBanner } from '@/modules/bannerStore.js'
+  import { keepScroll } from '@/modules/navigation.js'
 
   let scrollContainer
 
@@ -252,26 +266,22 @@
     hideBanner.value = scrollContainer.scrollTop > 100
   }
 
-  $: if ($settings) {
-    getTitles(true)
-    mapSections()
-    manager = manager
-  }
-
   hideBanner.value = false
 </script>
 
 <div
   class='h-full w-full overflow-y-scroll root overflow-x-hidden'
   on:scroll={handleScroll}
+  use:keepScroll={'home'}
   bind:this={scrollContainer}
 >
   <Banner data={$bannerData} />
   <div class='d-flex flex-column h-full w-full mt-15 pl-sm-30 pl-md-80'>
     <YearReviewBanner />
-    {#each manager.sections as section, i (i)}
+    <!-- Keyed by the preview store of the section: a rebuilt section (new store) gets a new row that loads it. -->
+    {#each $shownSections as section, i (section.preview)}
       {#if !section.hide}
-        <HomeSection bind:opts={section} lastEpisode={isPreviousRSS(i)} />
+        <HomeSection opts={section} lastEpisode={isPreviousRSS(i)} />
       {/if}
     {/each}
   </div>

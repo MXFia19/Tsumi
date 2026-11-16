@@ -3,7 +3,7 @@
   import { manager } from '@/modules/extension.js'
   import { listCatalogs } from '@/modules/stremio.js'
   import { catalogAddons, catalogSections } from '@/routes/catalogs/sections.js'
-  import { page } from '@/modules/navigation.js'
+  import { page, keepScroll } from '@/modules/navigation.js'
   import { click } from '@/modules/click.js'
   import { onDestroy } from 'svelte'
   import { Clapperboard, Search, X, TriangleAlert } from 'lucide-svelte'
@@ -33,7 +33,8 @@
   $: canSearch = addons.some(ext => listCatalogs(ext, { search: true }).length > 0)
 </script>
 
-<div class='h-full w-full overflow-y-scroll root overflow-x-hidden'>
+<!-- The browse position is given back on back / forward (not a search: it is not kept). -->
+<div class='h-full w-full overflow-y-scroll root overflow-x-hidden' use:keepScroll={activeQuery ? null : 'catalogs'}>
   <div class='d-flex flex-column w-full mt-15 pl-sm-30 pl-md-80'>
     <div class='d-flex align-items-center flex-wrap px-20 pt-20 pb-10 header'>
       <Clapperboard size='2.6rem' class='mr-10 flex-shrink-0' />

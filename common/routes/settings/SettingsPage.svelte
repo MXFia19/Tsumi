@@ -19,6 +19,8 @@
     win32: 'Windows'
   }
   export let version = '1.4.2'
+  // The tab opened last, selected again when Settings opens (for the session).
+  let lastTab = 0
   IPC.on('version', (data) => {
     version = data
     debug(
@@ -79,7 +81,7 @@
   })
 </script>
 
-<Tabs>
+<Tabs initial={lastTab} onSelect={(index) => { lastTab = index }}>
   <div
     class='d-flex w-full h-full position-relative settings root flex-md-row flex-column pl-sm-30 pl-md-80'
     class:status-transition={statusTransition}
