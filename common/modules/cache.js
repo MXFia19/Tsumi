@@ -1,4 +1,6 @@
 import { generalDefaults, historyDefaults, queryDefaults, notifyDefaults } from './util.js'
+import { staleKeys, staleMappingKeys, QUERY_LIMITS, UNPRUNED_QUERIES } from './cachepolicy.js'
+import { parseDateOnly } from './dates.js'
 import { writable } from 'simple-store-svelte'
 import equal from 'fast-deep-equal/es6'
 import rfdc from 'rfdc'
@@ -8,6 +10,14 @@ const deepClone = rfdc({ proto: false, circles: false, ownProps: true })
 
 let currentDB = null
 const version = 1
+
+/** TMDB answers of older versions, kept forever in the general store (details, seasons, collections, release dates). */
+const LEGACY_TMDB_GENERAL = /^tmdb-(details-|season-|collection-|release-dates-)/
+/** TMDB images of older versions, written to the history store by mistake (caches.MEDIA did not exist). */
+const LEGACY_TMDB_HISTORY = /^tmdb-banner-/
+/** Longest wait for the MyAnimeList lists before an AniList answer is cached without their entries (filled later). */
+const FILL_TIMEOUT = 10_000
+const TIMED_OUT = Symbol('timed out')
 
 /**
  * Map of user IDs to their corresponding batch writer instances.
@@ -357,6 +367,13 @@ function createBatchWriter (userID, firstFlushDelay = 10_000, subsequentFlushDel
       await flush()
     },
     /**
+     * Drops the queued writes of the given caches (they are being reset).
+     * @param {string[]} cacheKeys
+     */
+    discard (cacheKeys) {
+      for (const cacheKey of cacheKeys) pending.delete(cacheKey)
+    },
+    /**
      * Returns the total number of queued cache entries across all caches.
      * @returns {number} Total pending cache entries.
      */
@@ -409,14 +426,18 @@ class Cache {
    */
   async #initialize () {
     debug(`Loading caches with id: ${this.cacheID}...`)
+    // `deep`: stores whose values are changed in place (settings, notifications, watch progress...): every update is
+    // compared deeply with a copy of what was written. The other stores replace an entry with a new object when it
+    // changes (updateMedia, #update, deleteEntry), so a reference check finds the changed entries without comparing
+    // (or copying) the whole store: thousands of media made every update cost 150 ms to 1 s.
     const cacheTypes = [
-      { key: caches.MEDIA_CACHE, writable: (data) => mediaCache = writable(deepClone(data)) },
-      { key: caches.GENERAL, writable: (data) => this.general = writable({ ...generalDefaults, ...deepClone(data) }) },
-      { key: caches.QUERIES, writable: (data) => this.queries = writable({ ...queryDefaults, ...deepClone(data) }) },
-      { key: caches.MAPPINGS, writable: (data) => this.mappings = writable(deepClone(data)) },
-      { key: caches.USER_LISTS, writable: (data) => this.user_lists = writable(deepClone(data)) },
-      { key: caches.NOTIFICATIONS, writable: (data) => this.notifications = writable({ ...notifyDefaults, ...deepClone(data) }) },
-      { key: caches.HISTORY, writable: (data) => this.history = writable({ ...historyDefaults, ...deepClone(data) }) }
+      { key: caches.MEDIA_CACHE, writable: (data) => mediaCache = writable(data) },
+      { key: caches.GENERAL, deep: true, writable: (data) => this.general = writable({ ...generalDefaults, ...deepClone(data) }) },
+      { key: caches.QUERIES, writable: (data) => this.queries = writable({ ...queryDefaults, ...data }) },
+      { key: caches.MAPPINGS, writable: (data) => this.mappings = writable(data) },
+      { key: caches.USER_LISTS, writable: (data) => this.user_lists = writable(data) },
+      { key: caches.NOTIFICATIONS, deep: true, writable: (data) => this.notifications = writable({ ...notifyDefaults, ...deepClone(data) }) },
+      { key: caches.HISTORY, deep: true, writable: (data) => this.history = writable({ ...historyDefaults, ...deepClone(data) }) }
     ]
 
     /**
@@ -453,34 +474,125 @@ class Cache {
         cacheMap.set(key.key, {})
       }
     }
+    this.#pruneLoaded(cacheMap)
     cacheTypes.forEach(({ key, writable }) => writable(cacheMap.get(key.key)))
 
-    this.subscribers = cacheTypes.map(({ key }) => {
-      const batchWriter = getBatchWriter(this.cacheID)
-      return (key.key === caches.MEDIA_CACHE.key ? mediaCache : this[key.key]).subscribe(value => {
+    const batchWriter = getBatchWriter(this.cacheID)
+    const removeKey = (key, subKey) => remove(this.cacheID, key, [subKey]).catch(error => debug(`Failed to remove ${subKey} from ${key.key}`, error))
+    this.subscribers = cacheTypes.map(({ key, deep }) => {
+      const store = key.key === caches.MEDIA_CACHE.key ? mediaCache : this[key.key]
+      if (deep) {
+        /** Copy of what was written, compared deeply with each new value. */
         const inMem = cacheMap.get(key.key) || {}
+        return store.subscribe(value => {
+          for (const [subKey, subValue] of Object.entries(value || {})) {
+            const prevSubValue = inMem[subKey]
+            if (prevSubValue !== subValue && !equal(prevSubValue, subValue)) {
+              batchWriter.enqueue(key, subKey, subValue)
+              inMem[subKey] = deepClone(subValue)
+            }
+          }
+          for (const subKey of Object.keys(inMem)) {
+            if (!(subKey in (value || {}))) {
+              delete inMem[subKey]
+              removeKey(key, subKey)
+            }
+          }
+        })
+      }
+      cacheMap.delete(key.key) // the store holds the loaded data itself, no copy is kept
+      /** Reference of each entry as last written (or loaded). */
+      const written = new Map(Object.entries(store.value || {}))
+      return store.subscribe(value => {
         for (const [subKey, subValue] of Object.entries(value || {})) {
-          const prevSubValue = inMem[subKey]
-          if (prevSubValue !== subValue && !equal(prevSubValue, subValue)) {
+          if (written.get(subKey) !== subValue || !written.has(subKey)) {
             batchWriter.enqueue(key, subKey, subValue)
-            inMem[subKey] = deepClone(subValue)
+            written.set(subKey, subValue)
           }
         }
-        for (const subKey of Object.keys(inMem)) {
+        for (const subKey of written.keys()) {
           if (!(subKey in (value || {}))) {
-            delete inMem[subKey]
-            remove(this.cacheID, key, [subKey]).catch(error => debug(`Failed to remove ${subKey} from ${key}`, error))
+            written.delete(subKey)
+            removeKey(key, subKey)
           }
-        }
-        cacheMap.set(key.key, inMem)
-        return () => {
-          cacheMap.delete(key.key)
-          debug('Unsubscribed from cache:', key.key)
         }
       })
     })
 
     debug('Caches have successfully been loaded!')
+  }
+
+  /**
+   * Startup pruning (policy in cachepolicy.js): TMDB answers of older versions (kept forever in the general and
+   * history stores, now TTL entries of the mappings store), mapping and query entries expired for longer than the
+   * grace period, and the least recently cached entries above the size limits. Changes are written right away.
+   * Media and user lists are not pruned (cached queries point to media, lists are the offline fallback).
+   * @param {Map<string, Object>} cacheMap cacheKey -> loaded { key: value }
+   */
+  #pruneLoaded (cacheMap) {
+    const now = Date.now()
+    const drop = (cache, keys) => {
+      if (!keys.length) return
+      const data = cacheMap.get(cache.key) || {}
+      for (const key of keys) delete data[key]
+      remove(this.cacheID, cache, keys).catch(error => debug(`Failed to prune ${cache.key}`, error))
+      debug(`Pruned ${keys.length} entries from ${cache.key}`)
+    }
+    try {
+      drop(caches.GENERAL, Object.keys(cacheMap.get(caches.GENERAL.key) || {}).filter(key => LEGACY_TMDB_GENERAL.test(key)))
+      drop(caches.HISTORY, Object.keys(cacheMap.get(caches.HISTORY.key) || {}).filter(key => LEGACY_TMDB_HISTORY.test(key)))
+      drop(caches.MAPPINGS, staleMappingKeys(cacheMap.get(caches.MAPPINGS.key), { now }))
+      const queries = cacheMap.get(caches.QUERIES.key) || {}
+      const rewritten = []
+      for (const [name, entries] of Object.entries(queries)) {
+        if (UNPRUNED_QUERIES.includes(name) || !entries || typeof entries !== 'object') continue
+        const stale = staleKeys(entries, { now, limit: QUERY_LIMITS[name] ?? Infinity })
+        if (!stale.length) continue
+        const kept = { ...entries }
+        for (const key of stale) delete kept[key]
+        queries[name] = kept
+        rewritten.push([name, kept])
+        debug(`Pruned ${stale.length} entries from ${caches.QUERIES.key}:${name}`)
+      }
+      putMany(this.cacheID, caches.QUERIES, rewritten).catch(error => debug('Failed to write the pruned queries', error))
+    } catch (error) {
+      debug('Failed to prune the caches', error)
+    }
+  }
+
+  /** Writes to the mappings store since its size was last checked. */
+  #mappingWrites = 0
+
+  /**
+   * Size-limited eviction while the app runs: a query cache that grew a quarter past its limit, or the mappings store
+   * every few hundred writes, is cut back to its limits (oldest entries first, see cachepolicy.js).
+   * @param {keyof typeof caches} cache
+   */
+  #evict (cache) {
+    if (cache === caches.MAPPINGS) {
+      if (++this.#mappingWrites < 250) return
+      this.#mappingWrites = 0
+      const stale = staleMappingKeys(this.mappings.value)
+      if (!stale.length) return
+      this.mappings.update(current => {
+        for (const key of stale) delete current[key]
+        return current
+      })
+      debug(`Evicted ${stale.length} entries from ${cache.key}`)
+      return
+    }
+    const limit = QUERY_LIMITS[cache.key]
+    const entries = this.queries.value[cache.key]
+    if (!limit || !entries || Object.keys(entries).length <= limit * 1.25) return
+    const stale = staleKeys(entries, { limit })
+    if (!stale.length) return
+    this.queries.update(query => {
+      const kept = { ...query[cache.key] }
+      for (const key of stale) delete kept[key]
+      query[cache.key] = kept
+      return query
+    })
+    debug(`Evicted ${stale.length} entries from ${caches.QUERIES.key}:${cache.key}`)
   }
 
   /**
@@ -518,12 +630,13 @@ class Cache {
       })
     } else {
       this.queries.update((query) => {
-        if (!query[cache.key]) query[cache.key] = {}
-        const current = query[cache.key][key]
-        query[cache.key][key] = typeof data === 'function' ? data(current) : data
+        const current = query[cache.key]?.[key]
+        // A new object for the changed query cache: the store subscriber only writes entries whose reference changed.
+        query[cache.key] = { ...(query[cache.key] || {}), [key]: typeof data === 'function' ? data(current) : data }
         return query
       })
     }
+    if (cache !== caches.USER_LISTS) this.#evict(cache)
   }
 
   /**
@@ -567,10 +680,12 @@ class Cache {
    * See {@link queryDefaults} for all values that will be reset.
    */
   async resetCaches () {
-    await reset(this.cacheID, caches.QUERIES)
-    await reset(this.cacheID, caches.MAPPINGS)
-    await reset(this.cacheID, caches.USER_LISTS)
-    await reset(this.cacheID, caches.MEDIA_CACHE)
+    const resetCaches = [caches.QUERIES, caches.MAPPINGS, caches.USER_LISTS, caches.MEDIA_CACHE]
+    getBatchWriter(this.cacheID).discard(resetCaches.map(({ key }) => key))
+    for (const cache of resetCaches) await reset(this.cacheID, cache)
+    // TMDB answers (details, seasons, images...) are mappings entries; older versions kept them in these stores.
+    await remove(this.cacheID, caches.GENERAL, Object.keys(this.general.value || {}).filter(key => LEGACY_TMDB_GENERAL.test(key)))
+    await remove(this.cacheID, caches.HISTORY, Object.keys(this.history.value || {}).filter(key => LEGACY_TMDB_HISTORY.test(key)))
     location.reload()
   }
 
@@ -657,27 +772,63 @@ class Cache {
    *
    * @param {Array<Object>} medias - An array of media objects to be cached. Each media object should have a unique identifier (`id`).
    * @param {Object} [fillLists] - An object containing user list data to attach to each media entry (e.g., `{ data: { MediaList: [...] } }`)
+   * @param {boolean} [listsExpected] - The media come with MyAnimeList entries (`fillLists`): when the lists are unknown (request failed or too slow), the cached entries are kept instead of the empty AniList ones.
    * @returns {Promise<void>} Resolves when the media cache has been successfully updated.
    */
-  async updateMedia (medias, fillLists) {
+  async updateMedia (medias, fillLists, listsExpected = fillLists !== undefined && fillLists !== null) {
     if (!medias || !medias.length) return
-    const filledMedias = fillLists ? fillEntries(medias, fillLists) : medias /* attaches any alternative authorization userList information to the anilist media for tracking. */
-    const mediaMap = new Map(filledMedias.map(m => [m.id, m]))
+    const listsKnown = Array.isArray(fillLists?.data?.MediaList)
+    const filledMedias = listsKnown ? fillEntries(medias, fillLists) : medias /* attaches any alternative authorization userList information to the anilist media for tracking. */
+    const mediaMap = new Map(filledMedias.filter(Boolean).map(m => [m.id, m]))
     mediaCache.update(current => {
       for (const [id, media] of mediaMap.entries()) {
-        if (media) {
-          const existing = current[id] || {}
-          current[id] = {
-            ...existing,
-            ...media,
-            logo: media.logo || existing.logo,
-            bannerImage: media.bannerImage || existing.bannerImage,
-            airingSchedule: media.airingSchedule || existing.airingSchedule
-          }
+        const cached = current[id] || {}
+        // TMDB shows and movies can share an id ("tmdb-<id>", kept for Watch Together and iOS): never mix their fields.
+        const existing = (media.isTmdb && cached.isTmdb && media.format && cached.format && (media.format === 'MOVIE') !== (cached.format === 'MOVIE')) ? {} : cached
+        const updated = {
+          ...existing,
+          ...media,
+          logo: media.logo || existing.logo,
+          bannerImage: media.bannerImage || existing.bannerImage,
+          airingSchedule: media.airingSchedule || existing.airingSchedule
         }
+        if (listsExpected && !listsKnown && 'mediaListEntry' in existing) updated.mediaListEntry = existing.mediaListEntry
+        // Unchanged media keep their object: the store subscriber only writes entries whose reference changed.
+        if (media === cached || equal(updated, cached)) continue
+        current[id] = updated
       }
       return current
     })
+  }
+
+  /**
+   * MyAnimeList lists to attach to an answer: waits for them at most {@link FILL_TIMEOUT}, so AniList sections never
+   * hang on MyAnimeList. When they arrive later, the list entries of the media are filled then.
+   * @param {any} fillLists promise of the MyAnimeList lists
+   * @param {Array<Object>} medias
+   * @returns {Promise<Object | null>} the lists, null when they are unknown
+   */
+  async #listsToFill (fillLists, medias) {
+    const lists = Promise.resolve(fillLists).catch(error => {
+      debug('MyAnimeList lists unavailable, list entries are not filled', error)
+      return null
+    })
+    let timer
+    const result = await Promise.race([lists, new Promise(resolve => { timer = setTimeout(resolve, FILL_TIMEOUT, TIMED_OUT) })])
+    clearTimeout(timer)
+    if (result !== TIMED_OUT) return result
+    debug('MyAnimeList lists are slow, list entries will be filled once they arrive')
+    lists.then(late => {
+      if (!Array.isArray(late?.data?.MediaList)) return
+      const filled = fillEntries(medias.filter(Boolean).map(({ id, idMal }) => ({ id, idMal })), late)
+      mediaCache.update(current => {
+        for (const media of filled) {
+          if (media.mediaListEntry && current[media.id]) current[media.id] = { ...current[media.id], mediaListEntry: media.mediaListEntry }
+        }
+        return current
+      })
+    })
+    return null
   }
 
   /**
@@ -750,7 +901,7 @@ class Cache {
    * @param {string} key - The unique key to identify the cached entry.
    * @param {Object} [vars] - The variables associated with the cached data if applicable, this can include filters, query parameters, or context-specific data.
    * @param {Object} data - The data to be cached, this is the primary content to store for the key. Preferably this should be a promise as it will be handled before caching.
-   * @param {number} expiry - The expiration timestamp for the cache entry in milliseconds since the epoch, once the current time exceeds this value the entry is considered expired.
+   * @param {number | ((res: any) => number)} expiry - The expiration timestamp for the cache entry in milliseconds since the epoch, once the current time exceeds this value the entry is considered expired. A function gets the answer and returns the timestamp (TTL depending on the data, see cachepolicy.js); a timestamp that is not in the future means the answer is not cached.
    * @returns {Promise<Object>} A promise that resolves when the caching operation is complete.
    *
    */
@@ -760,6 +911,7 @@ class Cache {
       return this.#pending.get(`${cache.key}:${key}`)
     }
     const { fillLists, ...variables } = vars || {}
+    const listsExpected = fillLists !== undefined && fillLists !== null
     const promiseData = (async () => {
       let res
       try {
@@ -777,17 +929,19 @@ class Cache {
       if (cache !== caches.RECOMMENDATIONS || this.general.value.settings.queryComplexity === 'Complex') {
         if (res?.data?.Page?.media) {
           cacheRes.data.Page.media = cacheRes.data.Page.media.map(media => media.id)
-          await this.updateMedia(res.data.Page.media, await fillLists)
+          await this.updateMedia(res.data.Page.media, listsExpected ? await this.#listsToFill(fillLists, res.data.Page.media) : undefined, listsExpected)
         } else if (res?.data?.Media) {
           cacheRes.data.Media = cacheRes.data.Media.id
-          await this.updateMedia([res.data.Media], await fillLists)
+          await this.updateMedia([res.data.Media], listsExpected ? await this.#listsToFill(fillLists, [res.data.Media]) : undefined, listsExpected)
         } else if (res?.data?.MediaListCollection && !variables.token) {
           const lists = res.data.MediaListCollection.lists || []
           cacheRes.data.MediaListCollection = { ...res.data.MediaListCollection, lists: lists.map(list => ({ ...list, entries: list.entries.map(entry => ({ ...entry, media: entry.media.id })) })) }
           await this.updateMedia(lists.flatMap(list => list.entries.map(entry => entry.media)))
         }
       }
-      this.#update(cache, key, { data: cacheRes, expiry, cachedAt: Date.now() })
+      const expiresAt = typeof expiry === 'function' ? expiry(res) : expiry
+      if (typeof expiry === 'function' && !(expiresAt > Date.now())) return res
+      this.#update(cache, key, { data: cacheRes, expiry: expiresAt, cachedAt: Date.now() })
       return res
     })()
     this.#pending.set(`${cache.key}:${key}`, promiseData)
@@ -856,21 +1010,33 @@ function fillEntries (medias, userLists) {
   return medias.map(media => {
     const status = malMap.get(media.idMal)
     if (!status) return media
-
-    const startDate = status.start_date ? new Date(status.start_date) : undefined
-    const finishDate = status.finish_date ? new Date(status.finish_date) : undefined
-    const startedAt = startDate ? { year: startDate.getFullYear(), month: startDate.getMonth() + 1, day: startDate.getDate() } : undefined
-    const completedAt = finishDate ? { year: finishDate.getFullYear(), month: finishDate.getMonth() + 1, day: finishDate.getDate() } : undefined
-    media.mediaListEntry = {
-      id: media.id,
-      progress: status.num_episodes_watched,
-      repeat: status.number_times_rewatched,
-      status: mapStatus(status.is_rewatching ? 'rewatching' : status.status),
-      customLists: [],
-      score: status.score,
-      startedAt,
-      completedAt
-    }
-    return media
+    const mediaListEntry = malListEntry(media.id, status)
+    // The answer returned to the caller gets the entry too (as before), but a cached media object is never changed in
+    // place: the media cache only saves entries whose reference changed (see updateMedia).
+    if (mediaCache?.value?.[media.id] !== media) media.mediaListEntry = mediaListEntry
+    return { ...media, mediaListEntry }
   })
+}
+
+/**
+ * AniList-shaped list entry of a MyAnimeList list status (my_list_status). Start and finish dates are calendar days
+ * ("2024-05-10"), read as written: new Date() made them a day earlier west of UTC, and that date was sent back to
+ * MyAnimeList on the next update.
+ * @param {number} mediaId AniList media id
+ * @param {any} status MyAnimeList my_list_status
+ * @returns {any} null when there is no status
+ */
+export function malListEntry (mediaId, status) {
+  if (!status) return null
+  const rewatched = status.num_times_rewatched ?? status.number_times_rewatched
+  return {
+    id: mediaId,
+    progress: status.num_episodes_watched,
+    repeat: Number.isInteger(rewatched) ? rewatched : undefined, // only sent back to MyAnimeList when known
+    status: mapStatus(status.is_rewatching ? 'rewatching' : status.status),
+    customLists: [],
+    score: status.score,
+    startedAt: parseDateOnly(status.start_date) || undefined,
+    completedAt: parseDateOnly(status.finish_date) || undefined
+  }
 }
