@@ -7,9 +7,7 @@ import { extensionManager, callExtensionFunction } from '@/modules/extension.js'
 import { parseStreamResponse } from '@/modules/streaming.js'
 import { sessionServer } from '@/modules/session.js'
 import { anilistClient } from '@/modules/anilist.js'
-import { status } from '@/modules/networking.js'
 import { page } from '@/modules/navigation.js'
-import Helper from '@/modules/helper.js'
 import { files, nowPlaying } from '@/components/MediaHandler.svelte'
 import { shareNowPlaying } from '@/routes/w2g/components/session.js'
 import { bestResult, matchEpisode, normalizeSubtitles, preferredSubtitle, orderServerIndexes } from '@/modules/downloads/resolve.js'
@@ -318,51 +316,6 @@ export function playDownloadedIfAvailable (media, episode) {
 
 // ---- List progress made offline
 
-const QUEUE_KEY = 'tsumi-offline-progress'
-
-function readQueue () {
-  try {
-    return JSON.parse(localStorage.getItem(QUEUE_KEY)) || []
-  } catch {
-    return []
-  }
-}
-
-function writeQueue (queue) {
-  localStorage.setItem(QUEUE_KEY, JSON.stringify(queue))
-}
-
-/** Helper.updateEntry, or kept until the connection is back when offline. */
-export function updateEntryOrQueue (filemedia) {
-  if (status.value === 'offline' || !navigator.onLine) {
-    if (!filemedia?.media?.id || !Helper.isAuthorized()) return
-    const queue = readQueue().filter(entry => !(entry.mediaId === filemedia.media.id && entry.episode <= filemedia.episode))
-    queue.push({ mediaId: filemedia.media.id, episode: filemedia.episode, media: { id: filemedia.media.id }, at: Date.now() })
-    writeQueue(queue)
-    debug('Offline: list update queued', filemedia.media.id, filemedia.episode)
-    return
-  }
-  return Helper.updateEntry(filemedia)
-}
-
-let flushing = false
-async function flushQueue () {
-  if (flushing || status.value === 'offline') return
-  const queue = readQueue()
-  if (!queue.length) return
-  flushing = true
-  try {
-    for (const entry of queue.sort((a, b) => a.at - b.at)) {
-      await Helper.updateEntry({ media: entry.media, episode: entry.episode })
-      writeQueue(readQueue().filter(other => !(other.mediaId === entry.mediaId && other.episode === entry.episode && other.at === entry.at)))
-    }
-  } catch (error) {
-    debug('Failed to send the offline list updates', error)
-  } finally {
-    flushing = false
-  }
-}
-
-status.subscribe(value => {
-  if (value !== 'offline') setTimeout(flushQueue, 5_000)
-})
+// The queue of list updates (offline progress, failed updates) lives in sync/listqueue.js, which also gives the UI the
+// pending count, retry and discard.
+export { updateEntryOrQueue } from '@/modules/sync/listqueue.js'
