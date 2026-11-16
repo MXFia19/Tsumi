@@ -119,7 +119,8 @@
   // TMDB detail enrichment for western media, applied to the title it was asked for only: the details may show
   // another title by the time TMDB answers.
   let enriching = null
-  $: if (staticMedia && typeof staticMedia.id === 'string' && staticMedia.idTmdb && !staticMedia._tmdbEnriched) enrich(staticMedia)
+  $: enrichTarget = staticMedia && typeof staticMedia.id === 'string' && staticMedia.idTmdb && !staticMedia._tmdbEnriched ? staticMedia : null
+  $: if (enrichTarget) enrich(enrichTarget)
   function enrich (target) {
     const key = `${target.id}|${target.idTmdb}`
     if (enriching === key) return
