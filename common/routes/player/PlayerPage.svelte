@@ -24,7 +24,8 @@
   import { playbackSync } from '@/modules/sync/session.js'
   import { downloadsSupported, downloadFromPlayer, updateEntryOrQueue } from '@/modules/downloads/downloads.js'
   import { HoldSpeed, holdSpeedOf, holdSpeedLabel } from '@/modules/holdspeed.js'
-  import { ArrowDownToLine } from 'lucide-svelte'
+  import { resumePosition, parseSubtitleOffset, subtitleUrlOf, inEndChapters, hlsLevelOptions, CHAPTER_KINDS } from '@/modules/playerstate.js'
+  import { ArrowDownToLine, Gauge } from 'lucide-svelte'
 
   import { w2gEmitter, state } from '@/routes/w2g/WatchTogetherPage.svelte'
   import PlayerW2G from '@/routes/w2g/components/PlayerW2G.svelte'
@@ -34,8 +35,7 @@
   import Keybinds, { loadWithDefaults, condition } from 'svelte-keybinds'
   import { SUPPORTS } from '@/modules/support.js'
   import 'rvfc-polyfill'
-  import { IPC, ELECTRON, ANDROID } from '@/modules/bridge.js'
-  import WPC from '@/modules/wpc.js'
+  import { IPC, ELECTRON } from '@/modules/bridge.js'
   import { X, Captions, CircleHelp, Contrast, FastForward, Keyboard, EllipsisVertical, SquareArrowOutUpRight, List, Eye, FilePlus2, ListMusic, ListVideo, Maximize, Minimize, Pause, PictureInPicture, PictureInPicture2, Play, Proportions, RefreshCcw, Rewind, RotateCcw, RotateCw, ScreenShare, SkipBack, SkipForward, Volume1, Volume2, VolumeX, SlidersVertical, SquarePen, Server } from 'lucide-svelte'
   import Debug from 'debug'
   // Chromecast (PC) and online subtitles: logic in modules/cast.js and modules/onlinesubs/.
@@ -78,7 +78,8 @@
   w2gEmitter.on('playerupdate', applyW2GState)
   w2gEmitter.on('perform', performW2GRequest)
   w2gEmitter.on('setindex', (detail) => {
-    playFile(detail)
+    // Only a file index of this batch: a lobby message never loads an arbitrary file object.
+    if (Number.isInteger(detail) && detail >= 0 && detail < videos.length) playFile(detail)
   })
 
   export function playFile (file) {
@@ -141,7 +142,7 @@
     w2gTracker.reset(null)
   }
 
-  // autoPlay() and loadAnimeProgress() run on loadedmetadata; loading ends when both are done.
+  // handleLoadedMetadata() resumes and starts autoPlay(); loading ends when its steps are done.
   async function w2gLoadedMetadata () {
     const token = w2gLoadToken
     const steps = w2gLoadSteps
@@ -193,8 +194,15 @@
 
   export let miniplayer = false
   $: viewAnime = $modal[modal.ANIME_DETAILS]
-  $condition = () =>
+  /** Typing in a text field (subtitle offset, chat...) never triggers the player shortcuts (arrows, space...). */
+  function isTextEntry (target) {
+    if (!(target instanceof HTMLElement)) return false
+    if (target.isContentEditable || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return true
+    return target instanceof HTMLInputElement && !['range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'color', 'image'].includes(target.type)
+  }
+  $condition = (event) =>
     SUPPORTS.keybinds &&
+      !isTextEntry(event?.target) &&
       $page === page.PLAYER &&
       ((!miniplayer &&
         (!$modal || !modal.length) &&
@@ -209,7 +217,6 @@
   $: canDownload = downloadsSupported && !!current?.media?.media && !current?.offline
   let activeServerIndex = 0
   $: updateFiles(files)
-  let src = null
   let video = null
   let container = null
   let current = null
@@ -237,14 +244,17 @@
   let source = null
   let gainNode = null
   let playbackRate = 1
-  let externalPlayerReady = false
   $: cache.setEntry(caches.GENERAL, 'volume', String(volume || 0))
   // Watch Together voice: the video is lowered while someone speaks; `volume` (the user's choice) never changes.
   $: if (video) video.volume = Math.min(1, Math.max(0, (volume || 0) * $voiceDuck))
-  $: launchedExternal = false
-  $: externalPlayback =
-    ($settings.enableExternal || launchedExternal) &&
-    (SUPPORTS.isAndroid || $settings.playerPath)
+  // External player (Settings > Player, and More > External Player): the main process starts the user's player
+  // (IPC external-player:launch) and tells when it closed (external-player:closed). `externalPlayback` is true while
+  // an episode plays there; `externalSession` is { id, startTime, builtin } once it started (builtin: the stream also
+  // stays loaded here, paused).
+  let externalPlayback = false
+  let externalSession = null
+  $: externalAvailable = !!(SUPPORTS.externalPlayer && !SUPPORTS.isAndroid && $settings.playerPath && IPC?.invoke)
+  $: externalEnabled = externalAvailable && !!$settings.enableExternal
   $: safeduration = externalPlayback
     ? (current?.media?.media?.duration ||
       (current?.media?.media?.format &&
@@ -279,20 +289,31 @@
     }
   }
 
+  /**
+   * Key of the show playing for its remembered choices (subtitle track and offset, volume boost). The file's own
+   * media first: nowPlaying ($nowPlaying, `media`) is updated asynchronously and can still be the previous episode's.
+   */
+  function showKey () {
+    return `${current?.media?.media?.id || media?.media?.id || media?.title || media?.parseObject?.title || media?.parseObject?.file_name}`
+  }
+
   function checkAudio () {
-    volumeBoosted =
-      cache.getEntry(caches.HISTORY, 'lastBoosted')?.[
-        `${media?.media?.id || media?.title || media?.parseObject?.title || media?.parseObject?.file_name}`
-      ]?.boosted || false
+    const boost = cache.getEntry(caches.HISTORY, 'lastBoosted')?.[showKey()]
+    volumeBoosted = boost?.boosted || false
     if (volumeBoosted) {
       setupAudio()
-      gain =
-        cache.getEntry(caches.HISTORY, 'lastBoosted')?.[
-          `${media?.media?.id || media?.title || media?.parseObject?.title || media?.parseObject?.file_name}`
-        ]?.gain || 0
-      gainNode.gain.value = gain
+      gain = boost?.gain || 0
+      // Same mapping as setGain(): up to 1 the element volume does it, above 1 the gain node (never both).
+      if (gain > 1) {
+        volume = 1
+        gainNode.gain.value = gain
+      } else {
+        volume = gain
+        gainNode.gain.value = 1
+      }
     } else {
-      if (gainNode?.gain) gainNode.gain.value = volume
+      // Not boosting: the gain node passes the sound as is (the element volume already applies `volume`).
+      if (gainNode?.gain) gainNode.gain.value = 1
       gain = 0
     }
     if ('audioTracks' in HTMLVideoElement.prototype) {
@@ -315,38 +336,51 @@
     }
   }
 
-  function checkSubtitle () {
-    const lastSubtitle = cache.getEntry(caches.HISTORY, 'lastSubtitle')?.[
-      `${media?.media?.id || media?.title || media?.parseObject?.title || media?.parseObject?.file_name}`
-    ]
-    if (subHeaders?.length && lastSubtitle) {
-      if (lastSubtitle === 'OFF') {
-        subs.selectCaptions(-1)
+  /** Name of a subtitle track in the menu, also what lastSubtitle remembers. */
+  function trackLabel (track) {
+    return (track?.language ||
+      (!Object.values(subs?.headers || {}).some(
+        (header) => header?.language === 'eng' || header?.language === 'en'
+      )
+        ? 'eng'
+        : track?.type)) + (track?.name ? ' - ' + track.name : '')
+  }
+
+  function rememberSubtitle (choice) {
+    cache.setEntry(caches.HISTORY, 'lastSubtitle', {
+      ...(cache.getEntry(caches.HISTORY, 'lastSubtitle') || {}),
+      [showKey()]: choice
+    })
+  }
+
+  /** The remembered subtitle choice of the show was applied (once per episode). */
+  let subtitlePreferenceDone = false
+  /**
+   * Applies the remembered subtitle choice of the show (OFF, or a track name) as soon as the tracks it needs exist:
+   * tracks arrive at any time (stream subtitle URL, online subtitles), so this runs on every header change until done.
+   */
+  function applySubtitlePreference () {
+    if (subtitlePreferenceDone || !subs?.headers) return
+    const wanted = cache.getEntry(caches.HISTORY, 'lastSubtitle')?.[showKey()]
+    if (!wanted) {
+      subtitlePreferenceDone = true
+      return
+    }
+    const tracks = subs.headers.filter(Boolean)
+    if (!tracks.length) return
+    if (wanted === 'OFF') {
+      subtitlePreferenceDone = true
+      if (subs.current !== -1) subs.selectCaptions(-1)
+      setTimeout(() => subs?.renderer?.resize(), 200) // stupid fix (resize) because video metadata doesn't update for multiple frames
+      return
+    }
+    for (const track of tracks) {
+      const trackName = trackLabel(track)
+      if (track?.number && matchPhrase(wanted, trackName, trackName?.length > 10 ? 3 : 2, true)) {
+        subtitlePreferenceDone = true
+        if (subs.current !== track.number) subs.selectCaptions(track.number)
         setTimeout(() => subs?.renderer?.resize(), 200) // stupid fix (resize) because video metadata doesn't update for multiple frames
-      } else {
-        for (const track of subHeaders) {
-          const trackName =
-            (track?.language ||
-              (!Object.values(subs?.headers).some(
-                (header) =>
-                  header?.language === 'eng' || header?.language === 'en'
-              )
-                ? 'eng'
-                : track?.type)) + (track?.name ? ' - ' + track?.name : '')
-          if (
-            matchPhrase(
-              lastSubtitle,
-              trackName,
-              trackName?.length > 10 ? 3 : 2,
-              true
-            ) &&
-            track?.number
-          ) {
-            subs.selectCaptions(track.number)
-            setTimeout(() => subs?.renderer?.resize(), 200) // stupid fix (resize) because video metadata doesn't update for multiple frames
-            break
-          }
-        }
+        return
       }
     }
   }
@@ -394,10 +428,15 @@
 
   function handleHeaders () {
     subHeaders = subs?.headers
+    applySubtitlePreference()
   }
 
-  async function loadExternalSubtitleUrl (url, headers = {}) {
-    if (!subs || !url) return
+  /**
+   * Adds the subtitle file of the stream response to `instance` (the Subtitles of the episode that asked for it: a
+   * file arriving after the episode changed is dropped instead of being added to the next one).
+   */
+  async function loadExternalSubtitleUrl (instance, url, headers = {}) {
+    if (!instance || !url) return
     try {
       const port = await ELECTRON.getProxyPort?.()
       const res = (port && Object.keys(headers).length > 0)
@@ -406,12 +445,13 @@
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const text = await res.text()
+      if (instance !== subs || !instance.headers) return
       const ext = url.split(/[?#]/)[0].split('.').pop()?.toLowerCase() || 'vtt'
       const fileName = `Subtitles.${ext}`
       const file = new File([text], fileName, { type: 'text/plain' })
-      await subs.addSingleSubtitleFile(file)
+      await instance.addSingleSubtitleFile(file)
     } catch (err) {
-      debug('Failed to fetch subtitle from URL:', url, err)
+      debug('Failed to fetch the subtitle of the stream', err)
     }
   }
 
@@ -424,23 +464,14 @@
         }
       }
     } else {
-      src = ''
+      // Player closed: nothing of the last episode may keep running (stats, thumbnails, async loads...).
+      resetEpisodeState()
+      stopStream(video)
       buffering = true
       current = null
-      currentTime = 0
-      targetTime = 0
-      if (subs) {
-        subs.destroy()
-        subs = null
-      }
     }
   }
 
-  let loadInterval
-
-  function clearLoadInterval () {
-    clearInterval(loadInterval)
-  }
   /**
    * @type {VideoDeband}
    */
@@ -449,9 +480,22 @@
   function loadDeband (load, video) {
     if (!video) return
     if (load && !deband) {
-      deband = new VideoDeband(video)
-      deband.canvas.classList.add('deband-canvas')
-      video.before(deband.canvas)
+      try {
+        deband = new VideoDeband(video)
+        deband.canvas.classList.add('deband-canvas')
+        video.before(deband.canvas)
+      } catch (error) {
+        // No WebGL 2 (old GPU, ANGLE on D3D9...): the constructor throws. Turn the setting off instead of failing
+        // in the middle of a reactive update (which froze the app at start when the setting was saved on).
+        debug('Video debanding unavailable', error)
+        try { deband?.destroy() } catch (e) {}
+        deband?.canvas?.remove()
+        deband = null
+        $settings.playerDeband = false
+        toast.error('Video Debanding Unavailable', {
+          description: 'Your graphics card or driver does not support it (WebGL 2 is needed). The setting was turned off.'
+        })
+      }
     } else if (!load && deband) {
       deband.destroy()
       deband.canvas.remove()
@@ -462,34 +506,66 @@
   // Cross-device resume (AniList / MyAnimeList note) and Trakt scrobbling, see modules/sync/session.js.
   $: playbackSync.attach(video, current?.media)
 
-  let externalReadyListener
-  async function handleCurrent (file) {
+  /** Incremented for every episode load and on close: the async steps of an older load see it changed and stop. */
+  let loadToken = 0
+  /** Incremented for every stream (re)load of the episode: server switch, retry, back from the external player. */
+  let streamToken = 0
+  /** Same episode reloaded (server switch, retry...): { time, paused, stream } applied on its loadedmetadata. */
+  let pendingRestore = null
+  /** Last position the video really played at (kept when a load fails, for the next server / retry). */
+  let lastGoodTime = 0
+
+  /** Everything tied to the episode playing back to its initial state: new episode, or player closed. */
+  function resetEpisodeState () {
+    loadToken++
+    streamToken++
     holdSpeed.cancel()
-    paused = true
+    stopStats()
+    stopThumbnails()
+    clearUpNext()
+    upNextDismissed = false
+    clearTimeout(resumeOfferTimer)
+    resumeOffer = null
+    dismissStreamError()
+    pendingRestore = null
+    lastGoodTime = 0
     canPlay = false
-    video?.pause?.()
-    externalPlayerReady = false
-    showBuffering()
-    if (file) {
-      if (thumbnailData.video?.src) URL.revokeObjectURL(video?.src)
-      Object.assign(thumbnailData, {
-        thumbnails: [],
-        interval: undefined,
-        video: undefined
-      })
-      currentTime = 0
-      targetTime = 0
-      chapters = []
-      currentSkippable = null
-      completed = false
-      if (subs) {
-        subs.destroy()
-        subs = null
-      }
-      current = file
-      startW2GLoading()
-      setCurrent(file)
+    externalPlayback = false
+    externalSession = null
+    hlsLevels = []
+    hlsLevel = -1
+    hlsActiveLevel = -1
+    buffer = 0
+    currentTime = 0
+    targetTime = 0
+    chapters = []
+    currentSkippable = null
+    completed = false
+    filler = null
+    recap = null
+    skipPrompt = false
+    resolvePrompt = false
+    subtitlePreferenceDone = false
+    thumbnailData.thumbnails = []
+    thumbnailData.interval = undefined
+    if (subs) {
+      subs.destroy()
+      subs = null
     }
+  }
+
+  function handleCurrent (file) {
+    // An unknown file (out of range index...) used to leave the spinner forever: keep what plays instead.
+    if (!file) return
+    paused = true
+    video?.pause?.()
+    resetEpisodeState()
+    showBuffering()
+    current = file
+    subDelay = savedSubDelay()
+    subDelayText = String(subDelay)
+    startW2GLoading()
+    setCurrent(file, loadToken)
   }
 
   function waitForVideo () {
@@ -508,76 +584,271 @@
     })
   }
 
-  async function setCurrent (file, launchExternal = false) {
-    if (!externalPlayback) {
-      stopStream(video)
-      const isHLS = file.url?.toLowerCase()?.includes('.m3u8')
-      streamServers = file.streamServers || []
-      activeServerIndex = file.activeServerIndex || 0
-      try {
-        await waitForVideo()
-        await loadStream(video, file.url, {
-          headers: file.streamHeaders || {}
-        })
-      } catch (error) {
-        debug('Stream load failed, falling back to direct src:', error)
-        src = file.url
+  const isHlsUrl = (url) => !!url?.toLowerCase()?.includes('.m3u8')
+
+  /** URL and headers of the stream playing: the server picked in the Servers menu, else the file's own. */
+  function activeStream (file = current) {
+    const server = activeServerIndex !== (file?.activeServerIndex || 0) ? streamServers[activeServerIndex] : null
+    return server?.streamUrl
+      ? { url: server.streamUrl, headers: server.headers || {} }
+      : { url: file?.url, headers: file?.streamHeaders || {} }
+  }
+
+  async function setCurrent (file, token) {
+    streamServers = file.streamServers || []
+    activeServerIndex = file.activeServerIndex || 0
+    stopStream(video)
+    if (externalEnabled) {
+      const startTime = resumePosition(getEpisodeProgress(file), { threshold: $settings.playerAutocompleteThreshold }) || 0
+      const launched = await launchExternal(file, token, startTime)
+      if (token !== loadToken) return
+      if (launched) {
+        emit('current', current) // #handleCurrent in MediaHandler
+        return
       }
-      if (video) {
-        subs = new Subtitles(video, files, current, handleHeaders)
-        if (!isHLS) video.load()
-        // Load external subtitle URL from extension stream response
-        if (file.subtitle) {
-          loadExternalSubtitleUrl(file.subtitle, file.streamHeaders || {}).catch((err) =>
-            debug('Failed to load subtitle:', err)
-          )
-        }
-      }
-      await loadAnimeProgress()
-    } else externalPlaying = false
-    emit('current', current) // #handleCurrent in MediaHandler
-    if (externalPlayback) {
-      WPC.clear('externalReady', externalReadyListener)
-      externalReadyListener = () => {
-        hideBuffering()
-        externalPlayerReady = true
-        setTimeout(() => {
-          if (externalPlayerReady && !externalPlaying) autoPlay()
-        }, 1_500)
-      }
-      WPC.listen('externalReady', externalReadyListener)
     }
-    launchedExternal = launchExternal
-    WPC.send('current', {
-      current: file,
-      external: settings.value.enableExternal || launchExternal
-    })
+    await loadBuiltin(file, token)
+    if (token === loadToken) emit('current', current) // #handleCurrent in MediaHandler
+  }
+
+  /** Plays the episode in the built-in player: stream, subtitles of the stream response. */
+  async function loadBuiltin (file, token, restore = null) {
+    const stream = activeStream(file)
+    const started = await startStream(stream, restore)
+    // Back from the external player the episode may already have its subtitles (and the tracks the user added).
+    if (!started || token !== loadToken || !video || subs) return
+    subs = new Subtitles(video, files, current, handleHeaders)
+    // Subtitle file of the extension stream response
+    const subtitleUrl = subtitleUrlOf(file.subtitle)
+    if (subtitleUrl) loadExternalSubtitleUrl(subs, subtitleUrl, stream.headers)
+  }
+
+  /**
+   * Loads a stream in the video (streaming.js: hls.js or the local proxy). `restore` ({ time, paused }) is applied
+   * on its loadedmetadata instead of the first-load steps (resume, autoplay, filler prompt). False when a newer load
+   * started meanwhile.
+   */
+  async function startStream ({ url, headers }, restore = null) {
+    const stream = ++streamToken
+    pendingRestore = restore ? { ...restore, stream } : null
+    hlsLevels = []
+    hlsLevel = -1
+    hlsActiveLevel = -1
+    dismissStreamError()
+    showBuffering()
+    stopStream(video)
+    try {
+      await waitForVideo()
+      if (stream !== streamToken) return false
+      await loadStream(video, url, { headers: headers || {} })
+    } catch (error) {
+      if (stream !== streamToken) return false
+      debug('Stream load failed, falling back to direct src:', error)
+      if (video) video.src = url
+    }
+    if (stream !== streamToken || !video) return false
+    watchHls(stream)
+    if (!isHlsUrl(url)) video.load()
+    return true
+  }
+
+  /** Position to come back to after a reload: the video's, or the last one it really played at (failed load). */
+  function currentPosition () {
+    if (video?.readyState >= 1 && isFinite(video.currentTime) && video.currentTime > 0) return video.currentTime
+    return lastGoodTime
+  }
+
+  function trackPosition () {
+    if (video?.readyState >= 1 && !video.seeking && video.currentTime > 0 && !pendingRestore) lastGoodTime = video.currentTime
   }
 
   async function switchServer (index) {
-    if (index === activeServerIndex || !streamServers[index]) return
-    const resumeTime = currentTime
+    if (index === activeServerIndex || !streamServers[index] || !current || externalPlayback) return
+    // A previous switch still loading keeps its position: a failed server does not lose it.
+    const restore = { time: pendingRestore?.time ?? currentPosition(), paused: pendingRestore?.paused ?? paused }
     activeServerIndex = index
-    const server = streamServers[index]
-    stopStream(video)
+    await startStream(activeStream(), restore)
+  }
+
+  /** Reloads the stream playing (same server) where it was: "Retry" of the playback error toasts. */
+  function retryStream () {
+    if (!current || externalPlayback) return
+    startStream(activeStream(), { time: pendingRestore?.time ?? currentPosition(), paused: false })
+  }
+
+  // ---- HLS (hls.js instance streaming.js attaches to the video as video._hlsInstance): quality menu, fatal errors.
+  /** quality menu entries ({ index, label }, best first), empty when the stream has a single quality */
+  let hlsLevels = []
+  /** level picked in the menu, -1 for automatic */
+  let hlsLevel = -1
+  /** level hls.js plays (shown next to "Auto") */
+  let hlsActiveLevel = -1
+  $: hlsActiveLabel = hlsLevels.find(level => level.index === hlsActiveLevel)?.label || ''
+
+  function watchHls (stream) {
+    const hls = video?._hlsInstance
+    const Hls = window.Hls
+    if (!hls || !Hls?.Events) return
+    const levels = hlsLevelOptions(hls.levels)
+    hlsLevels = levels.length > 1 ? levels : []
+    hlsActiveLevel = hls.currentLevel ?? -1
+    hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+      if (stream === streamToken) hlsActiveLevel = data?.level ?? -1
+    })
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (!data?.fatal || stream !== streamToken) return
+      // streaming.js may recover from it: only report an instance that gave up (destroyed, no replacement).
+      setTimeout(() => {
+        if (stream === streamToken && video && !hls.media && (!video._hlsInstance || video._hlsInstance === hls)) showStreamError()
+      }, 1_500)
+    })
+  }
+
+  function selectQuality (index) {
+    const hls = video?._hlsInstance
+    if (!hls) return
+    hls.currentLevel = index // -1: automatic
+    hlsLevel = index
+  }
+
+  /** id of the "Playback Error" toast shown for the stream playing */
+  let streamErrorToast = null
+  /** The stream stopped for good (hls.js gave up, or streaming.js dispatched 'streamerror' on the video). */
+  function showStreamError () {
+    if (streamErrorToast != null || !current || externalPlayback) return
+    buffering = false
+    clearTimeout(bufferTimeout)
+    streamErrorToast = toast.error('Playback Error', {
+      description: 'The stream stopped. Retry, or pick another server.',
+      duration: Infinity,
+      action: {
+        label: 'Retry',
+        onClick: () => {
+          streamErrorToast = null
+          retryStream()
+        }
+      },
+      onDismiss: () => {
+        streamErrorToast = null
+      }
+    })
+  }
+
+  function dismissStreamError () {
+    if (streamErrorToast != null) toast.dismiss(streamErrorToast)
+    streamErrorToast = null
+  }
+
+  // ---- External player (electron main process: external-player:launch / external-player:closed)
+  /** Title shown by the external player. */
+  function externalTitle (file) {
+    const fileMedia = file?.media
+    const title = (fileMedia?.media && anilistClient.title(fileMedia.media)) || fileMedia?.parseObject?.anime_title || AnimeResolver.cleanFileName(file?.name || '') || 'Tsumi'
+    if (fileMedia?.media?.format === 'MOVIE' || !isValidNumber(fileMedia?.episode)) return title
+    return `${title} - Episode ${fileMedia.episode}`
+  }
+
+  /** IPC error -> a short sentence for the toast. */
+  function externalError (error) {
+    const message = String(error || '')
+    if (/no handler registered/i.test(message)) return 'This version of Tsumi cannot start an external player.'
+    return message.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/i, '') || 'The external player could not be started.'
+  }
+
+  /**
+   * Plays `file` (its active server) in the user's external player. False when it could not start: a toast says why
+   * and the episode plays here instead.
+   */
+  async function launchExternal (file, token, startTime) {
+    const { url, headers } = activeStream(file)
+    if (!url || !IPC?.invoke) return false
+    externalPlayback = true
+    externalSession = null
+    hideBuffering()
+    let result
     try {
-      await loadStream(video, server.streamUrl, {
-        headers: server.headers || {}
+      result = await IPC.invoke('external-player:launch', {
+        path: settings.value.playerPath,
+        url,
+        headers,
+        title: externalTitle(file),
+        subtitleUrl: subtitleUrlOf(file.subtitle) || undefined,
+        startTime: Math.max(0, Math.floor(Number(startTime) || 0))
       })
     } catch (error) {
-      debug('Server switch failed, falling back to direct src:', error)
-      src = server.streamUrl
+      result = { ok: false, error: error?.message || String(error) }
     }
-    const isHLS = server.streamUrl?.toLowerCase()?.includes('.m3u8')
-    if (video && !isHLS) video.load()
-    if (video) {
-      const onReady = () => {
-        video.currentTime = resumeTime
-        video.removeEventListener('loadedmetadata', onReady)
-      }
-      video.addEventListener('loadedmetadata', onReady)
+    if (token !== loadToken) return false
+    if (!result?.ok) {
+      externalPlayback = false
+      debug('External player failed:', result?.error)
+      toast.error('External Player Failed', {
+        description: `${externalError(result?.error)} Playing in Tsumi instead.`,
+        duration: 10_000
+      })
+      return false
     }
+    externalSession = { id: result.id ?? null, startTime: Number(startTime) || 0, builtin: false }
+    return true
   }
+
+  /** More > External Player: the episode playing here continues in the external player (paused here meanwhile). */
+  async function openInExternalPlayer () {
+    if (!current || externalPlayback || !externalAvailable) return
+    const token = loadToken
+    const builtin = video?.readyState >= 1
+    const startTime = currentPosition()
+    holdSpeed.cancel()
+    paused = true
+    if (await launchExternal(current, token, startTime) && externalSession) externalSession.builtin = builtin
+  }
+
+  /** Episode length (s) estimated from the media, while the video is not loaded here. */
+  function mediaDuration () {
+    return (current?.media?.media?.duration || (current?.media?.media?.format && durationMap[current.media.media.format]) || 24) * 60
+  }
+
+  /**
+   * Leaves external mode: the episode continues here, paused when the external player was closed, playing for
+   * "Play in Tsumi instead".
+   */
+  function leaveExternal (position, play = false) {
+    const session = externalSession
+    externalPlayback = false
+    externalSession = null
+    const time = position > 0 ? position : session?.startTime || 0
+    if (session?.builtin && video?.readyState >= 1) {
+      if (position > 0) seekTo(position)
+      if (play) paused = false
+      return
+    }
+    loadBuiltin(current, loadToken, { time, paused: !play })
+  }
+
+  function playInTsumi () {
+    if (externalPlayback && externalSession && current) leaveExternal(0, true)
+  }
+
+  // The main process may give the position and length the player reached ({ id?, position?, duration? }).
+  IPC?.on?.('external-player:closed', (detail) => {
+    if (!externalPlayback || !externalSession || !current) return
+    if (detail?.id != null && externalSession.id != null && detail.id !== externalSession.id) return
+    const position = Number(detail?.position ?? detail?.time)
+    const length = Number(detail?.duration) > 0 ? Number(detail.duration) : mediaDuration()
+    const watched = Number.isFinite(position) && position > 0
+    if (watched) {
+      saveProgressAt(position, length)
+      if (!completed && $settings.playerAutocomplete) checkCompletionByTime(position, length, true)
+    }
+    leaveExternal(watched ? position : 0)
+    if (watched && completed && hasNext) {
+      toast('Episode watched', {
+        description: 'The external player reached the end of the episode.',
+        duration: 10_000,
+        action: { label: 'Play next', onClick: () => (state.value ? tryPlayNext() : playNext()) }
+      })
+    }
+  })
 
   export let media
 
@@ -601,86 +872,83 @@
     ) { hasLast = true } else hasLast = videos.indexOf(current) > 0
   }
 
-  async function loadAnimeProgress () {
-    let animeProgress
-    if (
-      !current?.media?.media?.id ||
-      !isValidNumber(current?.media?.episode) ||
-      current?.media?.failed ||
-      !media?.media?.id ||
-      !isValidNumber(media?.episode)
-    ) {
-      animeProgress = await getAnimeProgress({
-        name: current?.media?.parseObject?.anime_title
-          ? current?.media?.parseObject?.anime_title +
-            ((media?.season || current?.media?.parseObject?.anime_season
-              ? ` S${media?.season || current?.media?.parseObject?.anime_season}`
-              : '') +
-              (media?.episode || current?.media?.parseObject?.episode_number
-                ? ` E${media?.episode || current?.media?.parseObject?.episode_number}`
-                : ''))
-          : current?.name
-      })
-    } else {
-      animeProgress = await getAnimeProgress({
-        name: current?.media?.parseObject?.anime_title
-          ? current?.media?.parseObject?.anime_title +
-            ((media?.season || current?.media?.parseObject?.anime_season
-              ? ` S${media?.season || current?.media?.parseObject?.anime_season}`
-              : '') +
-              (media?.episode || current?.media?.parseObject?.episode_number
-                ? ` E${media?.episode || current?.media?.parseObject?.episode_number}`
-                : ''))
-          : current?.name,
-        mediaId: current.media.media.id,
-        episode: current.media.episode
-      })
-    }
-    if (!animeProgress) return
-
-    const currentTime = Math.max(animeProgress.currentTime - 5, 0) // Load 5 seconds before
-    seek(currentTime - video.currentTime)
+  /**
+   * Name an episode's progress is saved under when it has no resolved media (animeprogress.js). Built from the file
+   * only: nowPlaying can still describe the previous episode when the new one loads.
+   */
+  function progressName (file) {
+    const parseObject = file?.media?.parseObject
+    if (!parseObject?.anime_title) return file?.name
+    const season = file.media.season || parseObject.anime_season
+    const episode = file.media.episode ?? parseObject.episode_number
+    return parseObject.anime_title + (season ? ` S${season}` : '') + (episode || episode === 0 ? ` E${episode}` : '')
   }
 
-  function saveAnimeProgress (error = false) {
-    if (!error && (buffering || video.readyState < 4)) return
-    if (error) {
-      currentTime = 0
-      targetTime = 0
-      video.currentTime = targetTime
+  /** Saved progress of an episode ({ currentTime, safeduration }), by media id and episode, or by name. */
+  function getEpisodeProgress (file = current) {
+    const fileMedia = file?.media
+    if (fileMedia?.media?.id && isValidNumber(fileMedia.episode) && !fileMedia.failed) {
+      return getAnimeProgress({ name: progressName(file), mediaId: fileMedia.media.id, episode: fileMedia.episode })
     }
-    if (
-      !current?.media?.media?.id ||
-      !isValidNumber(current?.media?.episode) ||
-      current?.media?.failed ||
-      !media?.media?.id ||
-      !isValidNumber(media?.episode)
-    ) {
-      setAnimeProgress({
-        name: current?.media?.parseObject?.anime_title
-          ? current?.media?.parseObject?.anime_title +
-            ((media?.season || current?.media?.parseObject?.anime_season
-              ? ` S${media?.season || current?.media?.parseObject?.anime_season}`
-              : '') +
-              (media?.episode || current?.media?.parseObject?.episode_number
-                ? ` E${media?.episode || current?.media?.parseObject?.episode_number}`
-                : ''))
-          : current?.name,
-        currentTime: video.currentTime,
-        safeduration
-      })
+    return getAnimeProgress({ name: progressName(file) })
+  }
+
+  function saveProgressAt (time, length) {
+    const fileMedia = current?.media
+    if (fileMedia?.media?.id && isValidNumber(fileMedia.episode) && !fileMedia.failed) {
+      setAnimeProgress({ mediaId: fileMedia.media.id, episode: fileMedia.episode, currentTime: time, safeduration: length })
     } else {
-      setAnimeProgress({
-        mediaId: current.media.media.id,
-        episode: current.media.episode,
-        currentTime: video.currentTime,
-        safeduration
-      })
+      setAnimeProgress({ name: progressName(current), currentTime: time, safeduration: length })
     }
+  }
+
+  function saveAnimeProgress () {
+    if (!video || !current || externalPlayback || buffering || video.readyState < 4) return
+    saveProgressAt(video.currentTime, safeduration)
   }
   setInterval(() => {
     if (!paused) saveAnimeProgress()
   }, 10_000)
+
+  function seekTo (time) {
+    if (!video || !isFinite(time)) return
+    currentTime = time
+    targetTime = time
+    video.currentTime = time
+  }
+
+  /**
+   * Resumes the episode where it was left (a little before), unless it was finished: past the completion threshold
+   * it starts over. Outside Watch Together a card offers "Start over".
+   */
+  function applyResume (token) {
+    if (token !== loadToken || !video) return
+    const resume = resumePosition(getEpisodeProgress(), {
+      threshold: $settings.playerAutocompleteThreshold,
+      duration: isFinite(video.duration) ? video.duration : 0
+    })
+    if (resume == null) return
+    seekTo(resume)
+    if (!state.value) showResumeOffer(resume)
+  }
+
+  /** "Resume from 12:34 / Start over" card: { label } for a few seconds after an automatic resume. */
+  let resumeOffer = null
+  let resumeOfferTimer = null
+  function showResumeOffer (time) {
+    clearTimeout(resumeOfferTimer)
+    const token = loadToken
+    resumeOffer = { label: toTS(time, 3) }
+    resumeOfferTimer = setTimeout(() => {
+      if (token === loadToken) resumeOffer = null
+    }, 12_000)
+  }
+
+  function answerResumeOffer (startOver) {
+    clearTimeout(resumeOfferTimer)
+    resumeOffer = null
+    if (startOver) seekTo(0)
+  }
 
   function cycleSubtitles () {
     if (current && subs?.headers) {
@@ -693,16 +961,41 @@
     }
   }
 
+  // Subtitle offset in seconds (positive shows them earlier), remembered per show and given to every renderer of
+  // the episode (Subtitles keeps it for the renderer it creates later).
   let subDelay = 0
-  $: updateDelay(subDelay)
+  /** what the offset field shows (the user may be typing "-" or "1,") */
+  let subDelayText = '0'
+  $: subs?.setTimeOffset?.(subDelay)
+  const SUB_DELAY_KEY = 'subtitleOffsets'
   // "Search online subtitles…" panel (OnlineSubtitles.svelte), and ±0.5 s offset steps.
   let onlineSubsOpen = false
   $: if (miniplayer) onlineSubsOpen = false
-  function stepDelay (step) {
-    subDelay = Math.round(((Number(subDelay) || 0) + step) * 10) / 10
+
+  function savedSubDelay () {
+    return parseSubtitleOffset(cache.getEntry(caches.HISTORY, SUB_DELAY_KEY)?.[showKey()]) ?? 0
   }
-  function updateDelay (delay) {
-    if (subs?.renderer) subs.renderer.timeOffset = Number(delay)
+
+  function rememberSubDelay (value) {
+    if (!current) return
+    const offsets = { ...(cache.getEntry(caches.HISTORY, SUB_DELAY_KEY) || {}) }
+    if (value) offsets[showKey()] = value
+    else delete offsets[showKey()]
+    cache.setEntry(caches.HISTORY, SUB_DELAY_KEY, offsets)
+  }
+
+  function typeSubDelay (text) {
+    subDelayText = text
+    const value = parseSubtitleOffset(text)
+    if (value == null) return
+    subDelay = value
+    rememberSubDelay(value)
+  }
+
+  function stepDelay (step) {
+    subDelay = Math.round((subDelay + step) * 10) / 10
+    subDelayText = String(subDelay)
+    rememberSubDelay(subDelay)
   }
 
   let currentTime = 0
@@ -723,8 +1016,11 @@
   $: pagePause($page, $playPage, $modal)
   let pagePaused = 0
   function pagePause (_page, _playPage, _modal) {
-    if (externalPlayback || $castState.active) return
-    if (buffer === 0 && pagePaused) {
+    // Watch Together: a pause here would pause the whole lobby because one member opened another page.
+    if (externalPlayback || $castState.active || state.value) return
+    // Nothing loaded yet: nothing to pause or resume. (This tested a torrent `buffer` that stayed at 0 with streams,
+    // so the episode kept playing invisibly behind the trailer, extension menu, notifications...)
+    if (!video?.readyState && pagePaused) {
       pagePaused = 1
       return
     }
@@ -782,71 +1078,67 @@
     }
     if (!pagePaused) pagePaused = 1
   }
-  async function promptFiller () {
+  /** Filler / recap prompt and "failed to identify" prompt of the episode loading (`token`). */
+  async function promptFiller (token) {
     emit('duration', { current, duration })
-    const fillerEpisode = await episodesList.getSingleEpisode(
-      media?.media?.idMal,
-      media?.episode
-    )
+    // The file's own media: nowPlaying (`media`) may still be the previous episode at this point.
+    const fileMedia = current?.media
+    let fillerEpisode = null
+    try {
+      if (fileMedia?.media?.idMal && isValidNumber(fileMedia.episode)) fillerEpisode = await episodesList.getSingleEpisode(fileMedia.media.idMal, fileMedia.episode)
+    } catch (error) {
+      debug('Filler lookup failed', error)
+    }
+    if (token !== loadToken) return
     filler = fillerEpisode?.filler && 'Filler'
     recap = fillerEpisode?.recap && 'Recap'
     resolvePrompt =
       current?.failed || current?.media?.failed || current?.parseObject?.failed
     skipPrompt = filler || recap
   }
-  async function autoPlay () {
-    await promptFiller()
+  async function autoPlay (token) {
+    await promptFiller(token)
+    if (token !== loadToken || !video || externalPlayback) return
     if (
       (($page === page.PLAYER && modal.length === 0) || pip) &&
       !resolvePrompt &&
       !skipPrompt
     ) {
-      if (externalPlayback) playPause()
-      else if (!hidden) {
-        video.play()
+      if (!hidden) {
+        video.play()?.catch?.(() => {})
         resetImmerse()
         setTimeout(() => subs?.renderer?.resize(), 200) // stupid fix because video metadata doesn't update for multiple frames
       }
-    } else if (!externalPlayback) video.pause()
+    } else video.pause()
   }
 
-  let watchedListener
-  let androidListener
-  let externalPlaying = false
+  /**
+   * One handler for loadedmetadata, in order. A reload of the same episode (server switch, retry, back from the
+   * external player) restores its position and play state; a new episode resumes, prompts and autoplays.
+   */
+  function handleLoadedMetadata () {
+    const token = loadToken
+    hideBuffering()
+    initThumbnails()
+    findChapters()
+    checkAudio()
+    applySubtitlePreference()
+    const restore = pendingRestore
+    pendingRestore = null
+    if (restore && restore.stream === streamToken) {
+      if (restore.time > 0) seekTo(restore.time)
+      if (!restore.paused && !hidden) video.play()?.catch?.(() => {})
+      else video.pause()
+    } else {
+      applyResume(token)
+      w2gLoadSteps.push(autoPlay(token))
+    }
+    w2gLoadedMetadata()
+  }
+
   function playPause () {
-    if (hidden) return
-    if (externalPlayback) {
-      const duration =
-        current.media?.media?.duration ||
-          durationMap[current.media?.media?.format]
-      if (duration) {
-        WPC.clear('externalWatched', watchedListener)
-        watchedListener = (detail) => {
-          checkCompletionByTime(detail, duration * 60)
-          currentTime = detail
-          targetTime = detail
-          launchedExternal = false
-        }
-        WPC.listen('externalWatched', watchedListener)
-      }
-      externalPlaying = true
-      if (SUPPORTS.isAndroid) {
-        WPC.clear('androidExternal', androidListener)
-        androidListener = (url) => {
-          const startTime = Date.now()
-          const externalWatched = () => {
-            const watchTime = (Date.now() - startTime) / 1_000
-            checkCompletionByTime(watchTime, duration * 60)
-            currentTime = watchTime
-            targetTime = watchTime
-            launchedExternal = false
-          }
-          ANDROID.launchExternal?.(url)?.then?.(() => externalWatched())
-        }
-        WPC.listen('androidExternal', androidListener)
-      }
-      WPC.send('externalPlay', { current })
-    } else paused = !paused
+    if (hidden || externalPlayback) return
+    paused = !paused
     resetImmerse()
     setTimeout(() => subs?.renderer?.resize(), 200) // stupid fix because video metadata doesn't update for multiple frames
   }
@@ -868,11 +1160,15 @@
     handleVisibility(!isMinimized)
     ELECTRON.onMinimize(handleVisibility)
   })
+  /** End of the episode (or its credits): next episode with autoplay, the lobby's next queued item in Watch Together. True when something starts. */
   function tryPlayNext () {
     currentSkippable = null
-    if ($settings.playerAutoplay && !state.value) playNext()
+    clearUpNext()
     // Watch Together: the host plays the next queued item ("Up next"), else nothing as before.
-    else if (state.value && !externalPlayback) state.value.episodeEnded()
+    if (state.value) return !externalPlayback && !!state.value.episodeEnded()
+    if (!$settings.playerAutoplay || !hasNext) return false
+    playNext()
+    return true
   }
   function playNext () {
     if (hasNext) {
@@ -903,6 +1199,12 @@
       }
     }
   }
+  function rememberBoost () {
+    cache.setEntry(caches.HISTORY, 'lastBoosted', {
+      ...(cache.getEntry(caches.HISTORY, 'lastBoosted') || {}),
+      [showKey()]: { boosted: volumeBoosted, gain }
+    })
+  }
   function setGain (event) {
     const value = parseFloat(event.target.value)
     if (value <= 1) {
@@ -913,13 +1215,7 @@
       gainNode.gain.value = value
     }
     gain = value
-    cache.setEntry(caches.HISTORY, 'lastBoosted', {
-      ...(cache.getEntry(caches.HISTORY, 'lastBoosted') || {}),
-      [media?.media?.id ||
-        media?.title ||
-        media?.parseObject?.title ||
-        media?.parseObject?.file_name]: { boosted: volumeBoosted, gain }
-    })
+    rememberBoost()
   }
   function toggleGain () {
     setupAudio()
@@ -929,13 +1225,7 @@
       if (audioCtx) gainNode.gain.value = 1
     } else setGain({ target: { value: volume } })
     volumeBoosted = !volumeBoosted
-    cache.setEntry(caches.HISTORY, 'lastBoosted', {
-      ...(cache.getEntry(caches.HISTORY, 'lastBoosted') || {}),
-      [media?.media?.id ||
-        media?.title ||
-        media?.parseObject?.title ||
-        media?.parseObject?.file_name]: { boosted: volumeBoosted, gain }
-    })
+    rememberBoost()
   }
   function toggleMute () {
     muted = !muted
@@ -948,6 +1238,7 @@
     }
   }
   function skip () {
+    if (!video || externalPlayback) return
     const current = findChapter(currentTime)
     if (current) {
       if (
@@ -957,11 +1248,13 @@
         currentTime = currentTime + 85
       } else {
         const endtime = current.end / 1_000
+        // Last chapter: next episode (autoplay), or the lobby's next item in Watch Together (never a local playNext
+        // there: every member would start the next episode on their own).
         if (
           ((safeduration - endtime) | 0) === 0 &&
-          hasNext &&
-          settings.value.playerAutoplay
-        ) { return playNext() }
+          (state.value || (hasNext && settings.value.playerAutoplay)) &&
+          tryPlayNext()
+        ) return
         currentTime = endtime
         currentSkippable = null
       }
@@ -976,7 +1269,7 @@
     video.currentTime = targetTime
   }
   function seek (time) {
-    if (externalPlayback) return
+    if (externalPlayback || !video) return
     currentTime = currentTime + time
     targetTime = currentTime
     video.currentTime = targetTime
@@ -1077,7 +1370,8 @@
   /** the click that ends a mouse hold is not a play / pause */
   let holdClickIgnoredUntil = 0
   const holdSpeed = new HoldSpeed({
-    canHold: () => !!($settings.playerHoldSpeedUp && video && src && !externalPlayback && !hidden && !$castState.active),
+    // canPlay: metadata loaded (the old `src` test was only true in the rare fallback, so holding never worked).
+    canHold: () => !!($settings.playerHoldSpeedUp && video && canPlay && !externalPlayback && !hidden && !$castState.active),
     // A temporary rate would drift from the lobby: off while following it (watching on our own nothing is synced).
     blocked: () => !!state.value?.isFollowing,
     speed: () => holdSpeedOf($settings.playerHoldSpeed),
@@ -1456,18 +1750,20 @@
     }
   }
 
-  let canPlay = !!src
+  /** The video has its metadata (something is loaded): hold to speed up, 16:9 placeholder off. */
+  let canPlay = false
   function hideBuffering () {
-    canPlay = !!src
-    if (bufferTimeout) {
-      clearTimeout(bufferTimeout)
-      bufferTimeout = null
-      buffering = false
-    }
+    canPlay = (video?.readyState || 0) >= 1
+    clearTimeout(bufferTimeout)
+    bufferTimeout = null
+    buffering = false
   }
 
   function showBuffering () {
+    // One pending timer at a time: an overwritten one fired after hideBuffering and left the spinner on.
+    clearTimeout(bufferTimeout)
     bufferTimeout = setTimeout(() => {
+      bufferTimeout = null
       buffering = true
       resetImmerse()
     }, 150)
@@ -1506,45 +1802,47 @@
       setTimeout(() => subs?.renderer?.resize(), 200) // stupid fix because video metadata doesn't update for multiple frames
     }
   }
+  // Stats overlay [I]: refreshed from video frame callbacks while on. stopStats() runs on every episode change and on
+  // close (the overlay read current.name of a closed player and the error froze the UI).
   let stats = null
-  let requestCallback = null
+  let statsOn = false
+  let statsCallback = null
+  let statsTimer = null
   function toggleStats () {
-    if (requestCallback) {
-      stats = null
-      video.cancelVideoFrameCallback(requestCallback)
-      requestCallback = null
-    } else {
-      requestCallback = video.requestVideoFrameCallback((a, b) => {
-        stats = {}
-        handleStats(a, b, b)
-      })
-      if (paused) seek(-0.001) // stupid hack because the initial request doesn't trigger canvas to re-render, stats won't appear unless the current time changes.
-    }
+    if (statsOn) return stopStats()
+    if (!video) return
+    statsOn = true
+    statsCallback = video.requestVideoFrameCallback((now, metadata) => handleStats(now, metadata, metadata))
+    if (paused) seek(-0.001) // stupid hack because the initial request doesn't trigger canvas to re-render, stats won't appear unless the current time changes.
   }
-  async function handleStats (now, metadata, lastmeta) {
-    if (stats) {
-      const msbf =
-        (metadata.mediaTime - lastmeta.mediaTime) /
-          (metadata.presentedFrames - lastmeta.presentedFrames)
-      const fps = (1 / msbf).toFixed(3)
-      stats = {
-        fps,
-        presented: metadata.presentedFrames,
-        dropped: video.getVideoPlaybackQuality()?.droppedVideoFrames,
-        processing: metadata.processingDuration + ' ms',
-        viewport: video.clientWidth + 'x' + video.clientHeight,
-        resolution: videoWidth + 'x' + videoHeight,
-        buffer: getBufferHealth(metadata.mediaTime) + ' s',
-        speed: video.playbackRate || 1
-      }
-      setTimeout(
-        () =>
-          video.requestVideoFrameCallback((n, m) =>
-            handleStats(n, m, metadata)
-          ),
-        200
-      )
+  function stopStats () {
+    statsOn = false
+    stats = null
+    clearTimeout(statsTimer)
+    if (statsCallback != null) video?.cancelVideoFrameCallback?.(statsCallback)
+    statsCallback = null
+  }
+  function handleStats (now, metadata, lastmeta) {
+    if (!statsOn || !video) return
+    const msbf =
+      (metadata.mediaTime - lastmeta.mediaTime) /
+        (metadata.presentedFrames - lastmeta.presentedFrames)
+    const fps = (1 / msbf).toFixed(3)
+    stats = {
+      fps,
+      presented: metadata.presentedFrames,
+      dropped: video.getVideoPlaybackQuality()?.droppedVideoFrames,
+      processing: metadata.processingDuration + ' ms',
+      viewport: video.clientWidth + 'x' + video.clientHeight,
+      resolution: videoWidth + 'x' + videoHeight,
+      buffer: getBufferHealth(metadata.mediaTime) + ' s',
+      speed: video.playbackRate || 1
     }
+    clearTimeout(statsTimer)
+    statsTimer = setTimeout(() => {
+      if (!statsOn || !video) return
+      statsCallback = video.requestVideoFrameCallback((n, m) => handleStats(n, m, metadata))
+    }, 200)
   }
   function getBufferHealth (time) {
     for (let index = video.buffered.length; index--;) {
@@ -1557,22 +1855,29 @@
     }
     return 0
   }
+  /** Seekbar buffered part, in percent: what is loaded ahead of the position. */
   let buffer = 0
-  WPC.listen('progress', (detail) => {
-    buffer = detail * 100
-  })
+  function updateBuffer () {
+    if (!video || !isFinite(video.duration) || !(video.duration > 0)) {
+      buffer = 0
+      return
+    }
+    const time = video.currentTime
+    let end = 0
+    for (let index = 0; index < video.buffered.length; index++) {
+      if (video.buffered.start(index) <= time + 0.5 && video.buffered.end(index) >= time) end = Math.max(end, video.buffered.end(index))
+    }
+    buffer = Math.min(100, (end / video.duration) * 100)
+  }
 
   let chapters = []
-  WPC.listen('chapters', (detail) => {
-    if (detail.length) chapters = detail
-  })
   // Chapters: the file's own (embedded) when it has some, otherwise AniSkip for anime, then TheIntroDB (shows,
   // movies, and the anime episodes AniSkip does not know).
   async function findChapters () {
     const target = current
     const media = target?.media?.media
     if (chapters.length || !media) return
-    const duration = safeduration
+    const duration = videoLength()
     let found = await getChaptersAniSkip(target, duration).catch(() => [])
     if (!found?.length) found = await getChaptersIntroDB(media, target.media.episode, duration).catch(() => [])
     if (target === current && !chapters.length && found?.length) chapters = found
@@ -1586,17 +1891,73 @@
       currentSkippable = isChapterSkippable(current)
     }
   }
+
+  // ---- "Up next": while the credits / preview close the episode (AniSkip, TheIntroDB or file chapters) and autoplay
+  // is on, a card counts down to the next episode. Watch Together goes through tryPlayNext() (the lobby's queue).
+  const UP_NEXT_S = 10
+  /** { label, remaining } while the card shows */
+  let upNext = null
+  /** "Cancel" was clicked: no card again for this episode */
+  let upNextDismissed = false
+  let upNextTimer = null
+
+  function nextLabel () {
+    if (state.value) return 'Next in the queue'
+    const index = videos.indexOf(current)
+    const next = index !== -1 && index + 1 < videos.length ? videos[index + 1] : null
+    if (next) return isValidNumber(next.media?.episode) ? `Episode ${next.media.episode}` : AnimeResolver.cleanFileName(next.name)
+    return isValidNumber(media?.episode) ? `Episode ${Number(media.episode) + 1}` : 'Next episode'
+  }
+
+  function canAdvance () {
+    if (externalPlayback || miniplayer || !$settings.playerAutoplay) return false
+    // Watch Together: only the host following the lobby advances its queue (episodeEnded()).
+    if (state.value) return !!(state.value.isHost && state.value.isFollowing && state.value.queue?.value?.items?.length)
+    return hasNext
+  }
+
+  function checkUpNext () {
+    if (!video) return
+    const time = video.currentTime
+    // Auto-skip already jumps over a skippable chapter (and to the next episode from the last one).
+    const show = !upNextDismissed && !($settings.playerSkip && currentSkippable) && canAdvance() &&
+      safeduration - time > 2 && inEndChapters(chapters, time, safeduration)
+    if (show && !upNext) startUpNext()
+    else if (!show && upNext) clearUpNext()
+  }
+
+  function startUpNext () {
+    clearInterval(upNextTimer)
+    const token = loadToken
+    upNext = { label: nextLabel(), remaining: UP_NEXT_S }
+    upNextTimer = setInterval(() => {
+      if (token !== loadToken || !upNext) return clearUpNext()
+      // Paused, buffering or hidden: the countdown waits.
+      if (paused || buffering || hidden) return
+      upNext = { ...upNext, remaining: upNext.remaining - 1 }
+      if (upNext.remaining <= 0) playUpNext()
+    }, 1_000)
+  }
+
+  function clearUpNext () {
+    clearInterval(upNextTimer)
+    upNextTimer = null
+    upNext = null
+  }
+
+  function playUpNext () {
+    clearUpNext()
+    upNextDismissed = true
+    tryPlayNext()
+  }
+
+  function dismissUpNext () {
+    clearUpNext()
+    upNextDismissed = true
+  }
   const MAX_TOTAL_SKIP_TIME = 180
   const MAX_TRUSTED_SKIP_TIME = 20 * 60 // TheIntroDB chapters (trusted) are meant for skipping: movie credits run long.
-  const skippableChaptersRx = [
-    ['Intro', /^intro$/im],
-    ['Opening', /^op$|opening$|title$|^ncop/im],
-    ['Outro', /^outro$/im],
-    ['Ending', /^ed$|ending$|^nced/im],
-    ['Credits', /credits/i],
-    ['Preview', /^preview$|previews$|pv$|next$/im],
-    ['Recap', /recap/im]
-  ]
+  const skippableChaptersRx = CHAPTER_KINDS // modules/playerstate.js (also used by "Up next")
   function isChapterSkippable (chapter) {
     if ((chapter.end - chapter.start) / 1_000 > (chapter.trusted ? MAX_TRUSTED_SKIP_TIME : MAX_TOTAL_SKIP_TIME)) { return null } // Anything longer than 180s (3m) is likely invalid, skipping this chapter would be a mistake!
     for (const [name, regex] of skippableChaptersRx) {
@@ -1714,8 +2075,7 @@
     thumbnails: [],
     canvas: thumbCanvas,
     context: thumbCanvas.getContext('2d'),
-    interval: null,
-    video: null
+    interval: null
   }
 
   function getThumbnail (percent) {
@@ -1726,7 +2086,7 @@
     )
   }
   function createThumbnail (vid = video) {
-    if (vid?.readyState >= 2 && !$castState.active) {
+    if (vid?.readyState >= 2 && !$castState.active && thumbnailData.interval) {
       const index = Math.floor(vid.currentTime / thumbnailData.interval)
       if (!thumbnailData.thumbnails[index]) {
         thumbnailData.context.fillRect(0, 0, 200, thumbnailData.canvas.height)
@@ -1743,129 +2103,75 @@
     }
   }
   let videoWidth, videoHeight
+  /** Length of the loaded video: on loadedmetadata the bound `duration` (and safeduration) may not be updated yet. */
+  function videoLength () {
+    return video && isFinite(video.duration) && video.duration > 0 ? video.duration : safeduration
+  }
   function initThumbnails () {
-    const height = 200 / (videoWidth / videoHeight)
-    if (!isNaN(height)) {
-      thumbnailData.interval = safeduration / 300 < 5 ? 5 : safeduration / 300
+    const height = 200 / ((video?.videoWidth || videoWidth) / (video?.videoHeight || videoHeight))
+    if (!isNaN(height) && isFinite(height)) {
+      const length = videoLength()
+      thumbnailData.interval = length / 300 < 5 ? 5 : length / 300
       thumbnailData.canvas.height = height
       generateThumbnails()
     }
   }
+
+  // Seekbar thumbnails ahead of playback come from a hidden second video seeking through the file. Only for files
+  // served locally (offline downloads): for a remote stream it would download the episode a second time through the
+  // proxy and pile range requests on the host (it used to poll forever on a `buffer` that stayed at 0, with the raw
+  // URL and no headers). Remote streams get thumbnails from the frames played (createThumbnail).
+  const localDownloadRx = /^http:\/\/(localhost|127\.0\.0\.1):\d+\/downloads\//i
+  /** running generator: { videoDraw } */
   let thumbnailProcess = null
-  async function generateThumbnails () {
+
+  function stopThumbnails () {
+    const process = thumbnailProcess
+    thumbnailProcess = null
+    if (!process) return
+    const videoDraw = process.videoDraw
+    videoDraw.onloadeddata = videoDraw.onseeked = videoDraw.onerror = null
+    videoDraw.removeAttribute('src')
+    videoDraw.load() // releases the connection
+  }
+
+  function generateThumbnails () {
+    stopThumbnails()
+    const source = video?.currentSrc || ''
+    if (!localDownloadRx.test(source) || !thumbnailData.interval) return
     debug('Starting thumbnail generation...')
-    if (thumbnailProcess && thumbnailProcess.running) {
-      debug(
-        'Detected a currently running thumbnail generation process, interrupting...'
-      )
-      thumbnailProcess.videoDraw.remove()
-      thumbnailProcess.running = false
-      await new Promise((resolve) => setTimeout(resolve, 5 * 1_000))
-    }
     const t0 = performance.now()
-    thumbnailProcess = {
-      videoDraw: document.createElement('video'),
-      running: true
-    }
-    const videoDraw = thumbnailProcess.videoDraw
-    videoDraw.src = current.url
+    const videoDraw = document.createElement('video')
+    const process = { videoDraw }
+    thumbnailProcess = process
     videoDraw.preload = 'auto'
-    videoDraw.volume = 0
-    videoDraw.playbackRate = 0
-    videoDraw.onloadeddata = () => {
-      let index = 0
-      let lastIndex = 0
-      function captureThumbnail () {
-        if (!thumbnailProcess.running) {
-          debug(
-            'Thumbnail generation process was interrupted due to a change in the video url, exiting...'
-          )
-          return
-        }
-        const dynamicDuration = (buffer / 100) * videoDraw.duration
-        if (!isFinite(dynamicDuration)) {
-          debug('Video is still loading... waiting to generate thumbnails...')
-          setTimeout(() => captureThumbnail(), 1_000)
-          return
-        }
-        while (thumbnailData.thumbnails[index]) index++
-        const currentTime = index * thumbnailData.interval
-        if (
-          currentTime >= dynamicDuration &&
-          currentTime < videoDraw.duration
-        ) {
-          if (lastIndex !== index) {
-            lastIndex = index
-            debug(
-              `Reached currently downloaded video duration, current seek time is: ${currentTime}s (${index} of ${buffer}%), waiting for buffer update...`
-            )
-          }
-          setTimeout(() => {
-            if (currentTime < (buffer / 100) * videoDraw.duration) {
-              lastIndex = 0
-              debug(
-                'Detected a buffer change, continuing thumbnail generation...'
-              )
-            }
-            captureThumbnail()
-          }, 1_000)
-          return
-        }
-
-        if (currentTime >= videoDraw.duration) {
-          debug(
-            'Thumbnail generation has successfully completed, took:',
-            toTS((performance.now() - t0) / 1_000)
-          )
-          videoDraw.remove()
-          return
-        } else if (
-          isFinite(currentTime) &&
-          currentTime >= 0 &&
-          currentTime <= dynamicDuration
-        ) {
-          videoDraw.currentTime = currentTime
-        } else {
-          debug(
-            'Something went wrong calculating the current time for the thumbnails video, calculated:',
-            currentTime,
-            dynamicDuration,
-            buffer
-          )
-          return
-        }
-
-        videoDraw.onseeked = () => {
-          if (!thumbnailProcess.running) {
-            debug(
-              'Thumbnail generation process was interrupted due to a change in the video url, exiting...'
-            )
-            return
-          }
-          thumbnailData.context.fillRect(
-            0,
-            0,
-            200,
-            thumbnailData.canvas.height
-          )
-          thumbnailData.context.drawImage(
-            videoDraw,
-            0,
-            0,
-            200,
-            thumbnailData.canvas.height
-          )
-          thumbnailData.thumbnails[index] =
-            thumbnailData.canvas.toDataURL('image/jpeg')
-          captureThumbnail()
-        }
+    videoDraw.muted = true
+    let index = 0
+    const captureNext = () => {
+      if (thumbnailProcess !== process) return
+      while (thumbnailData.thumbnails[index]) index++
+      const time = index * thumbnailData.interval
+      if (!isFinite(time) || !isFinite(videoDraw.duration) || time >= videoDraw.duration) {
+        debug('Thumbnail generation has successfully completed, took:', toTS((performance.now() - t0) / 1_000))
+        stopThumbnails()
+        return
       }
-      captureThumbnail()
+      videoDraw.currentTime = time
+    }
+    videoDraw.onloadeddata = captureNext
+    videoDraw.onseeked = () => {
+      if (thumbnailProcess !== process) return
+      thumbnailData.context.fillRect(0, 0, 200, thumbnailData.canvas.height)
+      thumbnailData.context.drawImage(videoDraw, 0, 0, 200, thumbnailData.canvas.height)
+      thumbnailData.thumbnails[index] = thumbnailData.canvas.toDataURL('image/jpeg')
+      index++
+      captureNext()
     }
     videoDraw.onerror = (e) => {
       debug('Error loading video for thumbnail generation:', e)
-      videoDraw.remove()
+      if (thumbnailProcess === process) stopThumbnails()
     }
+    videoDraw.src = source
   }
 
   // const isWindows = navigator.appVersion.includes('Windows')
@@ -1904,13 +2210,14 @@
     }
   }
 
-  function checkCompletionByTime (currentTime, safeduration) {
+  /** @param {boolean} [external] position reported by the external player (it is not loaded here) */
+  function checkCompletionByTime (currentTime, safeduration, external = false) {
     let threshold = $settings.playerAutocompleteThreshold / 100
-    if (externalPlayerReady && threshold > 0.7) threshold = 0.7 // accommodates skipping op/ed in external player.
+    if (external && threshold > 0.7) threshold = 0.7 // accommodates skipping op/ed in external player.
     if (
       safeduration &&
       currentTime &&
-      (video?.readyState || externalPlayerReady) &&
+      (video?.readyState || external) &&
       currentTime >= safeduration * threshold &&
       (media?.media?.episodes ||
         media?.media?.nextAiringEpisode?.episode >=
@@ -1920,15 +2227,17 @@
         `Marking current episode as completed as it has met the ${$settings.playerAutocompleteThreshold}% threshold.`
       )
       completed = true
-      externalPlayerReady = false
       const _media = media.episodeRange ? structuredClone(media) : media
       if (media.episodeRange) _media.episode = media.episodeRange.last
       updateEntryOrQueue(_media) // Helper.updateEntry, queued while offline
-      if (externalPlayback) tryPlayNext()
     }
   }
 
+  // Playback errors keep the saved progress (they used to reset it to 0, losing the resume position of an episode
+  // whose server failed) and offer "Retry", which reloads the stream where it stopped.
   function checkError ({ target }) {
+    if (target !== video || !current) return
+    hideBuffering()
     // video playback failed - show a message saying why
     switch (target.error?.code) {
       case target.error.MEDIA_ERR_ABORTED:
@@ -1939,12 +2248,11 @@
           'A network error caused the video download to fail part-way.',
           target.error
         )
-        saveAnimeProgress(true)
         toast.error('Video Network Error', {
           description:
-            'A network error caused the video download to fail part-way. Dismiss this toast to reload the video.',
+            'A network error caused the video download to fail part-way.',
           duration: Infinity,
-          onDismiss: () => target.load()
+          action: { label: 'Retry', onClick: retryStream }
         })
         break
       case target.error.MEDIA_ERR_DECODE:
@@ -1952,12 +2260,11 @@
           'The video playback was aborted due to a corruption problem or because the video used features your browser did not support.',
           target.error
         )
-        saveAnimeProgress(true)
         toast.error('Video Decode Error', {
           description:
-            'The video playback was aborted due to a corruption problem. Dismiss this toast to reload the video.',
+            'The video playback was aborted due to a corruption problem.',
           duration: Infinity,
-          onDismiss: () => target.load()
+          action: { label: 'Retry', onClick: retryStream }
         })
         break
       case target.error.MEDIA_ERR_SRC_NOT_SUPPORTED:
@@ -1968,11 +2275,11 @@
             'The video could not be loaded, either because the server or network failed or because the format is not supported.',
             target.error
           )
-          saveAnimeProgress(true)
           toast.error('Video Codec Unsupported', {
             description:
-              'The video could not be loaded, either because the server or network failed or because the format is not supported. Try a different source from another extension.',
-            duration: 30_000
+              'The video could not be loaded, either because the server or network failed or because the format is not supported. Try another server, or a different source from another extension.',
+            duration: 30_000,
+            action: { label: 'Retry', onClick: retryStream }
           })
         }
         break
@@ -2160,11 +2467,12 @@
   }
 </script>
 
+<!-- ratio-16-9 only acts on the miniplayer (height: auto): Miniplayer.svelte sizes its frame for 16:9 videos. -->
 <div
   class='player w-full h-full d-flex flex-column overflow-hidden position-relative'
   class:pl-sm-30={!isFullscreen && !miniplayer}
   class:pl-md-80={!isFullscreen && !miniplayer}
-  class:ratio-16-9={!canPlay || !src || externalPlayback}
+  class:ratio-16-9={miniplayer || !canPlay || externalPlayback}
   class:pointer={miniplayer}
   class:rounded-top-10={miniplayer}
   class:miniplayer
@@ -2216,7 +2524,6 @@
       class='position-absolute h-full w-full'
       style={`margin-top: ${menubarOffset}px`}
       preload='auto'
-      {src}
       bind:videoHeight
       bind:videoWidth
       bind:this={video}
@@ -2236,7 +2543,12 @@
       on:timeupdate={() => createThumbnail()}
       on:timeupdate={checkCompletion}
       on:timeupdate={checkSkippableChapters}
+      on:timeupdate={checkUpNext}
+      on:timeupdate={trackPosition}
       on:timeupdate={w2gTimeupdate}
+      on:progress={updateBuffer}
+      on:seeked={updateBuffer}
+      on:streamerror={showStreamError}
       on:waiting={showBuffering}
       on:loadeddata={hideBuffering}
       on:pause={() => {
@@ -2244,16 +2556,8 @@
       }}
       on:canplay={hideBuffering}
       on:playing={hideBuffering}
-      on:loadedmetadata={hideBuffering}
       on:ended={tryPlayNext}
-      on:loadedmetadata={initThumbnails}
-      on:loadedmetadata={findChapters}
-      on:loadedmetadata={() => w2gLoadSteps.push(autoPlay())}
-      on:loadedmetadata={checkAudio}
-      on:loadedmetadata={checkSubtitle}
-      on:loadedmetadata={clearLoadInterval}
-      on:loadedmetadata={() => w2gLoadSteps.push(loadAnimeProgress())}
-      on:loadedmetadata={w2gLoadedMetadata}
+      on:loadedmetadata={handleLoadedMetadata}
       on:enterpictureinpicture={() => (pip = true)}
       on:leavepictureinpicture={() => {
         pip = false
@@ -2280,7 +2584,7 @@
         <div>Resolution: {stats.resolution}</div>
         <div>Buffer health: {stats.buffer}</div>
         <div>Playback speed: x{stats.speed?.toFixed(1)}</div>
-        <div>Name: {current.name || ''}</div>
+        <div>Name: {current?.name || ''}</div>
         {#if playableFiles?.length > 1}
           <div class='mt-10'>All files in this batch:</div>
           <div class='overflow-auto ml-10 mt-5' style='max-height: 200px;'>
@@ -2496,7 +2800,34 @@
           {holdSpeedLabel(holdSpeedShown)}<FastForward size='1.6rem' fill='currentColor' class='ml-5' />
         </div>
       {/if}
-      {#if currentSkippable}
+      {#if externalPlayback && !miniplayer}
+        <div class='external-card position-absolute d-flex flex-column align-items-center text-center rounded p-20 z-30'>
+          <SquareArrowOutUpRight size='3rem' strokeWidth={2} />
+          <div class='font-weight-bold font-size-18 mt-10'>{externalSession ? 'Playing in your external player' : 'Opening your external player…'}</div>
+          {#if externalSession}
+            <div class='text-muted font-size-14 mt-5'>The episode comes back here when you close it.</div>
+            <button class='btn btn-secondary mt-15' type='button' use:click={playInTsumi}>Play in Tsumi instead</button>
+          {/if}
+        </div>
+      {/if}
+      {#if resumeOffer && !miniplayer && !externalPlayback}
+        <div class='resume-offer position-absolute bottom-0 left-0 ml-20 mb-5 z-30 d-flex align-items-center'>
+          <button class='btn btn-primary font-weight-bold' type='button' use:click={() => answerResumeOffer(false)}>Resume from {resumeOffer.label}</button>
+          <button class='btn ml-10 font-weight-bold' type='button' use:click={() => answerResumeOffer(true)}>Start over</button>
+        </div>
+      {/if}
+      {#if upNext && !miniplayer}
+        <div class='up-next position-absolute bottom-0 right-0 mr-20 mb-5 z-30 d-flex align-items-center rounded p-10'>
+          <div class='d-flex flex-column mr-15 overflow-hidden'>
+            <span class='font-size-12 text-muted font-weight-bold text-uppercase text-nowrap'>Up next in {upNext.remaining} s</span>
+            <span class='font-weight-bold text-truncate'>{upNext.label}</span>
+          </div>
+          <button class='btn btn-primary d-flex align-items-center font-weight-bold' type='button' use:click={playUpNext}>
+            <SkipForward size='1.6rem' fill='currentColor' /><span class='ml-5'>Play now</span>
+          </button>
+          <button class='btn ml-5 font-weight-bold' type='button' use:click={dismissUpNext}>Cancel</button>
+        </div>
+      {:else if currentSkippable}
         <button
           class='skip btn text-dark position-absolute bottom-0 right-0 mr-20 mb-5 font-weight-bold z-30 d-flex align-items-center justify-content-center'
           use:click={skip}
@@ -2659,6 +2990,53 @@
             </div>
           </div>
         {/if}
+        {#if hlsLevels.length > 1 && !externalPlayback}
+          <div class='dropdown dropup with-arrow' use:click={toggleDropdown}>
+            <span
+              class='icon text-white ctrl mr-5 d-flex align-items-center h-full'
+              title='Quality'
+            >
+              <Gauge size='2.5rem' strokeWidth={2.5} />
+            </span>
+            <div
+              class='dropdown-menu dropdown-menu-right ctrl p-10 pb-0 mr-15 text-nowrap'
+            >
+              <div class='custom-radio overflow-y-auto overflow-x-hidden hm-400'>
+                <input
+                  name='quality-radio-set'
+                  type='radio'
+                  id='quality-auto-radio'
+                  value={-1}
+                  checked={hlsLevel === -1}
+                />
+                <label
+                  for='quality-auto-radio'
+                  use:click={() => selectQuality(-1)}
+                  class='pb-5'
+                >
+                  Auto{hlsLevel === -1 && hlsActiveLabel ? ` (${hlsActiveLabel})` : ''}
+                </label>
+                {#each hlsLevels as level (level.index)}
+                  <input
+                    name='quality-radio-set'
+                    type='radio'
+                    id='quality-{level.index}-radio'
+                    value={level.index}
+                    checked={hlsLevel === level.index}
+                  />
+                  <label
+                    for='quality-{level.index}-radio'
+                    use:click={() => selectQuality(level.index)}
+                    class='pb-5'
+                  >
+                    {level.label}
+                  </label>
+                {/each}
+                <div class='mb-5 invisible'></div>
+              </div>
+            </div>
+          </div>
+        {/if}
         <div
           class='dropdown dropleft with-arrow'
           use:click={() => {
@@ -2672,17 +3050,7 @@
           >
           <div
             class='position-absolute hm-40 text-capitalize text-nowrap bg-dark rounded dr-arrow'
-            style='margin-top: {(canDownload ? -3.5 : 0) + (launchedExternal
-              ? -14
-              : externalPlayback
-              ? -10.3
-              : SUPPORTS.isAndroid || $settings.playerPath
-              ? -21
-              : -17.5)}rem !important; margin-left: {launchedExternal
-              ? -11.1
-              : externalPlayback
-              ? -9.8
-              : -11.4}rem !important; transition: opacity 0.1s ease-in;'
+            style='margin-top: {(canDownload ? -3.5 : 0) + (externalPlayback ? -10.3 : externalAvailable ? -21 : -17.5)}rem !important; margin-left: {externalPlayback ? -9.8 : -11.4}rem !important; transition: opacity 0.1s ease-in;'
             class:hidden={!$showOptions}
           >
             <div
@@ -2703,12 +3071,11 @@
               role='button'
               aria-label='Play the Current Video in an External Player'
               class='pointer d-none align-items-center justify-content-center font-size-16 bd-highlight py-5 px-10 option'
-              class:d-flex={(!externalPlayback || launchedExternal) &&
-                (SUPPORTS.isAndroid || $settings.playerPath)}
+              class:d-flex={!externalPlayback && externalAvailable}
               title='Play the Current Video in an External Player'
               use:click={() => {
-                setCurrent(current, true)
                 showOptions.set(false)
+                openInExternalPlayer()
               }}
             >
               <SquareArrowOutUpRight size='2rem' strokeWidth={2.5} />
@@ -2733,7 +3100,7 @@
               role='button'
               aria-label='Modify Existing Files or Change to a New File'
               class='pointer d-flex align-items-center justify-content-center font-size-16 bd-highlight py-5 px-10 rounded-bottom option'
-              class:rounded-top={externalPlayback && !launchedExternal}
+              class:rounded-top={externalPlayback}
               title='Modify Existing Files or Change to a New File'
               use:click={() => {
                 resolvePrompt = false
@@ -2867,15 +3234,10 @@
                 <label
                   for='subtitle-off-radio'
                   use:click={() => {
-                    subs.selectCaptions(-1)
+                    subtitlePreferenceDone = true
+                    subs?.selectCaptions(-1)
                     setTimeout(() => subs?.renderer?.resize(), 200)
-                    cache.setEntry(caches.HISTORY, 'lastSubtitle', {
-                      ...(cache.getEntry(caches.HISTORY, 'lastSubtitle') || {}),
-                      [media?.media?.id ||
-                        media?.title ||
-                        media?.parseObject?.title ||
-                        media?.parseObject?.file_name]: 'OFF'
-                    })
+                    rememberSubtitle('OFF')
                   }}
                   class='pb-5'
                 >
@@ -2884,14 +3246,7 @@
                 <!-- stupid fix (resize) because video metadata doesn't update for multiple frames -->
                 {#each subHeaders || [] as track}
                   {#if track}
-                    {@const trackName =
-                      (track.language ||
-                        (!Object.values(subs.headers).some(
-                          (header) =>
-                            header.language === 'eng' || header.language === 'en'
-                        )
-                          ? 'eng'
-                          : track.type)) + (track.name ? ' - ' + track.name : '')}
+                    {@const trackName = trackLabel(track)}
                     <input
                       name='subtitle-radio-set'
                       type='radio'
@@ -2902,16 +3257,10 @@
                     <label
                       for='subtitle-{track.number}-radio'
                       use:click={() => {
-                        subs.selectCaptions(track.number)
+                        subtitlePreferenceDone = true
+                        subs?.selectCaptions(track.number)
                         setTimeout(() => subs?.renderer?.resize(), 200)
-                        cache.setEntry(caches.HISTORY, 'lastSubtitle', {
-                          ...(cache.getEntry(caches.HISTORY, 'lastSubtitle') ||
-                            {}),
-                          [media?.media?.id ||
-                            media?.title ||
-                            media?.parseObject?.title ||
-                            media?.parseObject?.file_name]: trackName
-                        })
+                        rememberSubtitle(trackName)
                       }}
                       class='pb-5'
                     >
@@ -2945,14 +3294,16 @@
                   >
                     <FilePlus2 size='2rem' strokeWidth={2.5} />
                   </div>
+                  <!-- Offset in seconds, "1,5" or "1.5"; typing here never reaches the player shortcuts. -->
                   <input
                     type='text'
-                    inputmode='numeric'
-                    pattern='-?[0-9]*.?[0-9]*'
-                    step='0.1'
-                    title='Subtitle Offset'
-                    bind:value={subDelay}
+                    inputmode='decimal'
+                    title='Subtitle Offset (seconds, remembered for this show)'
+                    value={subDelayText}
+                    on:input={({ currentTarget }) => typeSubDelay(currentTarget.value)}
+                    on:change={() => (subDelayText = String(subDelay))}
                     on:click|stopPropagation
+                    on:keydown|stopPropagation
                     class='form-control text-right form-control-sm not-reactive'
                   />
                 </div>
@@ -3465,5 +3816,21 @@
     background: hsla(var(--black-color-hsl), 0.6);
     pointer-events: none;
     white-space: nowrap;
+  }
+
+  /* "Up next" card, "Resume from / Start over" and the external player card: stay visible when immersed */
+  .up-next,
+  .external-card {
+    background: hsla(var(--black-color-hsl), 0.8);
+    backdrop-filter: blur(10px);
+  }
+  .up-next {
+    max-width: min(45rem, calc(100% - 4rem));
+  }
+  .external-card {
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 40rem;
   }
 </style>
