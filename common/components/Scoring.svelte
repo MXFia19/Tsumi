@@ -9,6 +9,7 @@
   import { toast } from 'svelte-sonner'
   import { X, Bookmark, PencilLine } from 'lucide-svelte'
   import Helper from '@/modules/helper.js'
+  import { requestErrorText } from '@/modules/requesterror.js'
   import Debug from 'debug'
   const debug = Debug('ui:scoring')
 
@@ -57,12 +58,21 @@
     }
   }
 
+  /** The list request, or what it threw (AniList throws the response of a 429 / 500): reported by printToast. */
+  async function request (call) {
+    try {
+      return await call()
+    } catch (error) {
+      return { failure: error ?? null }
+    }
+  }
+
   async function deleteEntry () {
     score = 0
     episode = 0
     status = 'NOT IN LIST'
     if (media.mediaListEntry) {
-      const res = await Helper.delete(media, Helper.isAniAuth() ? { id: media.mediaListEntry.id, idAni: media.id } : { idMal: media.idMal })
+      const res = await request(() => Helper.delete(media, Helper.isAniAuth() ? { id: media.mediaListEntry.id, idAni: media.id } : { idMal: media.idMal }))
       const description = `${anilistClient.title(media)} has been deleted from your list.`
       printToast(res, description, false, false)
       if (sync.value.length > 0) { // handle profile syncing
@@ -71,7 +81,7 @@
             const anilist = profile.viewer?.data?.Viewer?.avatar
             const listId = (anilist ? { id: (await anilistClient.getUserLists({ userID: profile.viewer.data.Viewer.id, token: profile.token }))?.data?.MediaListCollection?.lists?.flatMap(list => list.entries).find(({ media: listMedia }) => listMedia.id === media.id)?.media?.mediaListEntry?.id } : { idMal: media.idMal })
             if (listId?.id || listId?.idMal) {
-              const res = await Helper.delete(media, { ...listId, token: profile.token, refresh_in: profile.refresh_in, anilist })
+              const res = await request(() => Helper.delete(media, { ...listId, token: profile.token, refresh_in: profile.refresh_in, anilist }))
               printToast(res, description, false, profile)
             }
           }
@@ -94,7 +104,7 @@
         ...fuzzyDate
       }
       if (media?.mediaListEntry?.status !== variables.status || media?.mediaListEntry?.progress !== variables.episode || media?.mediaListEntry?.score !== variables.score || media?.mediaListEntry?.repeat !== variables.repeat) {
-        const res = await Helper.entry(media, variables)
+        const res = await request(() => Helper.entry(media, variables))
         const description = `Title: ${anilistClient.title(media)}\nStatus: ${Helper.statusName[status]}\nEpisode: ${episode} / ${totalEpisodes}${score !== 0 ? `\nYour Score: ${score}` : ''}`
         printToast(res, description, true, false)
         if (sync.value.length > 0) { // handle profile syncing
@@ -102,14 +112,14 @@
             if (sync.value.includes(profile?.viewer?.data?.Viewer?.id)) {
               const anilist = profile.viewer?.data?.Viewer?.avatar
               const lists = anilist ? (await anilistClient.getUserLists({ userID: profile.viewer.data.Viewer.id, token: profile.token }))?.data?.MediaListCollection?.lists?.flatMap(list => list.entries).find(({ media: listMedia }) => listMedia.id === media.id)?.media?.mediaListEntry?.customLists?.filter(list => list.enabled).map(list => list.name) : []
-              const res = await Helper.entry(media, {
+              const res = await request(() => Helper.entry(media, {
                 ...variables,
                 lists,
                 score: (anilist ? (score * 10) : score),
                 token: profile.token,
                 refresh_in: profile.refresh_in,
                 anilist
-              })
+              }))
               printToast(res, description, true, profile)
             }
           }
@@ -127,7 +137,9 @@
 
   function printToast (res, description, save, profile) {
     const who = (profile ? ' for ' + profile.viewer.data.Viewer.name + (profile.viewer?.data?.Viewer?.avatar ? ' (AniList)' : ' (MyAnimeList)') : '')
-    if ((save && res?.data?.SaveMediaListEntry) || (!save && res)) {
+    const failed = !!res && typeof res === 'object' && 'failure' in res
+    // A deletion answered with errors (AniList: data null) did not delete anything either.
+    if (!failed && ((save && res?.data?.SaveMediaListEntry) || (!save && res && !res.errors?.length && res.data?.DeleteMediaListEntry?.deleted !== false))) {
       debug(`List Updated${who}: ${description.replace(/\n/g, ', ')}`)
       if (!profile) {
         if (save && (settings.value.toasts.includes('All') || settings.value.toasts.includes('Successes'))) {
@@ -143,7 +155,8 @@
         }
       }
     } else {
-      const error = `\n${429} - ${codes[429]}`
+      // The real reason (it always said 429 Too Many Requests).
+      const error = `\n${requestErrorText(failed ? res.failure : res, codes)}`
       debug(`Error: Failed to ${(save ? 'update' : 'delete title from')} user list${who} with: ${description.replace(/\n/g, ', ')} ${error}`)
       if (settings.value.toasts.includes('All') || settings.value.toasts.includes('Errors')) {
         toast.error('Failed to ' + (save ? 'Update' : 'Delete') + ' List' + who, {

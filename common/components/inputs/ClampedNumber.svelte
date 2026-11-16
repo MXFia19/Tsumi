@@ -29,7 +29,8 @@
      * @param {FocusEvent} event - The blur event triggered when the input loses focus.
      */
   function handleBlur (event) {
-    const value = parseInt(event.target.value, 10)
+    // parseFloat: decimal settings (Seek Duration 1.5 s) kept their integer part only with parseInt.
+    const value = parseFloat(event.target.value)
     if (isValidNumber(value)) bindTo = clamp(value)
     else bindTo = min
     input = bindTo
@@ -48,8 +49,8 @@
 
 <input
   type='number'
-  inputmode='numeric'
-  pattern='[0-9]*'
+  inputmode={Number.isInteger(Number(step)) ? 'numeric' : 'decimal'}
+  pattern={Number.isInteger(Number(step)) ? '[0-9]*' : undefined}
   {min}
   {max}
   {step}
