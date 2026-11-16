@@ -92,13 +92,14 @@
     canScroll = false
     page = 0
     items.value = []
+    // Until the results fill the page, or (restore, 20 pages at most) reach the position to give back.
+    const wantsMore = () => container.scrollTop + container.clientHeight > container.scrollHeight - 800 || (restoreTo > 0 && page < 20 && container.scrollHeight - container.clientHeight < restoreTo)
     let more = await loadSearchData()
-    // A restore stops after 20 pages at most.
     while (
       more &&
       container &&
       cachedKey === $key &&
-      (container.scrollTop + container.clientHeight > container.scrollHeight - 800 || (restoreTo && page < 20 && container.scrollHeight - container.clientHeight < restoreTo))
+      wantsMore()
     ) {
       canScroll = false
       more = await loadSearchData()
