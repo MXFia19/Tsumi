@@ -60,6 +60,18 @@ enum PlayerChapterLogic {
     chapters.first { time < $0.end && time >= $0.start }
   }
 
+  /// End credits and next-episode preview (matchName), where the "Up next" card shows.
+  static let outroNames: Set<String> = ["Ending", "Outro", "Credits", "Preview"]
+
+  /// `time` is in the last run of credits / preview chapters: only such chapters follow until the end, so a
+  /// scene after the credits never gets the "Up next" card. Long credits count too (movie credits).
+  static func isInOutroTail(_ time: Double, chapters: [PlayerChapter]) -> Bool {
+    guard let index = chapters.firstIndex(where: { time >= $0.start && time < $0.end }) else { return false }
+    return chapters[index...].allSatisfy { chapter in
+      matchName(chapter.text).map { outroNames.contains($0) } ?? false
+    }
+  }
+
   /// Names shown on the scrubber: timestamp-like names become "Chapter N" (sanitiseChapters).
   static func displayNames(_ chapters: [PlayerChapter]) -> [String] {
     var counter = 1

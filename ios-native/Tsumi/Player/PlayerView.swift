@@ -164,10 +164,27 @@ struct PlayerView: View {
     .opacity(controlsVisible ? 1 : 0)
     .allowsHitTesting(controlsVisible)
 
-    // Hidden with the controls, like `.immersed .skip` in PlayerPage.svelte.
-    if let name = controller.currentSkippable, controlsVisible {
+    if let upNext = controller.upNext {
+      // End credits / preview with autoplay: "Up next" takes the place of "Skip Ending", shown with or without
+      // the controls.
+      upNextCard(upNext)
+    } else if let name = controller.currentSkippable, controlsVisible {
+      // Hidden with the controls, like `.immersed .skip` in PlayerPage.svelte.
       skipButton(name)
     }
+  }
+
+  private func upNextCard(_ upNext: PlayerUpNext) -> some View {
+    VStack {
+      Spacer(minLength: 0)
+      HStack {
+        Spacer(minLength: 0)
+        PlayerUpNextCard(controller: controller, upNext: upNext)
+      }
+      .padding(.trailing, 24)
+      .padding(.bottom, controlsVisible ? 104 : 28)
+    }
+    .transition(.move(edge: .trailing).combined(with: .opacity))
   }
 
   /// Watch Together (only while in a lobby): notices, chat bubbles, reactions, countdown, host requests, panel.

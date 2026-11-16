@@ -106,6 +106,10 @@ final class PlayerController {
   /// Episode being loaded through `loadEpisode`.
   private(set) var loadingEpisode: EpisodeRef?
   private(set) var stats: [PlayerStatLine]?
+  /// "Up next" card: the end credits / preview of the episode play, autoplay is on and there is a next episode.
+  private(set) var upNext: PlayerUpNext?
+  /// A saved position was restored when the episode loaded: the card offering to start over instead.
+  private(set) var resumeChoice: PlayerResumeChoice?
   /// Hold to speed up (PlayerHoldSpeed.swift): the rate playing while the video or Space is held, nil otherwise.
   var holdSpeedRate: Float?
   @ObservationIgnored var holdSpeedState = PlayerHoldSpeedState()
@@ -180,6 +184,12 @@ final class PlayerController {
   @ObservationIgnored private var lastThumbnailCapture = Date.distantPast
   /// Last frame copied from the video output (screenshot fallback when the output has no new buffer).
   @ObservationIgnored private var lastVideoFrame: (buffer: CVPixelBuffer, time: Double)?
+  /// Scrub previews the image generator failed to make in a row (3: the asset is a stream, cached frames instead).
+  @ObservationIgnored private var previewFailures = 0
+  /// Episode generation whose autoplay was decided (filler prompt or play), see `startAutoPlay`.
+  @ObservationIgnored private var autoPlayDecidedGeneration = -1
+  /// Episode generation whose "Up next" card was answered (played or cancelled): not shown again.
+  @ObservationIgnored private var upNextDoneGeneration = -1
 
   /// Playback speeds offered in the speed menu ([ and ] change it by 0.1 like the Svelte keybinds).
   static let speedOptions: [Float] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
@@ -194,6 +204,10 @@ final class PlayerController {
   private static let thumbnailLimit = 240
   private static let thumbnailSize = CGSize(width: 192, height: 108)
   private static let ciContext = CIContext()
+  /// Longest wait for the filler/recap lookup before autoplay (a slow Jikan must not hold the episode).
+  private static let flagsLookupTimeout: UInt64 = 3_000_000_000
+  /// "Up next" countdown, in seconds of playback (it waits while paused).
+  static let upNextCountdown: Double = 10
 
   init(session: PlaybackSession, episodeList: [EpisodeInfo] = []) {
     self.session = session
@@ -233,6 +247,11 @@ final class PlayerController {
 
   var isReady: Bool { phase == .ready }
   var isLoadingEpisode: Bool { loadingEpisode != nil }
+  /// The video goes on while the app is in the background: playing (audio, "Pause On Lost Focus" off), in
+  /// Picture in Picture or on AirPlay (Discord keeps its presence then).
+  var continuesInBackground: Bool {
+    !isClosed && (isPlaying || isPictureInPictureActive || player.isExternalPlaybackActive)
+  }
   var canTryNextServer: Bool { session.servers.count > 1 }
   var canOpenDetails: Bool { onOpenDetails != nil }
   /// The app can show the in-app miniplayer (`minimize()`).
@@ -502,6 +521,12 @@ final class PlayerController {
     subtitleChoice = .off
     activeSubtitleCues = []
     userChoseSubtitle = false
+    // Subtitle offset remembered for this show (the same release usually needs the same offset).
+    subtitleDelay = PlayerPreferences.subtitleOffset(for: newSession.media.id)
+    upNext = nil
+    resumeChoice = nil
+    // A play state from before this episode must not resume it after an interruption.
+    playingBeforeResign = false
     autoplayHandledByRemote = pendingRemoteState != nil
     currentTime = 0
     duration = 0
@@ -578,7 +603,10 @@ final class PlayerController {
     item.add(output)
     currentAsset = asset
     videoOutput = output
-    imageGenerator = PlayerController.isHLS(server.url) ? nil : PlayerController.makeImageGenerator(asset)
+    // Streams have no AVAssetImageGenerator support: their previews come from frames cached while playing.
+    // Decided from the URL first, then from the asset once loaded (checkPreviewSource) for a stream whose URL
+    // doesn't say so (proxy URL, downloaded .movpkg).
+    imageGenerator = PlayerController.isStream(server.url) ? nil : PlayerController.makeImageGenerator(asset)
     observe(item, generation: generation)
     player.replaceCurrentItem(with: item)
     player.defaultRate = playbackRate
@@ -597,6 +625,7 @@ final class PlayerController {
     currentAsset = nil
     videoOutput = nil
     imageGenerator = nil
+    previewFailures = 0
     seekInFlight = false
     seekCompletions = []
     isScrubbing = false
@@ -614,8 +643,19 @@ final class PlayerController {
     return options
   }
 
-  private static func isHLS(_ url: URL) -> Bool {
-    url.absoluteString.lowercased().contains(".m3u8")
+  /// HLS by its URL: a playlist, or a downloaded HLS package (.movpkg).
+  private static func isStream(_ url: URL) -> Bool {
+    let text = url.absoluteString.lowercased()
+    return text.contains(".m3u8") || text.contains("mpegurl") || url.pathExtension.lowercased() == "movpkg"
+  }
+
+  /// An HLS asset lists no track of its own (they belong to the player item): the image generator can't make
+  /// frames of it, the cached frames are used.
+  private func checkPreviewSource(generation: Int) async {
+    guard imageGenerator != nil, let asset = currentAsset else { return }
+    let tracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
+    guard generation == itemGeneration, !isClosed, tracks.isEmpty else { return }
+    imageGenerator = nil
   }
 
   private static func makeImageGenerator(_ asset: AVAsset) -> AVAssetImageGenerator {
@@ -700,6 +740,13 @@ final class PlayerController {
         self?.handleWillEnterForeground()
       }
       .store(in: &appCancellables)
+    center.publisher(for: UIApplication.didBecomeActiveNotification)
+      .sink { [weak self] _ in
+        // Only meaningful between resigning and the background / interruption that follows: a stale value
+        // would resume a video paused since then after the next interruption.
+        self?.playingBeforeResign = false
+      }
+      .store(in: &appCancellables)
     center.publisher(for: AVAudioSession.interruptionNotification)
       .map { note -> (type: UInt?, options: UInt?) in
         (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -758,6 +805,7 @@ final class PlayerController {
     setBuffering(false)
     Task { [weak self] in
       await self?.loadMediaSelection(generation: generation)
+      await self?.checkPreviewSource(generation: generation)
     }
     let fresh = isFreshEpisodeLoad
     isFreshEpisodeLoad = false
@@ -785,11 +833,14 @@ final class PlayerController {
     pendingSeek = nil
     let total = safeDuration
     var target: Double
+    var restored = false
     switch pending {
     case .restore(let time):
-      // Load 5 seconds before. A position in the last 3% restarts the episode instead of ending it at once.
+      // Load 5 seconds before. An episode watched past the completion threshold (or its last 3%) starts over
+      // instead of resuming near its end (autoplay would then jump to the next episode at once).
       target = max(time - 5, 0)
-      if total > 0 && time >= total * 0.97 { target = 0 }
+      if total > 0 && time >= total * PlayerController.resumeLimit { target = 0 }
+      restored = true
     case .exact(let time):
       target = time
     }
@@ -798,26 +849,59 @@ final class PlayerController {
       // Loading a file (resume position) is not a user action for Watch Together.
       self?.emitLocalState(announce: false)
     }
+    // "Resumed at 12:34 · Start Over" (not in Watch Together: the lobby decides the position there).
+    if restored && !(isWatchTogetherActive?() ?? false) {
+      resumeChoice = PlayerResumeChoice(time: target)
+    }
   }
 
-  /// autoPlay + promptFiller: plays unless the episode is a filler/recap (then asks first).
+  /// Share of the episode past which a saved position is not resumed: the completion threshold
+  /// (playerAutocompleteThreshold), kept between 50% and 97%.
+  static var resumeLimit: Double {
+    let threshold = Double(AppSettings.shared.values.playerAutocompleteThreshold) / 100
+    return min(max(threshold.isFinite ? threshold : 0.97, 0.5), 0.97)
+  }
+
+  /// "Start Over" of the resume card.
+  func startOver() {
+    resumeChoice = nil
+    seek(to: 0)
+  }
+
+  /// "Resume" (keep the restored position) or the card timing out.
+  func dismissResumeChoice(_ id: UUID? = nil) {
+    if id == nil || resumeChoice?.id == id { resumeChoice = nil }
+  }
+
+  /// autoPlay + promptFiller: plays unless the episode is a filler/recap (then asks first). The filler/recap
+  /// lookup is waited for at most `flagsLookupTimeout`: past it the episode plays (a late answer is ignored).
   private func startAutoPlay() {
     let generation = episodeGeneration
     let task = flagsTask
     Task { [weak self] in
       let flags = await task?.value
-      guard let self, generation == self.episodeGeneration, !self.isClosed else { return }
-      // A Watch Together state was applied: the lobby decides (no filler prompt pausing the others).
-      if self.autoplayHandledByRemote { return }
-      if let label = flags?.promptLabel {
-        self.fillerPrompt = label
-        self.player.pause()
-        return
-      }
-      // Autoplay is not a user action for Watch Together.
-      self.suppressSyncUntil = max(self.suppressSyncUntil, Date().addingTimeInterval(1))
-      self.player.play()
+      self?.decideAutoPlay(flags, generation: generation)
     }
+    Task { [weak self] in
+      try? await Task.sleep(nanoseconds: PlayerController.flagsLookupTimeout)
+      self?.decideAutoPlay(nil, generation: generation)
+    }
+  }
+
+  /// First of the lookup answer and its timeout, once per episode.
+  private func decideAutoPlay(_ flags: PlayerEpisodeFlags?, generation: Int) {
+    guard generation == episodeGeneration, autoPlayDecidedGeneration != generation, !isClosed else { return }
+    autoPlayDecidedGeneration = generation
+    // A Watch Together state was applied: the lobby decides (no filler prompt pausing the others).
+    if autoplayHandledByRemote { return }
+    if let label = flags?.promptLabel {
+      fillerPrompt = label
+      player.pause()
+      return
+    }
+    // Autoplay is not a user action for Watch Together.
+    suppressSyncUntil = max(suppressSyncUntil, Date().addingTimeInterval(1))
+    player.play()
   }
 
   private func handleFailure(_ error: NSError?, generation: Int) {
@@ -854,6 +938,7 @@ final class PlayerController {
     checkCompletion()
     saveProgress(force: true)
     currentSkippable = nil
+    upNext = nil
     updateNowPlayingPlayback()
     onPlaybackEnded?(session.media, session.episode)
     let watchingTogether = isWatchTogetherActive?() ?? false
@@ -950,6 +1035,7 @@ final class PlayerController {
     refreshSubtitleCues()
     guard isPlaying, phase == .ready else { return }
     checkSkippableChapters()
+    updateUpNext()
     checkCompletion()
     if Date().timeIntervalSince(lastProgressSave) >= 10 {
       saveProgress()
@@ -961,12 +1047,15 @@ final class PlayerController {
   private func runTimeChecks() {
     guard phase == .ready, !isClosed else { return }
     checkSkippableChapters()
+    updateUpNext()
     checkCompletion()
   }
 
   // MARK: - App state
 
   private func handleWillResignActive() {
+    // A seekbar drag the system interrupts (Control Center, a call) never ends by itself: it ends where it is.
+    finishScrubbing()
     // A hold started on a paused video pauses it again: it was not playing for the background rules.
     let pausedByHold = cancelHoldSpeed()
     playingBeforeResign = isPlaying && !pausedByHold
@@ -1102,6 +1191,13 @@ final class PlayerController {
     }
   }
 
+  /// Ends a seekbar drag that was cancelled instead of ended (the gesture was interrupted, the app resigned
+  /// active, the seekbar disappeared) at the last scrubbed position, so `isScrubbing` never stays stuck.
+  func finishScrubbing() {
+    guard isScrubbing else { return }
+    endScrubbing(at: scrubTime)
+  }
+
   private func performSeek(to seconds: Double, precise: Bool = true, completion: (() -> Void)? = nil) {
     guard seconds.isFinite else { return }
     let upper = duration > 0 ? duration : max(seconds, 0)
@@ -1151,9 +1247,22 @@ final class PlayerController {
       try? await Task.sleep(nanoseconds: 120_000_000)
       guard !Task.isCancelled else { return }
       let cmTime = CMTime(seconds: time, preferredTimescale: 600)
-      guard let image = try? await generator.image(at: cmTime).image else { return }
-      guard !Task.isCancelled, let self, self.isScrubbing else { return }
-      self.scrubPreview = UIImage(cgImage: image)
+      do {
+        let image = try await generator.image(at: cmTime).image
+        guard !Task.isCancelled, let self else { return }
+        self.previewFailures = 0
+        guard self.isScrubbing else { return }
+        self.scrubPreview = UIImage(cgImage: image)
+      } catch {
+        guard !Task.isCancelled, let self, self.imageGenerator === generator else { return }
+        if self.isScrubbing {
+          self.scrubPreview = self.cachedThumbnail(near: time).map { UIImage(cgImage: $0) }
+        }
+        // The asset can't make frames (a stream the URL didn't reveal): the frames cached while playing are
+        // used from now on.
+        self.previewFailures += 1
+        if self.previewFailures >= 3 { self.imageGenerator = nil }
+      }
     }
   }
 
@@ -1389,9 +1498,11 @@ final class PlayerController {
     showNotice("Subtitles", subtitleName(for: next) ?? "OFF")
   }
 
+  /// "Subtitle Offset": applies to the episodes that follow too, and is remembered for this show.
   func setSubtitleDelay(_ value: Double) {
     guard value.isFinite else { return }
     subtitleDelay = (min(max(value, -600), 600) * 10).rounded() / 10
+    PlayerPreferences.setSubtitleOffset(subtitleDelay, for: session.media.id)
     refreshSubtitleCues()
   }
 
@@ -1542,7 +1653,11 @@ final class PlayerController {
       if PlayerChapterLogic.skippableName(chapter) == nil && chapter.length > 100 {
         target = time + 85
       } else {
-        if (total - chapter.end).rounded(.towardZero) == 0 && hasNext && AppSettings.shared.values.playerAutoplay {
+        // Last chapter: the next episode (tryPlayNext). In Watch Together never on this device alone (each
+        // member would load it): the seek to the end goes to the lobby and ends the episode, whose end path
+        // (onPlaybackEnded) lets the host play the next queued item.
+        if (total - chapter.end).rounded(.towardZero) == 0 && hasNext && AppSettings.shared.values.playerAutoplay
+            && !(isWatchTogetherActive?() ?? false) {
           currentSkippable = nil
           Task { [weak self] in
             await self?.playNext()
@@ -1560,6 +1675,57 @@ final class PlayerController {
       target = time + 85
     }
     seek(to: target)
+  }
+
+  // MARK: - Up next
+
+  /// "Up next" card: in the last credits / preview chapters of the episode (embedded, AniSkip or TheIntroDB),
+  /// with autoplay on and a next episode. The next episode starts when the countdown (playback time) runs out.
+  /// Not in Watch Together: autoplay is off there and the lobby's own "Up next" (the host's queue) runs at the
+  /// end of the episode, which the seek to the end of `skip()` reaches.
+  private func updateUpNext() {
+    guard let next = upNextEpisode() else {
+      if upNext != nil { upNext = nil }
+      return
+    }
+    guard let current = upNext, current.episode == next else {
+      upNext = PlayerUpNext(episode: next, title: upNextTitle(), startsAt: currentTime + PlayerController.upNextCountdown)
+      return
+    }
+    if isPlaying, currentTime >= current.startsAt {
+      playUpNext()
+    }
+  }
+
+  private func upNextEpisode() -> EpisodeRef? {
+    guard phase == .ready, !hasEnded, !isScrubbing, loadingEpisode == nil, fillerPrompt == nil,
+          upNextDoneGeneration != episodeGeneration, AppSettings.shared.values.playerAutoplay,
+          !(isWatchTogetherActive?() ?? false),
+          PlayerChapterLogic.isInOutroTail(currentTime, chapters: chapters) else { return nil }
+    return nextEpisodeRef
+  }
+
+  /// Title of the next episode from the episode list, unless spoiler protection hides it.
+  private func upNextTitle() -> String? {
+    guard let index = currentEpisodeIndex, episodeList.indices.contains(index + 1) else { return nil }
+    let info = episodeList[index + 1]
+    if EpisodeSpoilers(entry: BrowseMediaInfo.entry(session.media), episode: info.number).title { return nil }
+    return PlayerText.cleanedTitle(info.title)
+  }
+
+  /// "Play Now" of the Up next card, or its countdown running out.
+  func playUpNext() {
+    upNextDoneGeneration = episodeGeneration
+    upNext = nil
+    Task { [weak self] in
+      await self?.playNext()
+    }
+  }
+
+  /// "Cancel" of the Up next card: not shown again for this episode.
+  func dismissUpNext() {
+    upNextDoneGeneration = episodeGeneration
+    upNext = nil
   }
 
   // MARK: - Progress and completion
@@ -1728,6 +1894,8 @@ final class PlayerController {
     lastSyncedState = (paused: paused, time: floor(time))
     suppressSyncUntil = Date().addingTimeInterval(1)
     autoplayHandledByRemote = true
+    // The lobby sets the position: no local "Start Over" offer.
+    resumeChoice = nil
     guard phase == .ready else {
       pendingRemoteState = (paused: paused, time: time)
       return
