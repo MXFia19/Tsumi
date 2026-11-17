@@ -1,11 +1,12 @@
 // Settings copied out of the app (Settings > App: Export to Clipboard, App and Device Info, the "Current Settings"
-// debug log line). Private values stay on the device: the Watch Together TURN login, and the extension manifest URLs,
-// which often carry a private token or the user's configuration (the Extensions tab shows their host only).
+// debug log line). The Watch Together TURN login never leaves the device. The export (a backup or a move to another
+// device, like the iOS export) keeps the extensions; the support texts (device info, logs) show only their host, since
+// manifest URLs often carry a private token or the user's configuration (the Extensions tab shows their host only).
 // Pure functions (see settingsexport.test.mjs).
 import { maskUrl } from './sandbox/network.js'
 
-/** Settings left out of an export: the private ones, and the extension choices that go with the extensions. */
-export const DEVICE_SETTINGS = ['w2gTurnUsername', 'w2gTurnCredential', 'extensions', 'defaultExtension', 'starredExtension']
+/** Settings left out of an export: the TURN login (iOS ShellSettingsTransfer.privateKeys). */
+export const DEVICE_SETTINGS = ['w2gTurnUsername', 'w2gTurnCredential']
 
 const HIDDEN = '(hidden)'
 

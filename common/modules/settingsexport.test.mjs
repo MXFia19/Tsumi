@@ -30,12 +30,15 @@ const settings = {
 }
 const text = (value) => JSON.stringify(value)
 
-test('export leaves out the TURN login and the extensions', () => {
+test('export leaves out the TURN login and keeps the extensions (like iOS)', () => {
   const exported = exportableSettings(settings)
   for (const key of DEVICE_SETTINGS) assert.equal(Object.hasOwn(exported, key), false, key)
   assert.equal(exported.volume, 1)
   assert.equal(exported.w2gTurnUrl, 'turns:turn.example.org:5349')
-  assert.doesNotMatch(text(exported), /not-a-real-secret|someone|c2VjcmV0|private-token/)
+  assert.doesNotMatch(text(exported), /not-a-real-secret|someone/)
+  assert.deepEqual(exported.extensions, settings.extensions)
+  assert.equal(exported.defaultExtension, 'Torrent-1.0.0')
+  assert.equal(exported.starredExtension, 'Anime-2.1')
   assert.equal(settings.w2gTurnCredential, 'not-a-real-secret') // the device's settings are untouched
   assert.deepEqual(exportableSettings(null), {})
 })
@@ -54,16 +57,16 @@ test('device info hides the TURN login and keeps the extensions by name and host
   assert.equal(redactedSettings({ w2gTurnCredential: '' }).w2gTurnCredential, '')
 })
 
-test('import keeps the device settings the export left out', () => {
+test('import keeps the TURN login the export left out', () => {
   const imported = { volume: 0.5, w2gTurnUrl: '' }
   const merged = withDeviceSettingsKept(imported, settings)
   assert.equal(merged.volume, 0.5)
   assert.equal(merged.w2gTurnUrl, '')
+  assert.equal(merged.w2gTurnUsername, 'someone')
   assert.equal(merged.w2gTurnCredential, 'not-a-real-secret')
-  assert.deepEqual(merged.extensions, settings.extensions)
-  assert.equal(merged.defaultExtension, 'Torrent-1.0.0')
-  // An older export that has them still replaces them.
-  assert.deepEqual(withDeviceSettingsKept({ extensions: {}, defaultExtension: null }, settings), { extensions: {}, defaultExtension: null, w2gTurnUsername: 'someone', w2gTurnCredential: 'not-a-real-secret', starredExtension: 'Anime-2.1' })
+  assert.equal(Object.hasOwn(merged, 'extensions'), false) // extensions come from the export itself
+  // An older export that has the TURN login still replaces it.
+  assert.deepEqual(withDeviceSettingsKept({ w2gTurnUsername: 'other', w2gTurnCredential: 'x' }, settings), { w2gTurnUsername: 'other', w2gTurnCredential: 'x' })
   assert.deepEqual(withDeviceSettingsKept({ volume: 1 }, null), { volume: 1 })
 })
 

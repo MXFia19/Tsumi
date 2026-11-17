@@ -19,7 +19,7 @@
       return
     }
     try {
-      // The export leaves out the TURN login and the extensions (settingsexport.js): the device keeps its own.
+      // The export leaves out the TURN login (settingsexport.js): the device keeps its own.
       await cache.write(caches.GENERAL, 'settings', withDeviceSettingsKept(imported.settings, cache.getEntry(caches.GENERAL, 'settings')))
     } catch (error) {
       toast.error('Failed to import settings', { description: `The settings could not be saved: ${error?.message || error}`, duration: 5_000 })
@@ -120,7 +120,7 @@
 
   IPC.on('device-info', writeAppInfo)
 
-  const managementDescription = 'Import saved settings from your clipboard, export your current configuration to back it up or share with others, and restore everything back to default values if needed. This is especially useful for syncing preferences across devices, sharing settings with friends, or starting fresh with recommended defaults.\nThe export leaves out your extensions and your Watch Together TURN login, which can hold private tokens: importing keeps the ones of this device.'
+  const managementDescription = 'Import saved settings from your clipboard, export your current configuration to back it up or share with others, and restore everything back to default values if needed. This is especially useful for syncing preferences across devices, sharing settings with friends, or starting fresh with recommended defaults.\nThe export includes your extensions, whose links can hold private tokens: only share it with people you trust. It leaves out your Watch Together TURN login: importing keeps the one of this device.'
 </script>
 
 <h4 class='mb-10 font-weight-bold'>App Settings</h4>
