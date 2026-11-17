@@ -218,9 +218,19 @@ enum ShellNavigation {
   /// "Log in again": the profiles sheet hosts the login web view, but ShellLayers.rootSheet shows the details
   /// and notifications sheets before it, and a screen's own sheet covers the root. Those are closed first (the
   /// login otherwise ran unseen under them and popped up later).
+  /// The prompts also show on the details over the player, and no root sheet is shown while the player is: the
+  /// details are closed and the player minimized first (it keeps playing in the miniplayer), so the profiles sheet
+  /// shows at once instead of after the player was closed.
   static func prepareProfilesSheet() async {
     let router = AppRouter.shared
-    if !ShellLayers.playerVisible && (router.presentedMedia != nil || router.showNotifications) {
+    if ShellLayers.playerVisible {
+      router.presentedMedia = nil
+      router.showNotifications = false
+      // The details sheet leaves the player first (dismissing both at once can drop one of the dismissals).
+      await ShellPresentationTiming.waitUntilSettled(maxDepth: 1, timeout: 1.5)
+      PlayerPresentation.shared.controller?.minimize()
+      await ShellPresentationTiming.waitUntilSettled(maxDepth: 0, timeout: 1.5)
+    } else if router.presentedMedia != nil || router.showNotifications {
       router.presentedMedia = nil
       router.showNotifications = false
     }

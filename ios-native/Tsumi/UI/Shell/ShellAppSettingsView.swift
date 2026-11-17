@@ -218,11 +218,21 @@ enum ShellSettingsTransfer {
   static let cardsKey = "cards"
   static let autoPictureInPictureKey = "autoPictureInPicture"
   static let extensionsKey = "extensions"
+  /// The Watch Together TURN account (PlayerTab.svelte w2gTurnUsername / w2gTurnCredential) is private: left out of
+  /// the export and of "App and Device Info" (pasted in support chats), and kept as it is by an import without it.
+  static let privateKeys = ["w2gTurnUsername", "w2gTurnCredential"]
+
+  /// The settings as a JSON object, without the private keys (export, App and Device Info).
+  static func shareableSettings() -> [String: Any]? {
+    guard let data = try? JSONEncoder().encode(AppSettings.shared.values),
+          var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+    for key in privateKeys { object.removeValue(forKey: key) }
+    return object
+  }
 
   static func exportJSON() -> String? {
     let values = AppSettings.shared.values
-    guard let data = try? JSONEncoder().encode(values),
-          var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+    guard var object = shareableSettings() else { return nil }
     // Svelte shape of the "Not on List" release option.
     var releases = values.releasesNotify.map { $0.rawValue }
     if values.releasesNotifyNotOnList { releases.append(SettingsValues.notOnListValue) }
@@ -259,8 +269,15 @@ enum ShellSettingsTransfer {
       root = inner
     }
     let known = Set(SettingsValues.allKeys + [cardsKey, autoPictureInPictureKey, extensionsKey])
-    guard root.keys.contains(where: { known.contains($0) }),
-          let rootData = try? JSONSerialization.data(withJSONObject: root),
+    guard root.keys.contains(where: { known.contains($0) }) else { return false }
+    // Exports leave the TURN account out: the current one stays instead of being reset to empty.
+    if let data = try? JSONEncoder().encode(AppSettings.shared.values),
+       let current = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+      for key in privateKeys where root[key] == nil {
+        root[key] = current[key]
+      }
+    }
+    guard let rootData = try? JSONSerialization.data(withJSONObject: root),
           var values = try? JSONDecoder().decode(SettingsValues.self, from: rootData) else { return false }
     if root["homeSections"] == nil {
       // scopedDefaults of settings.js: the full default layout.
@@ -403,10 +420,8 @@ struct ShellDebugSettingsSection: View {
   }
 
   private func copyDeviceInfo() {
-    var settingsObject: Any = [String: Any]()
-    if let data = try? JSONEncoder().encode(AppSettings.shared.values), let object = try? JSONSerialization.jsonObject(with: data) {
-      settingsObject = object
-    }
+    // Without the TURN account (ShellSettingsTransfer.privateKeys): this text is pasted in support chats.
+    let settingsObject: Any = ShellSettingsTransfer.shareableSettings() ?? [String: Any]()
     let device = UIDevice.current
     let appInfo: [String: Any] = [
       "version": ShellAppInfo.version,
