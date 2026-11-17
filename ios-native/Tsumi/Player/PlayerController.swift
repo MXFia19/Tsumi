@@ -208,6 +208,8 @@ final class PlayerController {
   private static let flagsLookupTimeout: UInt64 = 3_000_000_000
   /// "Up next" countdown, in seconds of playback (it waits while paused).
   static let upNextCountdown: Double = 10
+  /// Saved positions under this are not resumed (PC playerstate.js MIN_RESUME_S): the episode starts over.
+  static let minResumeTime: Double = 10
 
   init(session: PlaybackSession, episodeList: [EpisodeInfo] = []) {
     self.session = session
@@ -536,8 +538,9 @@ final class PlayerController {
     isFreshEpisodeLoad = true
     resumePlaybackAfterLoad = false
     pendingSeek = nil
+    // Less than 10 s watched: start from the beginning (no "Resumed at 0:02" card), like PC.
     if let resume = newSession.startTime ?? resumePosition?(newSession.media, newSession.episode),
-       resume.isFinite, resume > 0 {
+       resume.isFinite, resume >= PlayerController.minResumeTime {
       pendingSeek = .restore(resume)
     }
     startFlagsLookup(for: newSession)
@@ -1519,7 +1522,8 @@ final class PlayerController {
   /// "Subtitle Offset": applies to the episodes that follow too, and is remembered for this show.
   func setSubtitleDelay(_ value: Double) {
     guard value.isFinite else { return }
-    subtitleDelay = (min(max(value, -600), 600) * 10).rounded() / 10
+    let range = PlayerPreferences.subtitleOffsetRange
+    subtitleDelay = (min(max(value, -range), range) * 10).rounded() / 10
     PlayerPreferences.setSubtitleOffset(subtitleDelay, for: session.media.id)
     refreshSubtitleCues()
   }
