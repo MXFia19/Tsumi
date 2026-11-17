@@ -14,8 +14,11 @@ export const MATCH_MIN_SCORE = SCORE.FUZZY
  */
 export function matchTargets (manifest) {
   const type = String(manifest?.type || '').toLowerCase()
-  if (/anime|manga|donghua/.test(type)) return { anime: true, western: false }
-  if (/movie|show|serie|tv|film|drama|cartoon/.test(type)) return { anime: false, western: true }
+  // Tested apart: "anime/movies" searches both.
+  const anime = /anime|manga|donghua/.test(type)
+  const western = /movie|show|serie|tv|film|drama|cartoon/.test(type)
+  if (anime && !western) return { anime: true, western: false }
+  if (western && !anime) return { anime: false, western: true }
   return { anime: true, western: true }
 }
 

@@ -28,8 +28,10 @@ async function searchPage (ext, query, page) {
   if (!query || page > 1) return emptyPage()
   const raw = await callExtension(ext, 'searchResults', [query])
   const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+  const seen = new Set()
   const media = (Array.isArray(parsed) ? parsed : [])
     .filter(result => typeof result?.title === 'string' && result.title.trim() && typeof result?.href === 'string' && result.href)
+    .filter(result => !seen.has(result.href) && seen.add(result.href))
     .slice(0, 100)
     .map(result => resultMedia(ext, result))
   return { data: { Page: { pageInfo: { hasNextPage: false }, media } } }
@@ -75,10 +77,20 @@ async function candidates (titles, targets) {
       lists.push(Promise.resolve(anilistClient.search({ search: title, page: 1, perPage: 10, sort: 'SEARCH_MATCH' })).then(res => res?.data?.Page?.media || []).catch(() => []))
     }
     if (targets.western) {
-      lists.push(tmdbClient.textSearch(title).then(res => res?.data?.Page?.media || []).catch(() => []))
+      // Every TMDB title, K-dramas, Asian and anime films included (the Search page's TMDB results leave them out).
+      lists.push(tmdbClient.textSearch(title, 1, { includeAnime: true }).then(res => withAniList(res?.data?.Page?.media || [])).catch(() => []))
     }
   }
   return (await Promise.all(lists)).flat()
+}
+
+/** TMDB titles mapped to AniList (normalizeMedia gives them the AniList id) open their AniList entry. */
+async function withAniList (media) {
+  const mapped = media.filter(item => typeof item.id === 'number').map(item => item.id)
+  const others = media.filter(item => typeof item.id !== 'number')
+  if (!mapped.length) return others
+  const res = await Promise.resolve(anilistClient.searchIDS({ id: mapped, page: 1, perPage: 50 })).catch(() => null)
+  return [...others, ...(res?.data?.Page?.media || [])]
 }
 
 /** AniList / TMDB media matching a module result, null when none is close enough. */
@@ -98,18 +110,25 @@ export async function findMatch (sora) {
 }
 
 let opening = null
+let lookups = 0
 
 /**
  * Card click on a module result: opens the details of the matching title and remembers the module result for Play.
+ * The last result clicked wins: an earlier lookup still running is dropped.
  * @param {any} media card media built by resultMedia
  */
 export async function openSoraResult (media) {
   const sora = media?.sora
   if (!sora || opening === sora.href) return
+  const lookup = ++lookups
   opening = sora.href
   const toastId = toast.loading(`Looking for "${sora.title}" on AniList and TMDB…`)
   try {
     const match = await findMatch(sora)
+    if (lookup !== lookups) {
+      toast.dismiss(toastId)
+      return
+    }
     if (!match) {
       toast.error('No AniList or TMDB title matches this result', { id: toastId, description: `${sora.title} (${sora.extensionName})` })
       return
@@ -119,8 +138,9 @@ export async function openSoraResult (media) {
     modal.open(modal.ANIME_DETAILS, match)
   } catch (error) {
     debug('Sora result match failed', error)
-    toast.error('Could not open this result', { id: toastId, description: error?.message || String(error) })
+    if (lookup === lookups) toast.error('Could not open this result', { id: toastId, description: error?.message || String(error) })
+    else toast.dismiss(toastId)
   } finally {
-    opening = null
+    if (lookup === lookups) opening = null
   }
 }

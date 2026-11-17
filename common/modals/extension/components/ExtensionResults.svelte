@@ -152,7 +152,12 @@
     if (!signal.aborted) loading = false
   }
 
-  async function selectResult (result) {
+  /**
+   * @param {any} result
+   * @param {{ strict?: boolean }} [options] strict: a result that does not list the episode is not played (preferred
+   *   Sora source); otherwise its first episode is (movies, single-file results).
+   */
+  async function selectResult (result, { strict = false } = {}) {
     if (playingResult) return
     const controller = new AbortController()
     const current = { result, controller }
@@ -252,6 +257,12 @@
         targetEp = episodes.find((ep) => Number(ep.number) === targetNumber)
       }
 
+      if (!targetEp && strict && episodes.length > 1) {
+        // Playing episode 1 as episode N would also count it on the list: the other extensions are listed instead.
+        toast.error(`${launch.source || 'This module'} has no episode ${targetLocal ?? targetNumber} for this result`, { description: 'Pick another result below.' })
+        done()
+        return
+      }
       targetEp = targetEp || episodes[0]
 
       const raw = await callExtension(
@@ -400,7 +411,7 @@
     if (!preferred?.extensionKey || !preferred.href) return
     const ext = extensionManager.getEnabled().find(enabled => enabled.key === preferred.extensionKey)
     if (!ext) return
-    selectResult({ extensionKey: ext.key, extensionName: ext.manifest?.sourceName || ext.key, extensionIcon: ext.manifest?.iconUrl, href: preferred.href, title: preferred.title })
+    selectResult({ extensionKey: ext.key, extensionName: ext.manifest?.sourceName || ext.key, extensionIcon: ext.manifest?.iconUrl, href: preferred.href, title: preferred.title }, { strict: true })
   }
 
   function toggleGroup (key) {

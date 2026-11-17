@@ -745,7 +745,13 @@ class TMDBClient {
     return null
   }
 
-  async textSearch (query, page = 1) {
+  /**
+   * @param {string} query
+   * @param {number} [page]
+   * @param {{ includeAnime?: boolean }} [options] includeAnime: keep the ja / zh / ko titles and the titles mapped to
+   *   AniList (their id is then the AniList id), which the Search page leaves to AniList (Sora result matching).
+   */
+  async textSearch (query, page = 1, { includeAnime = false } = {}) {
     if (!query || query.length === 0) return { data: { Page: { pageInfo: { hasNextPage: false }, media: [] } } }
 
     try {
@@ -755,15 +761,19 @@ class TMDBClient {
         .map(item => this.normalizeMedia(item))
         .filter(Boolean)
 
-      const filtered = results.filter(item => {
-        const tmdbType = item.format === 'TV' ? 'tv' : 'movie'
-        const isMapped = !!this.tmdbToAnilist[`${tmdbType}-${item.idTmdb}`]
-        const isAnime = ['ja', 'zh', 'ko'].includes(item.originalLanguage) || isMapped
+      const filtered = includeAnime
+        ? results
+        : results.filter(item => {
+          const tmdbType = item.format === 'TV' ? 'tv' : 'movie'
+          const isMapped = !!this.tmdbToAnilist[`${tmdbType}-${item.idTmdb}`]
+          const isAnime = ['ja', 'zh', 'ko'].includes(item.originalLanguage) || isMapped
 
-        return !isAnime
-      })
+          return !isAnime
+        })
 
-      if (filtered.length > 0) await cache.updateMedia(filtered)
+      // Never cached under an AniList id: the TMDB copy would replace the AniList media.
+      const cacheable = filtered.filter(item => typeof item.id === 'string')
+      if (cacheable.length > 0) await cache.updateMedia(cacheable)
 
       return {
         data: {

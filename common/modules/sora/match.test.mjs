@@ -23,6 +23,8 @@ test('matchTargets reads the module type', () => {
   assert.deepEqual(matchTargets({ type: 'shows' }), { anime: false, western: true })
   assert.deepEqual(matchTargets({}), { anime: true, western: true })
   assert.deepEqual(matchTargets(null), { anime: true, western: true })
+  assert.deepEqual(matchTargets({ type: 'anime/movies' }), { anime: true, western: true })
+  assert.deepEqual(matchTargets({ type: 'K-Drama' }), { anime: false, western: true })
 })
 
 test('pickBestMatch takes the best title, then the most popular', () => {
