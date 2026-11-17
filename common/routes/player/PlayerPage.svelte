@@ -512,6 +512,8 @@
   let pendingRestore = null
   /** Last position the video really played at (kept when a load fails, for the next server / retry). */
   let lastGoodTime = 0
+  /** The episode had its first loadedmetadata (resume, autoplay, prompts done): a reload restores where it was. */
+  let episodeLoaded = false
 
   /** Everything tied to the episode playing back to its initial state: new episode, or player closed. */
   function resetEpisodeState () {
@@ -527,6 +529,7 @@
     dismissStreamError()
     pendingRestore = null
     lastGoodTime = 0
+    episodeLoaded = false
     canPlay = false
     externalPlayback = false
     externalSession = null
@@ -617,20 +620,28 @@
         return
       }
     }
+    // Before the stream is loaded: a load superseded by a server switch never settles (streaming.js), and nowPlaying
+    // (MediaHandler) does not depend on it.
+    emit('current', current) // #handleCurrent in MediaHandler
     await loadBuiltin(file, token)
-    if (token === loadToken) emit('current', current) // #handleCurrent in MediaHandler
   }
 
   /** Plays the episode in the built-in player: stream, subtitles of the stream response. */
   async function loadBuiltin (file, token, restore = null) {
     const stream = activeStream(file)
-    const started = await startStream(stream, restore)
+    const loading = startStream(stream, restore)
+    // The subtitles do not wait for the stream either: when the user picks another server while the first one loads,
+    // the first load never settles, and the episode would have no subtitles at all (stream file, Add Subtitles, online
+    // subtitles: "The video is not ready yet").
+    await waitForVideo()
     // Back from the external player the episode may already have its subtitles (and the tracks the user added).
-    if (!started || token !== loadToken || !video || subs) return
-    subs = new Subtitles(video, files, current, handleHeaders)
-    // Subtitle file of the extension stream response
-    const subtitleUrl = subtitleUrlOf(file.subtitle)
-    if (subtitleUrl) loadExternalSubtitleUrl(subs, subtitleUrl, stream.headers)
+    if (token === loadToken && video && !subs) {
+      subs = new Subtitles(video, files, current, handleHeaders)
+      // Subtitle file of the extension stream response
+      const subtitleUrl = subtitleUrlOf(file.subtitle)
+      if (subtitleUrl) loadExternalSubtitleUrl(subs, subtitleUrl, stream.headers)
+    }
+    await loading
   }
 
   /**
@@ -680,10 +691,22 @@
     if (video?.readyState >= 1 && !video.seeking && video.currentTime > 0 && !pendingRestore) lastGoodTime = video.currentTime
   }
 
+  /**
+   * What a reload of the episode (server switch, retry) restores: its position and play state. A previous reload
+   * still loading keeps its own (a failed server does not lose it). Null while the episode never had its metadata (the
+   * first server failed or is slow, the usual reason to switch): the new stream then loads like the first one would
+   * have (resume, autoplay, filler prompt), instead of starting paused at 0 and saving 0 over the resume position.
+   * @param {boolean} wasPaused
+   */
+  function reloadRestore (wasPaused) {
+    if (pendingRestore) return { time: pendingRestore.time, paused: pendingRestore.paused }
+    if (!episodeLoaded) return null
+    return { time: currentPosition(), paused: wasPaused }
+  }
+
   async function switchServer (index) {
     if (index === activeServerIndex || !streamServers[index] || !current || externalPlayback) return
-    // A previous switch still loading keeps its position: a failed server does not lose it.
-    const restore = { time: pendingRestore?.time ?? currentPosition(), paused: pendingRestore?.paused ?? paused }
+    const restore = reloadRestore(paused)
     activeServerIndex = index
     await startStream(activeStream(), restore)
   }
@@ -691,7 +714,8 @@
   /** Reloads the stream playing (same server) where it was: "Retry" of the playback error toasts. */
   function retryStream () {
     if (!current || externalPlayback) return
-    startStream(activeStream(), { time: pendingRestore?.time ?? currentPosition(), paused: false })
+    const restore = reloadRestore(false)
+    startStream(activeStream(), restore && { ...restore, paused: false })
   }
 
   // ---- HLS (hls.js instance streaming.js attaches to the video as video._hlsInstance): quality menu, fatal errors.
@@ -777,7 +801,8 @@
   let streamErrorToast = null
   /** The stream stopped for good: streaming.js onError, hls.js gave up, or a 'streamerror' event on the video. */
   function showStreamError () {
-    if (streamErrorToast != null || !current || externalPlayback) return
+    // One error toast at a time: the video element's own (checkError) also offers Retry.
+    if (streamErrorToast != null || mediaErrorToast != null || !current || externalPlayback) return
     buffering = false
     clearTimeout(bufferTimeout)
     streamErrorToast = toast.error('Playback Error', {
@@ -796,9 +821,41 @@
     })
   }
 
+  /** id of the media error toast of the video element (checkError), one at a time */
+  let mediaErrorToast = null
+  /**
+   * Error toast of the video element with "Retry". It goes with the stream it is about: a reload (server switch,
+   * retry), the next episode, the player closed, or the video playing again (hls.js recovered).
+   */
+  function showMediaError (title, description, duration) {
+    dismissStreamError()
+    const token = loadToken
+    const stream = streamToken
+    const id = toast.error(title, {
+      description,
+      duration,
+      action: {
+        label: 'Retry',
+        onClick: () => {
+          if (mediaErrorToast === id) mediaErrorToast = null
+          if (token === loadToken && stream === streamToken) retryStream()
+        }
+      },
+      onDismiss: () => {
+        if (mediaErrorToast === id) mediaErrorToast = null
+      },
+      onAutoClose: () => {
+        if (mediaErrorToast === id) mediaErrorToast = null
+      }
+    })
+    mediaErrorToast = id
+  }
+
   function dismissStreamError () {
     if (streamErrorToast != null) toast.dismiss(streamErrorToast)
     streamErrorToast = null
+    if (mediaErrorToast != null) toast.dismiss(mediaErrorToast)
+    mediaErrorToast = null
   }
 
   // ---- External player (electron main process: external-player:launch / external-player:closed)
@@ -1222,6 +1279,7 @@
       applyResume(token)
       w2gLoadSteps.push(autoPlay(token))
     }
+    episodeLoaded = true
     w2gLoadedMetadata()
   }
 
@@ -2362,24 +2420,14 @@
           'A network error caused the video download to fail part-way.',
           target.error
         )
-        toast.error('Video Network Error', {
-          description:
-            'A network error caused the video download to fail part-way.',
-          duration: Infinity,
-          action: { label: 'Retry', onClick: retryStream }
-        })
+        showMediaError('Video Network Error', 'A network error caused the video download to fail part-way.', Infinity)
         break
       case target.error.MEDIA_ERR_DECODE:
         debug(
           'The video playback was aborted due to a corruption problem or because the video used features your browser did not support.',
           target.error
         )
-        toast.error('Video Decode Error', {
-          description:
-            'The video playback was aborted due to a corruption problem.',
-          duration: Infinity,
-          action: { label: 'Retry', onClick: retryStream }
-        })
+        showMediaError('Video Decode Error', 'The video playback was aborted due to a corruption problem.', Infinity)
         break
       case target.error.MEDIA_ERR_SRC_NOT_SUPPORTED:
         if (
@@ -2389,12 +2437,11 @@
             'The video could not be loaded, either because the server or network failed or because the format is not supported.',
             target.error
           )
-          toast.error('Video Codec Unsupported', {
-            description:
-              'The video could not be loaded, either because the server or network failed or because the format is not supported. Try another server, or a different source from another extension.',
-            duration: 30_000,
-            action: { label: 'Retry', onClick: retryStream }
-          })
+          showMediaError(
+            'Video Codec Unsupported',
+            'The video could not be loaded, either because the server or network failed or because the format is not supported. Try another server, or a different source from another extension.',
+            30_000
+          )
         }
         break
       default:
@@ -2670,6 +2717,7 @@
       }}
       on:canplay={hideBuffering}
       on:playing={hideBuffering}
+      on:playing={dismissStreamError}
       on:ended={tryPlayNext}
       on:loadedmetadata={handleLoadedMetadata}
       on:enterpictureinpicture={() => (pip = true)}
