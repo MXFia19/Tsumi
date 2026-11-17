@@ -223,6 +223,12 @@ struct PlayerTrackOption: Identifiable, Hashable {
   let languageTag: String?
 }
 
+/// Audio track picked from the audio menu, remembered per show: display name and language tag.
+struct PlayerAudioMemory: Hashable {
+  var name: String
+  var language: String?
+}
+
 enum PlayerSubtitleChoice: Hashable {
   case off
   /// Index in `PlayerController.embeddedSubtitleTracks` (rendered by AVPlayer).
@@ -306,18 +312,20 @@ enum PlayerMiniPlayerCorner: String, CaseIterable {
 enum PlayerPreferences {
   private static let autoPictureInPictureKey = "tsumi.player.autoPictureInPicture"
   private static let lastSubtitleKey = "tsumi.player.lastSubtitle"
+  /// Audio track picked per show ([mediaKey: ["name": display name, "lang": language tag]]).
+  static let lastAudioKey = "tsumi.player.lastAudio"
   private static let playbackRateKey = "tsumi.player.playbackRate"
   private static let miniPlayerCornerKey = "tsumi.player.miniPlayerCorner"
   private static let subtitleOffsetKey = "tsumi.player.subtitleOffset"
   /// Shows whose subtitle offset is kept (the oldest are forgotten past it).
   private static let subtitleOffsetLimit = 200
 
-  /// Settings reset: removes the auto Picture in Picture, last subtitle per media, subtitle offset per show and
-  /// playback rate keys, so every value falls back to its default (and the chapter source key of older versions).
-  /// The miniplayer position is a cache, not a setting.
+  /// Settings reset: removes the auto Picture in Picture, last subtitle and audio track per media, subtitle offset
+  /// per show and playback rate keys, so every value falls back to its default (and the chapter source key of older
+  /// versions). The miniplayer position is a cache, not a setting.
   static func resetAll() {
     let defaults = UserDefaults.standard
-    for key in ["tsumi.player.chapterSource", autoPictureInPictureKey, lastSubtitleKey, playbackRateKey, subtitleOffsetKey] {
+    for key in ["tsumi.player.chapterSource", autoPictureInPictureKey, lastSubtitleKey, lastAudioKey, playbackRateKey, subtitleOffsetKey] {
       defaults.removeObject(forKey: key)
     }
   }
@@ -394,6 +402,21 @@ enum PlayerPreferences {
     stored[mediaKey] = value
     UserDefaults.standard.set(stored, forKey: lastSubtitleKey)
   }
+
+  /// Last audio track picked from the audio menu for a show (same scope as `lastSubtitle`).
+  static func lastAudio(for mediaKey: String) -> PlayerAudioMemory? {
+    let stored = UserDefaults.standard.dictionary(forKey: lastAudioKey) as? [String: [String: String]]
+    guard let value = stored?[mediaKey], let name = value["name"] else { return nil }
+    return PlayerAudioMemory(name: name, language: PlayerLanguage.normalizedTag(value["lang"]))
+  }
+
+  static func setLastAudio(_ memory: PlayerAudioMemory, for mediaKey: String) {
+    var stored = (UserDefaults.standard.dictionary(forKey: lastAudioKey) as? [String: [String: String]]) ?? [:]
+    var value = ["name": memory.name]
+    if let language = PlayerLanguage.normalizedTag(memory.language) { value["lang"] = language }
+    stored[mediaKey] = value
+    UserDefaults.standard.set(stored, forKey: lastAudioKey)
+  }
 }
 
 /// Port of toTS (common/modules/util.js).
@@ -466,6 +489,70 @@ enum PlayerLanguage {
   static func isEnglishOrUnknown(_ tag: String?) -> Bool {
     guard let tag, !tag.isEmpty else { return true }
     return matches(tag: tag, wanted: "eng")
+  }
+
+  /// Trimmed tag, nil when empty or undetermined ("und").
+  static func normalizedTag(_ tag: String?) -> String? {
+    guard let trimmed = tag?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty,
+          trimmed.lowercased() != "und" else { return nil }
+    return trimmed
+  }
+
+  /// Primary subtag, lowercased ("pt-BR" -> "pt").
+  static func primary(_ tag: String) -> String {
+    let lower = tag.lowercased()
+    return lower.split(whereSeparator: { $0 == "-" || $0 == "_" }).first.map(String.init) ?? lower
+  }
+
+  /// Same language for two tags in any form ("ja", "ja-JP", "jpn").
+  static func sameLanguage(_ lhs: String?, _ rhs: String?) -> Bool {
+    guard let lhs = normalizedTag(lhs), let rhs = normalizedTag(rhs) else { return false }
+    return matches(tag: lhs, wanted: primary(rhs)) || matches(tag: rhs, wanted: primary(lhs))
+  }
+
+  /// Audio track picked when a stream with several audio tracks loads (checkAudio plus the per-show memory): the
+  /// track remembered for the show (same name and language, else same language), then the preferred audio
+  /// language setting, then Japanese. Nil keeps the stream's default track.
+  static func preferredAudioTrack(_ tracks: [PlayerTrackOption], remembered: PlayerAudioMemory?, preferred: String) -> Int? {
+    if let remembered {
+      let name = remembered.name.lowercased()
+      if let language = normalizedTag(remembered.language) {
+        // Same name and language, else the same tag, else the same language in another form ("ja" / "jpn").
+        if let match = tracks.first(where: { $0.name.lowercased() == name && sameLanguage($0.languageTag, language) })
+            ?? tracks.first(where: { normalizedTag($0.languageTag)?.lowercased() == language.lowercased() })
+            ?? tracks.first(where: { sameLanguage($0.languageTag, language) }) {
+          return match.id
+        }
+      } else if let match = tracks.first(where: { $0.name.lowercased() == name && normalizedTag($0.languageTag) == nil }) {
+        // A track without language: the same name, also without language.
+        return match.id
+      }
+    }
+    if let match = tracks.first(where: { matches(tag: $0.languageTag, wanted: preferred) }) { return match.id }
+    return tracks.first(where: { matches(tag: $0.languageTag, wanted: "jpn") })?.id
+  }
+
+  /// Audio menu label: the track name, plus its language when the name does not already say it ("Main (fr)";
+  /// "Japanese" or "English (en)" stay as they are).
+  static func audioLabel(name: String, tag: String?) -> String {
+    guard let tag = normalizedTag(tag), !mentionsLanguage(name, tag: tag) else { return name }
+    return "\(name) (\(tag))"
+  }
+
+  /// The name contains the tag ("en-US"), its code ("en", "jpn") or the language name in English, in the device
+  /// language or in the language itself ("Japanese", "Japonais", the Japanese name).
+  static func mentionsLanguage(_ name: String, tag: String) -> Bool {
+    let lowerName = name.lowercased()
+    let code = primary(tag)
+    let words = lowerName.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "-" }).map(String.init)
+    if words.contains(tag.lowercased()) || words.contains(code) { return true }
+    if words.contains(where: { $0.count == 3 && sameLanguage($0, code) }) { return true }
+    for locale in [Locale(identifier: "en"), Locale.current, Locale(identifier: code)] {
+      if let language = locale.localizedString(forLanguageCode: code)?.lowercased(), !language.isEmpty, lowerName.contains(language) {
+        return true
+      }
+    }
+    return false
   }
 }
 

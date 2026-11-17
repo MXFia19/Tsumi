@@ -91,9 +91,10 @@ struct ShellAppSettingsView: View {
       // cache.resetNotifications
       AppNotificationsService.shared.reset()
     case .history:
-      // cache.resetHistory: episode progress and subtitle choices.
+      // cache.resetHistory: episode progress and subtitle / audio track choices.
       AnimeProgressService.shared.reset()
       UserDefaults.standard.removeObject(forKey: "tsumi.player.lastSubtitle")
+      UserDefaults.standard.removeObject(forKey: PlayerPreferences.lastAudioKey)
     case .caches:
       // cache.resetCaches (the services reload instead of restarting the app).
       clearingCaches = true
