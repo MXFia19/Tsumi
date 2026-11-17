@@ -5,13 +5,30 @@ import SwiftUI
 
 @MainActor
 enum BrowseMovieAlert {
+  /// Days after which a theatrical release with no digital date is old news (about 6 months, same as PC): an old
+  /// movie that never got a digital date on TMDB would otherwise offer the bell forever.
+  static let staleTheatricalDays = 183
+
   /// The bell shows for TMDB movies once their release days are loaded, unless the digital release is already
-  /// past; a watched movie always shows it, so that the alert can be turned off.
+  /// past, or there is no digital date and the theatrical release is more than `staleTheatricalDays` old; a watched
+  /// movie always shows it, so that the alert can be turned off.
   static func showsBell(_ media: Media, days: MovieReleaseDays?) -> Bool {
     guard MovieAlertsService.supports(media) else { return false }
     if MovieAlertsService.shared.isWatched(media) { return true }
     guard let days else { return false }
-    return !MovieAlertRules.digitalReleasePassed(days, now: Date(), calendar: ServiceDates.gregorian)
+    let now = Date()
+    let calendar = ServiceDates.gregorian
+    if MovieAlertRules.digitalReleasePassed(days, now: now, calendar: calendar) { return false }
+    return !theatricalLongPast(days, now: now, calendar: calendar)
+  }
+
+  /// No digital date and a theatrical release more than `staleTheatricalDays` before today.
+  static func theatricalLongPast(_ days: MovieReleaseDays, now: Date, calendar: Calendar) -> Bool {
+    guard days.digital == nil,
+          let theatrical = days.theatrical,
+          let day = MovieReleases.releaseDay(theatrical, calendar: calendar),
+          let limit = calendar.date(byAdding: .day, value: -staleTheatricalDays, to: calendar.startOfDay(for: now)) else { return false }
+    return day < limit
   }
 
   /// "In theaters Nov 18 · Digital Jan 5" (releases still to come only).
