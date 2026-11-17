@@ -350,8 +350,10 @@ final class TMDBService: @unchecked Sendable {
     return merged
   }
 
-  /// tmdbClient.textSearch: /search/multi without anime (ja/zh/ko or animap-mapped titles).
-  func textSearch(_ text: String, page: Int = 1) async -> MediaPage {
+  /// tmdbClient.textSearch: /search/multi without anime (ja/zh/ko or animap-mapped titles), which the Search page
+  /// leaves to AniList. `includeAnime` keeps every title (Sora result matching: K-dramas, Asian and anime films); a
+  /// mapped title then carries its AniList id in `anilistId`.
+  func textSearch(_ text: String, page: Int = 1, includeAnime: Bool = false) async -> MediaPage {
     guard !text.isEmpty else { return MediaPage.empty }
     let index = await AnimeMappingsService.shared.animapIndex()
     guard let data = try? await get("/search/multi", params: ["query": text, "page": String(page), "include_adult": "false"]) else { return MediaPage.empty }
@@ -360,7 +362,7 @@ final class TMDBService: @unchecked Sendable {
     for item in data.array("results") {
       let mediaType = item.string("media_type")
       guard mediaType == "tv" || mediaType == "movie", let normalized = normalize(item, index: index) else { continue }
-      if normalized.media.anilistId != nil || isAsian(normalized.extras.originalLanguage) { continue }
+      if !includeAnime && (normalized.media.anilistId != nil || isAsian(normalized.extras.originalLanguage)) { continue }
       media.append(normalized.media)
       extras[normalized.media.id] = normalized.extras
     }

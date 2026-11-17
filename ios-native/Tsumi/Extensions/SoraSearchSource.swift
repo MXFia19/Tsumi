@@ -93,13 +93,14 @@ enum SoraSearchSource {
   // MARK: Matching (match.js)
 
   /// Catalogues to search for a module, from its manifest `type` ("anime", "movies", "shows"...): AniList for anime,
-  /// TMDB for movies and shows, both when unknown (most modules don't say). match.js matchTargets.
+  /// TMDB for movies and shows, both when unknown (most modules don't say) or when the type names both
+  /// ("anime/movies"). match.js matchTargets.
   static func matchTargets(_ type: String?) -> (anime: Bool, western: Bool) {
     let value = (type ?? "").lowercased()
-    if ["anime", "manga", "donghua"].contains(where: { value.contains($0) }) { return (anime: true, western: false) }
-    if ["movie", "show", "serie", "tv", "film", "drama", "cartoon"].contains(where: { value.contains($0) }) {
-      return (anime: false, western: true)
-    }
+    let anime = ["anime", "manga", "donghua"].contains(where: { value.contains($0) })
+    let western = ["movie", "show", "serie", "tv", "film", "drama", "cartoon"].contains(where: { value.contains($0) })
+    if anime && !western { return (anime: true, western: false) }
+    if western && !anime { return (anime: false, western: true) }
     return (anime: true, western: true)
   }
 
@@ -217,8 +218,11 @@ enum SoraSearchSource {
         }
         if western {
           group.addTask {
-            let page = await TMDBService.shared.textSearch(title)
-            return (index: offset * 2 + 1, media: page.items)
+            // Every TMDB title, K-dramas, Asian and anime films included (the Search page's TMDB results leave them
+            // out); a title mapped to AniList is replaced by its AniList entry.
+            let page = await TMDBService.shared.textSearch(title, includeAnime: true)
+            let media = await SoraSearchSource.withAniList(page.items)
+            return (index: offset * 2 + 1, media: media)
           }
         }
       }
@@ -229,6 +233,20 @@ enum SoraSearchSource {
       return found
     }
     return lists.sorted { $0.index < $1.index }.flatMap { $0.media }
+  }
+
+  /// TMDB titles mapped to AniList open their AniList entry (searchsource.js withAniList): the unmapped ones, then the
+  /// AniList media of the mapped ones (left out when AniList fails).
+  static func withAniList(_ media: [Media]) async -> [Media] {
+    let mapped = media.compactMap { $0.anilistId }
+    let others = media.filter { $0.anilistId == nil }
+    guard !mapped.isEmpty else { return others }
+    var variables = AniListVariables()
+    variables.id = mapped
+    variables.page = 1
+    variables.perPage = 50
+    let page = try? await AniListService.shared.searchIDs(variables)
+    return others + (page?.items ?? [])
   }
 
   /// AniList / TMDB media matching a module result (its title, then the aliases of the module details), nil when none
