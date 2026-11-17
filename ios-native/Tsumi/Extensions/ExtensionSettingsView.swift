@@ -1,17 +1,20 @@
 import SwiftUI
 
 /// Settings > Extensions (common/routes/settings/tabs/ExtensionTab.svelte): add by manifest URL
-/// (Sora module or Stremio addon), default extension zone (drag & drop, or tap to choose), list with
-/// star, delete (with confirmation), enable switch (also on the default card) and badges (version, stream type,
-/// quality, type, plain http). Each card shows the load state: loading, error with Retry (failed loads are also
-/// retried when the device gets back online), update waiting for approval, update applied. Only the host of a
-/// manifest URL is shown (the URL can carry a private token).
+/// (Sora module or Stremio addon, shown before it is installed: name, the hosts it says it uses, "updated in place"
+/// when it is already installed, plain http script warning, Install / Update), default extension zone (drag & drop,
+/// or tap to choose), list with star, delete (with confirmation), enable switch (also on the default card) and
+/// badges (version, stream type, quality, type, plain http). Each card shows the load state: loading, error with
+/// Retry (failed loads are also retried when the device gets back online), update waiting for approval, update
+/// applied. Only the host of a manifest URL is shown (the URL can carry a private token).
 @MainActor
 struct ExtensionSettingsView: View {
   @State private var showAddDialog = false
   @State private var sourceURL = ""
   @State private var pendingSource = false
   @State private var failedSource: String? = nil
+  /// Extension loaded by "Add" and shown before it is installed.
+  @State private var preview: ExtensionInstallPreview? = nil
   @State private var dragOverDefault = false
   @State private var confirmingDelete: String? = nil
   /// Extension whose "Delete Extension" context-menu item asks for confirmation.
@@ -43,6 +46,7 @@ struct ExtensionSettingsView: View {
           Button {
             showAddDialog.toggle()
             failedSource = nil
+            preview = nil
           } label: {
             Label("Add Extension", systemImage: "plus")
               .font(.subheadline.weight(.semibold))
@@ -74,13 +78,13 @@ struct ExtensionSettingsView: View {
     }
     .background(Color.black)
     .refreshable {
-      // Keeps the spinner until the extensions are loaded again.
+      // Keeps the spinner until the extensions are loaded again (each load is bounded by the request timeouts).
       await ExtensionManager.shared.refreshAll()
-      await ExtensionManager.shared.awaitPendingLoads()
+      await ExtensionManager.shared.awaitPendingLoads(timeout: nil)
     }
     .sheet(isPresented: $showAddDialog) {
       addDialog
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
     }
     .confirmationDialog(
@@ -190,7 +194,7 @@ struct ExtensionSettingsView: View {
   private func defaultCard(_ ext: InstalledExtension) -> some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(alignment: .top, spacing: 10) {
-        ExtensionIconView(url: ext.manifest.iconURL)
+        ExtensionIconView(url: ext.manifest.iconURL, allowsLocalNetwork: ExtensionImageLoader.allowsLocalNetwork(extensionKey: ext.key))
         identity(ext)
         Spacer(minLength: 8)
         // The default card replaces the list entry: its switch is here, so a disabled default can be enabled again.
@@ -229,7 +233,7 @@ struct ExtensionSettingsView: View {
         Image(systemName: "line.3.horizontal")
           .foregroundStyle(ExtensionPalette.dimmed)
           .accessibilityLabel("Drag to set as default")
-        ExtensionIconView(url: ext.manifest.iconURL)
+        ExtensionIconView(url: ext.manifest.iconURL, allowsLocalNetwork: ExtensionImageLoader.allowsLocalNetwork(extensionKey: ext.key))
         identity(ext)
         Spacer(minLength: 8)
         HStack(spacing: 10) {
@@ -432,6 +436,13 @@ struct ExtensionSettingsView: View {
   // MARK: Add dialog
 
   private var addDialog: some View {
+    ScrollView {
+      addDialogContent
+    }
+    .background(Color.black)
+  }
+
+  private var addDialogContent: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
         Text("Add Extension")
@@ -465,6 +476,7 @@ struct ExtensionSettingsView: View {
           .autocorrectionDisabled()
           .submitLabel(.done)
           .onSubmit { addSource() }
+          .onChange(of: sourceURL) { _, _ in preview = nil }
           .disabled(pendingSource)
           .padding(.horizontal, 12)
           .frame(height: 40)
@@ -490,30 +502,124 @@ struct ExtensionSettingsView: View {
         .disabled(pendingSource || sourceURL.isEmpty)
         .opacity(pendingSource || sourceURL.isEmpty ? 0.6 : 1)
       }
+      if let shown = preview {
+        previewCard(shown)
+      }
       Spacer(minLength: 0)
     }
     .padding(20)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    .background(Color.black)
+  }
+
+  /// The loaded extension before it is installed (preview card of ExtensionTab.svelte).
+  private func previewCard(_ item: ExtensionInstallPreview) -> some View {
+    let manifest = item.result.manifest
+    var kindLine = item.isStremio ? "Stremio addon" : "Sora module"
+    if let version = manifest.version, !version.isEmpty { kindLine += " · \(version)" }
+    if let language = manifest.language, !language.isEmpty { kindLine += " · \(language)" }
+    let installTitle = item.existingKey != nil ? "Update" : "Install"
+    return VStack(alignment: .leading, spacing: 12) {
+      HStack(spacing: 10) {
+        ExtensionIconView(url: manifest.iconURL, allowsLocalNetwork: item.result.allowsLocalNetwork)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(item.name)
+            .font(.headline)
+            .foregroundStyle(.white)
+            .lineLimit(2)
+          Text(kindLine)
+            .font(.subheadline)
+            .foregroundStyle(ExtensionPalette.muted)
+            .lineLimit(1)
+        }
+      }
+      if item.existingKey != nil {
+        Label {
+          Text(item.installedVersion.map { "Already installed (\($0)): it will be updated in place." } ?? "Already installed: it will be updated in place.")
+        } icon: {
+          Image(systemName: "arrow.up.circle")
+        }
+        .font(.footnote)
+        .foregroundStyle(ExtensionPalette.muted)
+      }
+      VStack(alignment: .leading, spacing: 5) {
+        Label(item.isStremio ? "Addon server" : "Sites this module mentions", systemImage: "globe")
+          .font(.footnote.weight(.bold))
+          .foregroundStyle(.white)
+        if item.domains.isEmpty {
+          Text("Not known in advance.")
+            .font(.footnote)
+            .foregroundStyle(ExtensionPalette.muted)
+        } else {
+          Text(item.domains.joined(separator: ", "))
+            .font(.footnote)
+            .foregroundStyle(ExtensionPalette.muted)
+            .textSelection(.enabled)
+          if !item.isStremio {
+            Text("Taken from its manifest and script: a module can still build other addresses while it runs.")
+              .font(.caption)
+              .foregroundStyle(ExtensionPalette.muted)
+          }
+        }
+      }
+      if item.insecureScript {
+        Label("The script is downloaded without encryption (http), so it could be altered on the way.", systemImage: "exclamationmark.triangle")
+          .font(.footnote)
+          .foregroundStyle(ExtensionPalette.warning)
+      }
+      HStack(spacing: 10) {
+        Spacer()
+        Button("Cancel") {
+          preview = nil
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 15)
+        .frame(height: 36)
+        .background(ExtensionPalette.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .buttonStyle(.plain)
+        Button(installTitle) {
+          installPreview()
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 15)
+        .frame(height: 36)
+        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .buttonStyle(.plain)
+      }
+    }
+    .padding(15)
+    .background(ExtensionPalette.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(ExtensionPalette.cardBorder, lineWidth: 1))
   }
 
   // MARK: Actions
 
+  /// "Add": loads the extension and shows it (checkSource of ExtensionTab.svelte); "Install" / "Update" then adds it.
   private func addSource() {
     guard !sourceURL.isEmpty, !pendingSource else { return }
     pendingSource = true
     failedSource = nil
+    preview = nil
     let url = sourceURL
     Task {
       do {
-        try await manager.addExtension(url)
-        sourceURL = ""
-        showAddDialog = false
+        let loaded = try await manager.previewExtension(url)
+        // The address was edited meanwhile: this preview is for another one.
+        if sourceURL == url { preview = loaded }
       } catch {
-        failedSource = error.localizedDescription.isEmpty ? "Failed to add extension" : error.localizedDescription
+        failedSource = error.localizedDescription.isEmpty ? "Failed to load extension" : error.localizedDescription
       }
       pendingSource = false
     }
+  }
+
+  private func installPreview() {
+    guard let shown = preview else { return }
+    manager.installExtension(shown)
+    sourceURL = ""
+    preview = nil
+    showAddDialog = false
   }
 
   private func removeSource(_ key: String) {

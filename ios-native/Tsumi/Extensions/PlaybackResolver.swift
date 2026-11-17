@@ -213,7 +213,10 @@ enum PlaybackResolver {
   static func resolveWithDefaultSource(media: Media, episode: EpisodeRef, onStatus: @escaping (String) -> Void) async throws -> PlaybackSourceStream {
     onStatus("Connecting to extension...")
     let manager = ExtensionManager.shared
-    await manager.awaitPendingLoads()
+    // Only the default extension is needed (an offline copy after a few seconds when its load hangs).
+    let wanted = AppSettings.shared.values.defaultExtension.map { Set([$0]) } ?? []
+    await manager.awaitPendingLoads(wanted)
+    try Task.checkCancellation()
     let title = ExtensionContext.shared.displayTitle(media)
     guard let defaultKey = AppSettings.shared.values.defaultExtension,
           let ext = manager.enabledExtensions().first(where: { $0.key == defaultKey }) else {
@@ -245,7 +248,7 @@ enum PlaybackResolver {
   static func resolvePreferredSource(_ source: PlaybackSource, episode: EpisodeRef, onStatus: @escaping (String) -> Void) async throws -> PlaybackSourceStream {
     onStatus("Connecting to extension...")
     let manager = ExtensionManager.shared
-    await manager.awaitPendingLoads()
+    await manager.awaitPendingLoads([source.extensionKey])
     try Task.checkCancellation()
     guard let ext = manager.enabledExtensions().first(where: { $0.key == source.extensionKey }) else {
       throw ExtensionFailure("\(SoraSearchSource.moduleName(source.extensionKey)) is disabled or could not be loaded")

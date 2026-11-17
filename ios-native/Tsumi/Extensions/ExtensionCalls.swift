@@ -10,6 +10,8 @@ struct ExtensionLoadResult {
   var allowsLocalNetwork = false
   /// Manifest and script came over https (a script fetched over plain http could have been changed on the way).
   var isSecure = true
+  /// Address the Sora module script was downloaded from (nil for Stremio addons).
+  var scriptURL: URL?
 
   var kind: ExtensionKind {
     switch backend {
@@ -25,6 +27,10 @@ struct ExtensionLoadResult {
 /// Loads Sora modules (manifest + script) and Stremio addons (manifest only) from a manifest URL. Error messages
 /// only name the host: manifest URLs can carry private tokens.
 enum ExtensionLoader {
+  /// Idle timeout of the https attempt of a script published over http (a host that does not serve https at all
+  /// often lets the connection hang): the http address is tried next.
+  private static let upgradedScriptTimeout: TimeInterval = 15
+
   /// loadExtension(manifestUrl)
   static func load(manifestURL: String) async throws -> ExtensionLoadResult {
     let normalized = StremioAddon.normalizeManifestURL(manifestURL)
@@ -54,7 +60,8 @@ enum ExtensionLoader {
     // Stremio addons have no script: they are queried over HTTP instead.
     if let object = json as? [String: Any], StremioAddon.isStremioManifest(object), let manifest = StremioManifest(json: object) {
       let addon = StremioAddon(base: StremioAddon.baseURL(forManifest: resolved), manifest: manifest)
-      let raw = try? JSONSerialization.data(withJSONObject: object, options: [])
+      // Sorted keys: the same manifest gives the same bytes, so an unchanged offline copy is not written again.
+      let raw = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
       return ExtensionLoadResult(
         manifest: ExtensionManifest(stremio: manifest),
         backend: .stremio(addon),
@@ -74,26 +81,49 @@ enum ExtensionLoader {
     guard let scriptScheme = scriptURL.scheme?.lowercased(), scriptScheme == "http" || scriptScheme == "https" else {
       throw ExtensionFailure("Failed to load script: its address must start with https:// (or http://)")
     }
-    let script: String
-    do {
-      let data = try await fetch(scriptURL)
-      script = String(decoding: data, as: UTF8.self)
-    } catch {
-      if error is CancellationError { throw error }
-      throw ExtensionFailure("Failed to load script from \(ExtensionURLMask.host(scriptURL)): \(error.localizedDescription)")
+    // A plain http script on a public host is tried over https first (scriptUrlCandidates of the desktop app), so a
+    // module whose host serves both is downloaded securely and its code updates apply without asking.
+    let candidates = scriptCandidates(scriptURL)
+    var lastError: Error?
+    for (index, candidate) in candidates.enumerated() {
+      do {
+        let upgraded = index < candidates.count - 1
+        let data = try await fetch(candidate, timeout: upgraded ? upgradedScriptTimeout : 30)
+        let script = String(decoding: data, as: UTF8.self)
+        return ExtensionLoadResult(
+          manifest: manifest,
+          backend: .sora(script: script),
+          stremioManifestData: nil,
+          allowsLocalNetwork: manifestIsLocal || ExtensionNetworkPolicy.isLocal(candidate),
+          isSecure: scheme == "https" && candidate.scheme?.lowercased() == "https",
+          scriptURL: candidate
+        )
+      } catch {
+        if error is CancellationError || Task.isCancelled { throw CancellationError() }
+        lastError = error
+      }
     }
-    return ExtensionLoadResult(
-      manifest: manifest,
-      backend: .sora(script: script),
-      stremioManifestData: nil,
-      allowsLocalNetwork: manifestIsLocal || ExtensionNetworkPolicy.isLocal(scriptURL),
-      isSecure: scheme == "https" && scriptScheme == "https"
-    )
+    let message = lastError?.localizedDescription ?? "Invalid URL"
+    throw ExtensionFailure("Failed to load script from \(ExtensionURLMask.host(candidates.last ?? scriptURL)): \(message)")
+  }
+
+  /// scriptUrlCandidates (common/modules/sandbox/network.js): https scripts as they are; a plain http script on a
+  /// public host over https first, then over http; local hosts as they are.
+  static func scriptCandidates(_ scriptURL: URL) -> [URL] {
+    guard scriptURL.scheme?.lowercased() == "http", !ExtensionNetworkPolicy.isLocal(scriptURL),
+          var components = URLComponents(url: scriptURL, resolvingAgainstBaseURL: false) else {
+      return [scriptURL]
+    }
+    components.scheme = "https"
+    // The http default port is not the https one (the browser drops ":80" before switching the scheme).
+    if components.port == 80 { components.port = nil }
+    guard let secure = components.url else { return [scriptURL] }
+    return [secure, scriptURL]
   }
 
   /// getExtension: GET (20 MB at most), error on non-2xx ("HTTP 404").
-  private static func fetch(_ url: URL) async throws -> Data {
-    let (data, response) = try await ExtensionHTTP.data(url)
+  private static func fetch(_ url: URL, timeout: TimeInterval = 30) async throws -> Data {
+    let (data, response) = try await ExtensionHTTP.data(url, timeout: timeout)
     guard (200..<300).contains(response.statusCode) else {
       throw ExtensionFailure("HTTP \(response.statusCode)")
     }
@@ -183,7 +213,7 @@ enum ExtensionCalls {
 /// extensions keep working when the app starts offline (the Svelte app relied on the browser cache).
 /// The Stremio base URL is not stored here (it carries the addon's private configuration): it is rebuilt from the
 /// manifest URL, which lives in the Keychain (ExtensionSecretStore).
-struct StoredExtensionPayload: Codable {
+struct StoredExtensionPayload: Codable, Equatable {
   var script: String?
   var stremioManifest: Data?
   /// Written by older versions only; removed by `scrubSecrets`.
@@ -192,7 +222,11 @@ struct StoredExtensionPayload: Codable {
   var isSecure: Bool?
 }
 
+/// Payload files. Every read and write runs on one serial queue, in order: writes (scripts can weigh MBs) and the
+/// launch-time cleanup no longer run on the main thread, and an unchanged payload is not written again at each launch.
 enum ExtensionPayloadStore {
+  private static let queue = DispatchQueue(label: "org.tsumi.extensions.payloads", qos: .utility)
+
   private static var directory: URL {
     let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
       ?? URL(fileURLWithPath: NSTemporaryDirectory())
@@ -206,17 +240,20 @@ enum ExtensionPayloadStore {
     return directory.appendingPathComponent(String(safe.prefix(180)) + ".json")
   }
 
+  /// On `queue` only.
   private static func read(_ key: String) -> StoredExtensionPayload? {
     guard let data = try? Data(contentsOf: fileURL(key)) else { return nil }
     return try? JSONDecoder().decode(StoredExtensionPayload.self, from: data)
   }
 
+  /// On `queue` only.
   private static func write(_ payload: StoredExtensionPayload, key: String) {
     guard let data = try? JSONEncoder().encode(payload) else { return }
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try? data.write(to: fileURL(key), options: .atomic)
   }
 
+  /// Stores the offline copy of `result` in the background; nothing is written when the stored copy is the same.
   static func save(_ result: ExtensionLoadResult, key: String) {
     var payload = StoredExtensionPayload()
     switch result.backend {
@@ -227,16 +264,28 @@ enum ExtensionPayloadStore {
     }
     payload.allowsLocalNetwork = result.allowsLocalNetwork
     payload.isSecure = result.isSecure
-    write(payload, key: key)
+    queue.async {
+      if ExtensionPayloadStore.read(key) == payload { return }
+      ExtensionPayloadStore.write(payload, key: key)
+    }
   }
 
   /// Script last accepted for a Sora module (nil for addons and unknown keys).
   static func storedScript(key: String) -> String? {
-    read(key)?.script
+    queue.sync { ExtensionPayloadStore.read(key)?.script }
+  }
+
+  /// `storedScript` without blocking the caller's thread.
+  static func storedScriptInBackground(key: String) async -> String? {
+    await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+      queue.async {
+        continuation.resume(returning: ExtensionPayloadStore.read(key)?.script)
+      }
+    }
   }
 
   static func load(key: String, config: InstalledExtension) -> LoadedExtension? {
-    guard let payload = read(key) else { return nil }
+    guard let payload = queue.sync(execute: { ExtensionPayloadStore.read(key) }) else { return nil }
     let manifestURL = URL.lenient(StremioAddon.normalizeManifestURL(config.url))
     let local = payload.allowsLocalNetwork ?? manifestURL.map { ExtensionNetworkPolicy.isLocal($0) } ?? false
     let secure = payload.isSecure ?? (manifestURL?.scheme?.lowercased() == "https")
@@ -251,16 +300,23 @@ enum ExtensionPayloadStore {
     return nil
   }
 
-  /// Drops the Stremio base URLs older versions stored next to the manifests (their manifest URL is known).
+  /// Drops the Stremio base URLs older versions stored next to the manifests (their manifest URL is known), in the
+  /// background.
   static func scrubSecrets(_ configs: [InstalledExtension]) {
-    for config in configs where !config.url.isEmpty {
-      guard var payload = read(config.key), payload.stremioBase != nil else { continue }
-      payload.stremioBase = nil
-      write(payload, key: config.key)
+    let keys = configs.filter { !$0.url.isEmpty }.map(\.key)
+    guard !keys.isEmpty else { return }
+    queue.async {
+      for key in keys {
+        guard var payload = ExtensionPayloadStore.read(key), payload.stremioBase != nil else { continue }
+        payload.stremioBase = nil
+        ExtensionPayloadStore.write(payload, key: key)
+      }
     }
   }
 
   static func remove(key: String) {
-    try? FileManager.default.removeItem(at: fileURL(key))
+    queue.async {
+      try? FileManager.default.removeItem(at: ExtensionPayloadStore.fileURL(key))
+    }
   }
 }
