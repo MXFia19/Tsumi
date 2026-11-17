@@ -95,12 +95,9 @@ extension W2GSync {
     return previous + (sample - previous) * rttSmoothing
   }
 
-  /// Token bucket of one member for `userEvents`.
+  /// Token bucket of one member for `userEvents` (v2.6: W2GSync.rateLimits has the other buckets).
   static func rateStep(_ bucket: W2GRateBucket?, now: Double) -> W2GRateBucket {
-    let refilled = bucket.map { $0.tokens + max(0, now - $0.at) / 1000 * ratePerSecond } ?? rateBurst
-    let tokens = min(rateBurst, refilled)
-    if tokens < 1 { return W2GRateBucket(tokens: tokens, at: now, allowed: false) }
-    return W2GRateBucket(tokens: tokens - 1, at: now, allowed: true)
+    rateStep(bucket, now: now, limit: W2GRateLimit(burst: rateBurst, perSecond: ratePerSecond))
   }
 
   /// v2.5 meaning of an `index`: "file" (position in the desktop player's file list) or "episode" (position in this
@@ -111,10 +108,10 @@ extension W2GSync {
   }
 
   /// A `player`, `countdown` or `index` sent from another episode than ours is not applied. No check without a sent
-  /// `mediaKey` (older app) or while our player plays nothing.
+  /// `mediaKey` (older app) or while our player plays nothing. v2.6: keys are compared canonically.
   static func sameEpisode(_ sentKey: String?, _ localKey: String) -> Bool {
     guard let sentKey, !sentKey.isEmpty, !localKey.isEmpty else { return true }
-    return sentKey == localKey
+    return sameMediaKey(sentKey, localKey)
   }
 
   // MARK: Lobby code, ICE servers
@@ -196,8 +193,6 @@ extension W2GSync {
     guard !text.isEmpty, text.count <= max else { return false }
     return text.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || extra.contains($0)) }
   }
-
-  private static let reservedIds: Set<String> = ["__proto__", "constructor", "prototype"]
 
   /// The shared media shape (session.js SHARED_MEDIA_FIELDS) rebuilt from what a peer sent: the known fields with the
   /// right types, http(s) URLs only. nil without a usable id (AniList number, or a short text id like "tmdb-123").
@@ -356,9 +351,9 @@ extension W2GSync {
     case "voice":
       return normalizeVoice(payload).json
     case "voiceSignal":
-      guard let id = wireId(payload["id"]), let type = payload["sdp"]?["type"]?.stringValue, type == "offer" || type == "answer",
+      guard let id = wireId(payload["id"]), let sdpType = payload["sdp"]?["type"]?.stringValue, sdpType == "offer" || sdpType == "answer",
             let sdp = payload["sdp"]?["sdp"]?.utf16Value, !sdp.isEmpty, sdp.count <= maxSdpLength else { return nil }
-      return .dict([("id", .text(id)), ("sdp", .dict([("type", .text(type)), ("sdp", .string(sdp))]))])
+      return .dict([("id", .text(id)), ("sdp", .dict([("type", .text(sdpType)), ("sdp", .string(sdp))]))])
     case "queue":
       return normalizeQueue(payload)?.json
     case "queueAdd":
@@ -382,7 +377,8 @@ extension W2GSync {
     switch idValue {
     case .number(let number) where number.isFinite:
       fields.append(("id", idValue))
-    case .string(let units) where !units.isEmpty && units.count <= 64:
+    // v2.6: never one of the Object.prototype names (a JavaScript peer would look it up in a plain object).
+    case .string(let units) where !units.isEmpty && units.count <= 64 && !reservedIds.contains(String(decoding: units, as: UTF16.self)):
       fields.append(("id", idValue))
     default:
       return nil

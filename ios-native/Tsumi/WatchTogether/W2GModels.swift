@@ -130,11 +130,16 @@ struct W2GMember: Identifiable, Hashable {
   var features: [String] = []
   /// v2.5 `init.sessionId`: random id of that lobby instance (nil for an older app).
   var sessionId: String? = nil
+  /// v2.6: another open link already owned the member key this one claimed: this one is a separate member (keyed
+  /// W2GSync.shadowKey) with no authority, never the host.
+  var isShadow: Bool = false
 
   /// PROTOCOL "Identity": the `init` id, else the transport id.
   var userId: String { user.id }
-  /// v2.5 member key: the userId plus the session id, so two devices of one account are two members.
-  var memberKey: String { W2GSync.memberKey(userId: user.id, sessionId: sessionId) }
+  /// The member key its `init` claims: the userId plus the session id, so two devices of one account are two members.
+  var claimedKey: String { W2GSync.memberKey(userId: user.id, sessionId: sessionId) }
+  /// v2.5 member key, who it is on this device (v2.6: a shadow's key also names its link).
+  var memberKey: String { isShadow ? W2GSync.shadowKey(claimedKey, transportId: id) : claimedKey }
 }
 
 struct W2GChatMessage: Identifiable, Hashable {
@@ -225,7 +230,12 @@ struct W2GSharedMedia {
     .dict([("media", mediaJSON), ("episode", episodeJSON), ("key", .text(key))])
   }
 
-  /// Same title and episode, even if the ids were written differently (AniList vs TMDB).
+  /// Same title and episode, even if the ids were written differently (AniList vs TMDB). v2.6: keys compared
+  /// canonically ("21::5" of an older app is "21:5").
+  func matches(key other: String) -> Bool {
+    !other.isEmpty && (W2GSync.sameMediaKey(key, other) || W2GSync.sameMediaKey(localKey, other))
+  }
+
   func matches(media other: Media, episode otherEpisode: EpisodeRef, payloadId: W2GJSON) -> Bool {
     guard episode.number == otherEpisode.number,
           (episode.season ?? 0) == (otherEpisode.season ?? 0),
@@ -292,11 +302,14 @@ struct W2GMemberView: Identifiable, Equatable {
   var hasVoice: Bool = false
   /// v2.4: in voice, muted, speaking, our mix for it.
   var voice: W2GMemberVoice = .off
+  /// v2.6: a link that copied another member's ids (no authority).
+  var isShadow: Bool = false
 
   var id: String { userId }
 
-  /// Host transfer needs a v2 client (a v1 client could not change the mode, kick or answer requests).
-  var canBeHost: Bool { (protocolVersion ?? 1) >= W2GSync.protocolVersion }
+  /// Host transfer needs a v2 client (a v1 client could not change the mode, kick or answer requests), and never a
+  /// link that copied another member's ids.
+  var canBeHost: Bool { (protocolVersion ?? 1) >= W2GSync.protocolVersion && !isShadow }
 }
 
 /// A request waiting for the host's answer.
@@ -491,14 +504,17 @@ enum W2GMediaPayload {
     }
   }
 
-  /// w2g.js mediaKey({ media, episode }).
+  /// sync.js mediaKey({ media, episode }): v2.6 canonical key, "mediaId:episode", or "mediaId:season:episode" when the
+  /// episode has a season (`episode` is the local episode of the season when known, else the number). An episode
+  /// object without a season is keyed like the bare number ("21:5" for `{ number: 5 }` and `5`).
   static func key(mediaId: W2GJSON?, episode: W2GJSON?) -> String {
     let episodePart: String
     if let episode, episode.isObject {
       let season = episode["season"].flatMap { $0.isNull ? nil : $0 }
       let local = episode["localEpisode"].flatMap { $0.isNull ? nil : $0 }
       let seasonText = season.map { W2GJSON.jsTemplateString($0) } ?? ""
-      episodePart = "\(seasonText):\(W2GJSON.jsTemplateString(local ?? episode["number"]))"
+      let number = W2GJSON.jsTemplateString(local ?? episode["number"])
+      episodePart = seasonText.isEmpty ? number : "\(seasonText):\(number)"
     } else {
       episodePart = W2GJSON.jsTemplateString(episode)
     }

@@ -303,7 +303,7 @@ export function syncBadge (member, local, now) {
     return status.state === 'playing' ? { kind: 'playing', text: 'Playing' } : { kind: 'paused', text: 'Paused' }
   }
 
-  if ((status.mediaKey || '') !== (local.mediaKey || '')) return { kind: 'other', text: 'Other episode' }
+  if (!sameMediaKey(status.mediaKey || '', local.mediaKey || '')) return { kind: 'other', text: 'Other episode' }
 
   const drift = computeDrift(expectedTime(status, member.receivedAt ?? now, now, member.rtt), expectedTime(local, local.at, now, 0))
   // v2.5: another playback rate drifts by itself; auto-sync leaves it alone, the badge says why.
@@ -328,7 +328,7 @@ export function autoSyncStep (memory, { enabled, isHost, hostStatus, hostReceive
   if (!enabled || isHost || !hostStatus || !local) return idle
   if (hostStatus.following === false) return idle
   if (hostStatus.state !== 'playing' || local.state !== 'playing') return idle
-  if ((hostStatus.mediaKey || '') !== (local.mediaKey || '')) return idle
+  if (!sameMediaKey(hostStatus.mediaKey || '', local.mediaKey || '')) return idle
   // v2.5: at another playback rate the drift grows again right after each jump.
   if (differentRate(hostStatus.rate, local.rate)) return idle
 
@@ -388,7 +388,44 @@ export function formatSource (...parts) {
 }
 
 /**
- * Splits a media key (w2g.js mediaKey: "mediaId:episode" or "mediaId:season:episode").
+ * v2.6 canonical media key of a title + episode (PROTOCOL.md "Media keys"): "mediaId:episode", or
+ * "mediaId:season:episode" when the episode has a season. `episode` is the local episode of a season when known, else
+ * the number. An episode object without a season is keyed like the bare number: `{ number: 5 }` and `5` are both "21:5".
+ * @param {{ media: any, episode: unknown }} shared
+ */
+export function mediaKey ({ media, episode }) {
+  let part = String(episode)
+  if (typeof episode === 'object' && episode !== null) {
+    const value = /** @type {any} */ (episode)
+    const number = `${value.localEpisode ?? value.number}`
+    part = value.season != null && value.season !== '' ? `${value.season}:${number}` : number
+  }
+  return `${media?.id}:${part}`
+}
+
+/**
+ * A media key written the canonical way. Apps before v2.6 wrote an episode object without a season as
+ * "mediaId::episode" (empty season): that is "mediaId:episode".
+ * @param {unknown} key
+ * @returns {string}
+ */
+export function canonicalMediaKey (key) {
+  if (typeof key !== 'string') return key == null ? '' : String(key)
+  return key.replace(/::([^:]*)$/, ':$1')
+}
+
+/**
+ * Two media keys name the same episode, however their writer formatted them ("21:5" / "21::5"). Two missing keys are
+ * the same too (nothing playing on either side): callers that need a key check it first.
+ * @param {unknown} a
+ * @param {unknown} b
+ */
+export function sameMediaKey (a, b) {
+  return canonicalMediaKey(a) === canonicalMediaKey(b)
+}
+
+/**
+ * Splits a media key (mediaKey: "mediaId:episode" or "mediaId:season:episode").
  * @param {unknown} key
  * @returns {{ mediaId: string, season: string | null, episode: string } | null}
  */
@@ -487,12 +524,12 @@ export function presenceOnStatus (presence, status, now) {
     const following = status.following !== false
     if (wasFollowing && !following) found.push({ kind: 'own' })
     if (!wasFollowing && following) found.push({ kind: 'back' })
-    if (status.state !== 'idle' && previousKey && nextKey && previousKey !== nextKey) {
+    if (status.state !== 'idle' && previousKey && nextKey && !sameMediaKey(previousKey, nextKey)) {
       // An independent member "is watching {title · episode}" instead of "switched to".
       if (following) found.push({ kind: 'switched', label: switchLabel(previousKey, nextKey) })
       else found.push({ kind: 'watching', label: nowPlayingLabel(status.nowPlaying) || switchLabel(previousKey, nextKey) })
     }
-    if (previousKey === nextKey && previous.source && status.source && previous.source !== status.source) {
+    if (sameMediaKey(previousKey, nextKey) && previous.source && status.source && previous.source !== status.source) {
       found.push({ kind: 'source', source: status.source })
     }
   }
@@ -566,7 +603,7 @@ export function canInvite ({ offeredKey, effectiveMode, isHost, now, member }) {
   const status = member.status
   if (!status) return isFiniteNumber(member.joinedAt) && now - member.joinedAt >= NO_SIGNAL_MS
   if (member.badge?.kind === 'nosignal') return true
-  return status.state === 'idle' || status.following === false || (status.mediaKey || '') !== offeredKey
+  return status.state === 'idle' || status.following === false || !sameMediaKey(status.mediaKey || '', offeredKey)
 }
 
 /**
@@ -588,7 +625,7 @@ export function acceptsInvite ({ to, toSession, selfId, sessionId, senderId, sel
  * @returns {{ time: number, paused: boolean, from: 'host' | 'inviter' }}
  */
 export function inviteTarget ({ invite, host, now }) {
-  if (host && host.mediaKey !== null && host.mediaKey === invite.key && isFiniteNumber(host.time)) {
+  if (host && host.mediaKey && sameMediaKey(host.mediaKey, invite.key) && isFiniteNumber(host.time)) {
     return { time: host.time, paused: host.paused, from: 'host' }
   }
   const elapsed = invite.paused ? 0 : Math.max(0, now - invite.receivedAt) / 1000
@@ -606,7 +643,8 @@ export function normalizeNowPlaying (value) {
   if (!value || typeof value !== 'object') return null
   const raw = /** @type {any} */ (value)
   const text = item => (typeof item === 'string' ? item.trim().slice(0, 120) : '')
-  const mediaId = typeof raw.mediaId === 'string' || isFiniteNumber(raw.mediaId) ? raw.mediaId : null
+  // v2.6: an id is at most 64 characters (it is kept per member and resent with every `status`), as on iOS.
+  const mediaId = (typeof raw.mediaId === 'string' && raw.mediaId.length <= 64) || isFiniteNumber(raw.mediaId) ? raw.mediaId : null
   return { mediaId, title: text(raw.title), episode: text(raw.episode) }
 }
 
@@ -657,7 +695,7 @@ export function electFollowingHost ({ selfId, selfFollowing, peers, skip = [] })
  */
 export function followBackAction ({ localKey, lobbyKey }) {
   if (!lobbyKey) return 'none'
-  return localKey && localKey === lobbyKey ? 'resync' : 'rejoin'
+  return localKey && sameMediaKey(localKey, lobbyKey) ? 'resync' : 'rejoin'
 }
 
 // ---------------------------------------------------------------- v2.3: join the current playback, invite from anywhere
@@ -678,7 +716,7 @@ export const WATCHING_LOBBY_STATES = ['playing', 'paused', 'buffering', 'loading
 export function lobbyReference ({ lobbyKey, hostId, members }) {
   if (!lobbyKey) return null
   const onLobby = member => !!member.status && member.status.following !== false &&
-    member.status.mediaKey === lobbyKey && WATCHING_LOBBY_STATES.includes(member.status.state)
+    !!member.status.mediaKey && sameMediaKey(member.status.mediaKey, lobbyKey) && WATCHING_LOBBY_STATES.includes(member.status.state)
   const host = hostId == null ? null : members.find(member => sameId(member.userId, hostId))
   if (host) {
     if (onLobby(host)) return String(host.userId)
@@ -695,7 +733,7 @@ export function lobbyReference ({ lobbyKey, hostId, members }) {
  */
 export function canJoinPlayback ({ reference, selfId, lobbyKey, local, following }) {
   if (!reference || !lobbyKey || sameId(reference, selfId)) return false
-  return local.state === 'idle' || (local.mediaKey || '') !== lobbyKey || !following
+  return local.state === 'idle' || !sameMediaKey(local.mediaKey || '', lobbyKey) || !following
 }
 
 /**
@@ -729,7 +767,16 @@ export function invitePosition ({ offered, own, reference }) {
  */
 export function autoStartsMedia ({ following, localState, senderJoinedAt, now }) {
   if (!following || localState === 'idle') return false
-  return !(isFiniteNumber(senderJoinedAt) && now - senderJoinedAt < INITIAL_STATE_MS)
+  return !isInitialState({ senderJoinedAt, now })
+}
+
+/**
+ * v2.6: what a member sends within INITIAL_STATE_MS of its `init` (the lobby state the host sends to a newcomer:
+ * `media`, `index`, `player`) is remembered but never applied, on every app.
+ * @param {{ senderJoinedAt?: number | null, now: number }} input senderJoinedAt: when its `init` was received
+ */
+export function isInitialState ({ senderJoinedAt, now }) {
+  return isFiniteNumber(senderJoinedAt) && now - senderJoinedAt < INITIAL_STATE_MS
 }
 
 /**
@@ -737,7 +784,7 @@ export function autoStartsMedia ({ following, localState, senderJoinedAt, now })
  * @param {{ localKey: string | null | undefined, lobbyKey: string | null | undefined }} input
  */
 export function appliesCountdown ({ localKey, lobbyKey }) {
-  return !localKey || !lobbyKey || localKey === lobbyKey
+  return !localKey || !lobbyKey || sameMediaKey(localKey, lobbyKey)
 }
 
 // ---------------------------------------------------------------- v2.4: features, voice chat, shared queue
@@ -917,7 +964,8 @@ export function normalizeQueueItem (value) {
     episode,
     key,
     title: cleanText(raw.title, 120),
-    cover: cleanText(raw.cover, 500),
+    // v2.6: an http(s) image URL like every other image (a file:// or UNC path would make Windows contact that host).
+    cover: cleanUrl(raw.cover, 500),
     addedBy: cleanId(raw.addedBy) ?? '',
     addedByName: cleanText(raw.addedByName, 64),
     votes
@@ -951,7 +999,7 @@ export function normalizeQueue (payload) {
  * @param {{ key?: string, media?: any, episode: unknown }} b
  */
 export function sameQueueEntry (a, b) {
-  if (a.key && a.key === b.key) return true
+  if (a.key && b.key && sameMediaKey(a.key, b.key)) return true
   if (cleanId(a.media?.id) === null || String(a.media.id) !== String(b.media?.id)) return false
   const identity = value => {
     const episode = normalizeQueueEpisode(value)
@@ -1233,8 +1281,14 @@ export class ChunkAssembler {
   }
 }
 
-/** Ids a peer could use to reach Object.prototype through a lookup table. */
-const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype'])
+/**
+ * Ids a peer could use to reach Object.prototype through a lookup table (`cache[id]` is a function for "toString"):
+ * never taken as a media or member id (v2.6, the same list on every app).
+ */
+export const RESERVED_IDS = new Set([
+  '__proto__', 'constructor', 'prototype', 'toString', 'toLocaleString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf',
+  'propertyIsEnumerable', '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'
+])
 
 /**
  * A wire id (`userId`, `hostId`, request, item and offer ids): a non-empty string of at most 64 characters or a
@@ -1343,7 +1397,7 @@ const EVENT_CLEANERS = {
   init (payload) {
     const raw = plainObject(payload)
     const id = raw && (isFiniteNumber(raw.id) ? raw.id : wireId(raw.id))
-    if (id == null) return null
+    if (id == null || RESERVED_IDS.has(String(id))) return null
     /** @type {Record<string, any>} */
     const user = { id }
     const name = cleanText(raw.name, MAX_NAME_LENGTH)
@@ -1530,14 +1584,43 @@ export const RATE_BURST = 20
 export const RATE_PER_S = 5
 
 /**
- * Token bucket of one member for USER_EVENTS.
+ * v2.6 token buckets, per data channel (a member can't reset them by sending `init` again):
+ * - user: USER_EVENTS (v2.5);
+ * - init: sent once on connect, then on a display name change;
+ * - ping: one every 10 s;
+ * - voiceOffer: a `voiceSignal` offer (each one builds a peer connection), retried every 3 s at most 5 times.
+ * @type {Record<'user' | 'init' | 'ping' | 'voiceOffer', { burst: number, perSecond: number }>}
+ */
+export const RATE_LIMITS = {
+  user: { burst: RATE_BURST, perSecond: RATE_PER_S },
+  init: { burst: 5, perSecond: 0.2 },
+  ping: { burst: 5, perSecond: 1 },
+  voiceOffer: { burst: 6, perSecond: 0.5 }
+}
+
+/**
+ * Which bucket of RATE_LIMITS an event (validated) uses, null when it is not limited.
+ * @param {string} type
+ * @param {any} payload
+ * @returns {keyof typeof RATE_LIMITS | null}
+ */
+export function rateClass (type, payload) {
+  if (USER_EVENTS.includes(/** @type {any} */ (type))) return 'user'
+  if (type === 'init' || type === 'ping') return type
+  if (type === 'voiceSignal' && payload?.sdp?.type === 'offer') return 'voiceOffer'
+  return null
+}
+
+/**
+ * Token bucket step.
  * @param {{ tokens: number, at: number } | null | undefined} bucket
  * @param {number} now
+ * @param {{ burst: number, perSecond: number }} [limits] USER_EVENTS limits by default
  * @returns {{ tokens: number, at: number, allowed: boolean }}
  */
-export function rateStep (bucket, now) {
-  const refilled = bucket ? bucket.tokens + Math.max(0, now - bucket.at) / 1000 * RATE_PER_S : RATE_BURST
-  const tokens = Math.min(RATE_BURST, refilled)
+export function rateStep (bucket, now, limits = RATE_LIMITS.user) {
+  const refilled = bucket ? bucket.tokens + Math.max(0, now - bucket.at) / 1000 * limits.perSecond : limits.burst
+  const tokens = Math.min(limits.burst, refilled)
   if (tokens < 1) return { tokens, at: now, allowed: false }
   return { tokens: tokens - 1, at: now, allowed: true }
 }
@@ -1552,6 +1635,17 @@ export function rateStep (bucket, now) {
 export function memberKey (userId, sessionId) {
   const id = String(userId)
   return sessionId ? `${id}#${sessionId}` : id
+}
+
+/**
+ * v2.6: a member key belongs to the first open data channel that claimed it. Another channel whose `init` names the same
+ * `id` and `sessionId` is a separate member under this key, with no authority: it is never the host, nor elected or
+ * given the role, so copying the host's ids (they are broadcast) gives nothing.
+ * @param {string} key the member key it claimed
+ * @param {string} transportId its data channel (transport peer id)
+ */
+export function shadowKey (key, transportId) {
+  return `${key}@${transportId}`
 }
 
 /**
@@ -1645,12 +1739,12 @@ export function indexKind (payload, client) {
 
 /**
  * v2.5: a `player`, `countdown` or `index` sent from another episode than ours is not applied. No check when the
- * sender sent no `mediaKey` (older app) or our player plays nothing.
+ * sender sent no `mediaKey` (older app) or our player plays nothing. v2.6: keys are compared canonically.
  * @param {string | null | undefined} sentKey
  * @param {string | null | undefined} localKey
  */
 export function sameEpisode (sentKey, localKey) {
-  return !sentKey || !localKey || sentKey === localKey
+  return !sentKey || !localKey || sameMediaKey(sentKey, localKey)
 }
 
 /**

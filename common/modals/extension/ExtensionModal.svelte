@@ -29,9 +29,14 @@
     }
   }
 
-  // Watch Together: another participant started a title (see routes/w2g).
+  // Watch Together: another participant started a title (see routes/w2g). The id comes from a peer: an own property
+  // only (mediaCache.value["toString"] is a function).
   window.addEventListener('w2g-play', ({ detail }) => {
-    if (detail?.media?.id) playAnime(mediaCache.value[detail.media.id] || detail.media, detail.episode)
+    const id = detail?.media?.id
+    if (!id) return
+    const cache = mediaCache?.value
+    const cached = cache && Object.hasOwn(cache, id) ? cache[id] : null
+    playAnime(cached || detail.media, detail.episode)
   })
 </script>
 

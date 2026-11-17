@@ -15,7 +15,8 @@ import {
   describeQueueChange, nextEpisodeOf, nextEpisodeTarget, acceptsQueue, QUEUE_MAX_ITEMS, QUEUE_MAX_PENDING, sameQueueEntry,
   ChunkAssembler, validateEvent, wireId, cleanMedia, cleanTime, memberKey, pairIds, resolveHostKey, nextRtt, rateStep,
   parseLobbyCode, iceServers, indexKind, sameEpisode, remoteName, differentRate,
-  MAX_CHUNKS, MAX_EVENT_CHARS, MAX_TIME_S, MAX_RTT_MS, RATE_BURST, CHUNK_TIMEOUT_MS
+  MAX_CHUNKS, MAX_EVENT_CHARS, MAX_TIME_S, MAX_RTT_MS, RATE_BURST, CHUNK_TIMEOUT_MS,
+  mediaKey, canonicalMediaKey, sameMediaKey, isInitialState, INITIAL_STATE_MS, rateClass, RATE_LIMITS, shadowKey, RESERVED_IDS
 } from './sync.js'
 
 let passed = 0
@@ -1058,6 +1059,127 @@ test('names: capped, and a remote member can not pass for "You"', () => {
   assert.equal(remoteName({ id: 1, name: 'Alice' }), 'Alice')
   assert.equal(formatClock(1e19), formatClock(MAX_TIME_S))
   assert.ok(MAX_EVENT_CHARS > 100_000)
+})
+
+// ---------------------------------------------------------------- v2.6
+
+test('mediaKey: one canonical key, an episode object without a season is keyed as its number', () => {
+  assert.equal(mediaKey({ media: { id: 21 }, episode: 5 }), '21:5')
+  assert.equal(mediaKey({ media: { id: 21 }, episode: { number: 5 } }), '21:5')
+  assert.equal(mediaKey({ media: { id: 21 }, episode: { number: 30, localEpisode: 5 } }), '21:5')
+  assert.equal(mediaKey({ media: { id: 'tmdb-9' }, episode: { number: 30, season: 2, localEpisode: 5 } }), 'tmdb-9:2:5')
+  assert.equal(mediaKey({ media: { id: 'tmdb-9' }, episode: { number: 30, season: 0 } }), 'tmdb-9:0:30')
+  assert.equal(mediaKey({ media: { id: 'tmdb-9' }, episode: { number: 3, season: null } }), 'tmdb-9:3')
+  // A movie sent without an episode by an older app.
+  assert.equal(mediaKey({ media: { id: 7 }, episode: undefined }), '7:undefined')
+})
+
+test('canonicalMediaKey / sameMediaKey: "21::5" of an older app is "21:5"', () => {
+  assert.equal(canonicalMediaKey('21::5'), '21:5')
+  assert.equal(canonicalMediaKey('21:5'), '21:5')
+  assert.equal(canonicalMediaKey('tmdb-9:2:5'), 'tmdb-9:2:5')
+  assert.equal(canonicalMediaKey('kitsu:12::5'), 'kitsu:12:5')
+  assert.equal(canonicalMediaKey(undefined), '')
+  assert.equal(canonicalMediaKey(12), '12')
+  assert.equal(sameMediaKey('21::5', '21:5'), true)
+  assert.equal(sameMediaKey('21:5', '21::5'), true)
+  assert.equal(sameMediaKey('21:5', '21:6'), false)
+  assert.equal(sameMediaKey('21:2:5', '21:5'), false)
+  assert.equal(sameMediaKey('', ''), true)
+  assert.equal(sameMediaKey('21:5', ''), false)
+})
+
+test('v2.6: every key comparison of the sync rules is canonical', () => {
+  const now = 20_000
+  const member = { status: { state: 'playing', time: 100, mediaKey: '21::5', rate: 1 }, receivedAt: now }
+  const mine = { state: 'playing', time: 100, mediaKey: '21:5', rate: 1, at: now }
+  assert.equal(syncBadge(member, mine, now).kind, 'sync')
+  assert.equal(syncBadge({ ...member, status: { ...member.status, mediaKey: '21::6' } }, mine, now).kind, 'other')
+  // Auto-sync against a host that writes the key the old way.
+  let memory = null
+  const host = { state: 'playing', time: 110, mediaKey: '21::5', rate: 1 }
+  memory = autoSyncStep(memory, { enabled: true, isHost: false, hostStatus: host, hostReceivedAt: now, local: mine, now })
+  memory = autoSyncStep(memory, { enabled: true, isHost: false, hostStatus: host, hostReceivedAt: now, local: mine, now })
+  assert.equal(memory.seekTo, 110)
+  // Lobby reference, Join card, invite, follow back, countdown, sameEpisode, invite target.
+  assert.equal(lobbyReference({ lobbyKey: '21:5', hostId: 'h', members: [{ userId: 'h', status: { state: 'playing', mediaKey: '21::5' } }] }), 'h')
+  assert.equal(canJoinPlayback({ reference: 'h', selfId: 'me', lobbyKey: '21::5', local: { state: 'playing', mediaKey: '21:5' }, following: true }), false)
+  assert.equal(canInvite({ offeredKey: '21:5', effectiveMode: 'everyone', isHost: false, now, member: { protocol: 2, badge: { kind: 'sync' }, status: { state: 'playing', mediaKey: '21::5' } } }), false)
+  assert.equal(followBackAction({ localKey: '21::5', lobbyKey: '21:5' }), 'resync')
+  assert.equal(appliesCountdown({ localKey: '21::5', lobbyKey: '21:5' }), true)
+  assert.equal(sameEpisode('21::5', '21:5'), true)
+  assert.equal(inviteTarget({ invite: { key: '21:5', time: 10, paused: true, receivedAt: now }, host: { time: 50, paused: false, mediaKey: '21::5' }, now }).from, 'host')
+  // Presence: the same episode written another way is no "switched to".
+  const first = presenceOnStatus(null, { state: 'playing', time: 1, mediaKey: '21:5', source: 'A' }, 0)
+  const next = presenceOnStatus(first.presence, { state: 'playing', time: 2, mediaKey: '21::5', source: 'A' }, 10_000)
+  assert.deepEqual(next.announcements, [])
+  // Queue entries.
+  assert.equal(sameQueueEntry({ key: '21::5', media: { id: 21 }, episode: { number: 5 } }, { key: '21:5', media: { id: 22 }, episode: 9 }), true)
+})
+
+test('v2.6: queue covers are http(s) URLs of at most 500 characters', () => {
+  const media = { id: 21, title: { romaji: 'T' } }
+  const item = cover => normalizeQueueItem({ id: 'q', media, episode: 5, key: '21:5', cover })
+  assert.equal(item('https://img.example/x.png').cover, 'https://img.example/x.png')
+  assert.equal(item('file://host/share/x.png').cover, '')
+  assert.equal(item('\\\\host\\share\\x.png').cover, '')
+  assert.equal(item('javascript:alert(1)').cover, '')
+  assert.equal(item(`https://img.example/${'x'.repeat(500)}`).cover, '')
+})
+
+test('v2.6: ids of Object.prototype are never media or member ids; nowPlaying.mediaId is capped', () => {
+  for (const id of ['toString', 'valueOf', '__defineGetter__', 'hasOwnProperty', '__proto__', 'constructor']) {
+    assert.ok(RESERVED_IDS.has(id))
+    assert.equal(cleanMedia({ id }), null)
+    assert.equal(validateEvent('init', { id }), null)
+  }
+  assert.deepEqual(cleanMedia({ id: 'tmdb-12' }), { id: 'tmdb-12' })
+  assert.equal(validateEvent('init', { id: 'abcdef0123456789' }).id, 'abcdef0123456789')
+  assert.equal(normalizeNowPlaying({ mediaId: 'x'.repeat(65), title: 'T' }).mediaId, null)
+  assert.equal(normalizeNowPlaying({ mediaId: 'x'.repeat(64) }).mediaId, 'x'.repeat(64))
+  assert.equal(normalizeNowPlaying({ mediaId: 21 }).mediaId, 21)
+})
+
+test('v2.6: rate limit classes and buckets', () => {
+  assert.equal(rateClass('message', 'hi'), 'user')
+  assert.equal(rateClass('queueAdd', {}), 'user')
+  assert.equal(rateClass('init', {}), 'init')
+  assert.equal(rateClass('ping', {}), 'ping')
+  assert.equal(rateClass('voiceSignal', { sdp: { type: 'offer' } }), 'voiceOffer')
+  assert.equal(rateClass('voiceSignal', { sdp: { type: 'answer' } }), null)
+  assert.equal(rateClass('status', {}), null)
+  // init: a burst of 5, then one every 5 s.
+  let bucket = null
+  let allowed = 0
+  for (let i = 0; i < 20; i++) {
+    bucket = rateStep(bucket, 1_000, RATE_LIMITS.init)
+    if (bucket.allowed) allowed++
+  }
+  assert.equal(allowed, RATE_LIMITS.init.burst)
+  assert.equal(rateStep(bucket, 3_000, RATE_LIMITS.init).allowed, false)
+  assert.equal(rateStep(bucket, 6_100, RATE_LIMITS.init).allowed, true)
+  // The default is the v2.5 user limit.
+  bucket = null
+  allowed = 0
+  for (let i = 0; i < 30; i++) {
+    bucket = rateStep(bucket, 0)
+    if (bucket.allowed) allowed++
+  }
+  assert.equal(allowed, RATE_BURST)
+  // Voice offers: the 3 s retries are never limited.
+  bucket = null
+  for (let i = 0; i < 12; i++) {
+    bucket = rateStep(bucket, i * 3_000, RATE_LIMITS.voiceOffer)
+    assert.equal(bucket.allowed, true)
+  }
+})
+
+test('v2.6: initial lobby state window and shadow keys', () => {
+  assert.equal(isInitialState({ senderJoinedAt: 1_000, now: 1_000 + INITIAL_STATE_MS - 1 }), true)
+  assert.equal(isInitialState({ senderJoinedAt: 1_000, now: 1_000 + INITIAL_STATE_MS }), false)
+  assert.equal(isInitialState({ senderJoinedAt: undefined, now: 1_000 }), false)
+  assert.equal(shadowKey('abc#s1', 'peer9'), 'abc#s1@peer9')
+  assert.notEqual(shadowKey(memberKey('abc', 's1'), 'p'), memberKey('abc', 's1'))
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)
