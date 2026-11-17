@@ -48,6 +48,8 @@ final class BrowseSearchModel {
   private(set) var matchingResultID: String?
   @ObservationIgnored private var matchTask: Task<Void, Never>?
   @ObservationIgnored private var matchToken = 0
+  /// Pages of the selected Stremio catalog (filters.catalogKey), shown instead of `media` (BrowseCatalogSource.swift).
+  private(set) var catalogResults: StremioCatalogPageModel?
   private var generation = 0
   @ObservationIgnored private var lastRunKey: RunKey? = nil
   @ObservationIgnored private var token = 0
@@ -67,7 +69,7 @@ final class BrowseSearchModel {
   }
 
   var hasActiveFilters: Bool {
-    !badges.isEmpty || sectionTitle != nil || isTraceMode || filters.soraModule != nil
+    !badges.isEmpty || sectionTitle != nil || isTraceMode || filters.soraModule != nil || filters.catalogKey != nil
   }
 
   var isEmpty: Bool { media.isEmpty && episodes.isEmpty && soraResults.isEmpty }
@@ -76,9 +78,45 @@ final class BrowseSearchModel {
   /// filters) do not apply and are disabled.
   var isSoraSource: Bool { filters.soraModule != nil }
 
+  /// A Stremio addon catalog is the Source: same, the filters do not apply.
+  var isCatalogSource: Bool { filters.catalogKey != nil }
+
+  /// A Sora module or a Stremio catalog is the Source (SearchBar.svelte catalogMode).
+  var ignoresFilters: Bool { isSoraSource || isCatalogSource }
+
+  /// The title field searches the selected catalog (itself or a search catalog of its addon); a catalog that cannot
+  /// search disables it (sections.js catalogSearch).
+  var catalogCanSearch: Bool {
+    filters.catalogKey.map { BrowseCatalogSource.canSearch($0) } ?? false
+  }
+
   /// Name of the selected Sora module (nil for AniList / TMDB).
   var soraModuleName: String? {
-    filters.soraModule.map { SoraSearchSource.moduleName($0) }
+    filters.soraModule.map { Self.moduleDisplayName($0) }
+  }
+
+  /// Name of a Sora module for the Source menu and the hints. A module that is not installed any more is not shown
+  /// by its key (an internal id).
+  static func moduleDisplayName(_ key: String) -> String {
+    ExtensionManager.shared.installedExtension(key)?.displayName ?? "Removed Module"
+  }
+
+  /// Why the selected Sora module or Stremio catalog cannot be searched (disabled, removed or not loaded), nil when
+  /// it can or AniList / TMDB is the source. Its card then offers the Extensions settings and Both
+  /// (BrowseSourceUnavailableCard) instead of only a Retry that keeps failing.
+  var unavailableSourceMessage: String? {
+    if let key = filters.soraModule {
+      guard !SoraSearchSource.modules().contains(where: { $0.key == key }) else { return nil }
+      if let installed = ExtensionManager.shared.installedExtension(key) {
+        return "\(installed.displayName) is disabled or could not be loaded."
+      }
+      return "This Sora module is not installed any more."
+    }
+    if let key = filters.catalogKey {
+      guard BrowseCatalogSource.displayName(key) == nil else { return nil }
+      return "This catalog is not available any more: its addon is disabled, removed or could not be loaded."
+    }
+    return nil
   }
 
   // MARK: Navigation input
@@ -146,6 +184,29 @@ final class BrowseSearchModel {
     isTraceMode = false
   }
 
+  /// Source menu: a Stremio addon catalog (its key) or back to AniList / TMDB (nil). Like PC changeSource, a catalog
+  /// starts from empty filters (it ignores them, and the title is typed afterwards to search it).
+  func selectCatalog(_ key: String?) {
+    guard let key else {
+      if filters.catalogKey != nil { filters.catalogKey = nil }
+      return
+    }
+    guard filters.catalogKey != key else { return }
+    var next = BrowseSearchFilters()
+    next.catalogKey = key
+    filters = next
+    isTraceMode = false
+  }
+
+  /// "Search Both" of the unavailable source card: back to AniList / TMDB, both catalogues.
+  func leaveExternalSource() {
+    var next = filters
+    next.soraModule = nil
+    next.catalogKey = nil
+    next.western = nil
+    filters = next
+  }
+
   func toggleHideMyAnime() {
     filters.hideMyAnime.toggle()
     if filters.hideMyAnime { filters.showMyAnime = false }
@@ -185,12 +246,33 @@ final class BrowseSearchModel {
     episodes = []
     soraResults = []
     cancelSoraMatch()
+    catalogResults?.cancel()
+    catalogResults = nil
     page = 0
     hasNextPage = false
-    // Not while a Sora module is the source (SearchBar.svelte clearNext): picking it cleared the other filters, so
-    // its first search saved the bare title over the last AniList / TMDB search.
-    if section == nil && filters.soraModule == nil { filters.save(key: Self.storageKey) }
+    // Not while a Sora module or a catalog is the source (SearchBar.svelte clearNext): picking it cleared the other
+    // filters, so its first search saved the bare title over the last AniList / TMDB search.
+    if section == nil && filters.soraModule == nil && filters.catalogKey == nil { filters.save(key: Self.storageKey) }
     do {
+      if section == nil, let catalogKey = key.filters.catalogKey {
+        // Stremio catalog source: the catalog, or its search for the typed title, paged by its own model
+        // (BrowseCatalogSource.swift). A refresh of the extensions may still be loading the addon.
+        await ExtensionManager.shared.awaitPendingLoads()
+        guard current == token else { return }
+        if Task.isCancelled {
+          lastRunKey = nil
+          return
+        }
+        guard let catalog = BrowseCatalogSource.section(catalogKey, text: key.filters.text) else {
+          phase = .failed("This catalog is not available any more.")
+          return
+        }
+        let pages = StremioCatalogPageModel(section: catalog)
+        catalogResults = pages
+        pages.start()
+        phase = .loaded
+        return
+      }
       if section == nil, let moduleKey = key.filters.soraModule {
         // Sora module source: its own search of the title, one page of cards (SoraSearchSource.swift).
         let found = try await SoraSearchSource.search(moduleKey: moduleKey, title: key.filters.text)
@@ -319,6 +401,8 @@ final class BrowseSearchModel {
       media = []
       soraResults = []
       cancelSoraMatch()
+      catalogResults?.cancel()
+      catalogResults = nil
       episodes = matches.sorted { $0.similarity > $1.similarity }.map { BrowseEpisodeCardData(trace: $0) }
       hasNextPage = false
       phase = .loaded
@@ -416,6 +500,12 @@ struct SearchView: View {
     .task(id: model.runKey) {
       await model.runIfNeeded()
     }
+    .onChange(of: model.unavailableSourceMessage == nil) { _, available in
+      // The module or addon came back (enabled from the Extensions settings, or done loading): searched again.
+      if available, case .failed = model.phase {
+        model.retry()
+      }
+    }
     .task(id: router.pendingSearch?.id) {
       await MainActor.run {
         consumePendingSearch()
@@ -462,9 +552,12 @@ struct BrowseSearchHeader: View {
           disabled: model.context.lockSource || model.context.disableSearch,
           modules: SoraSearchSource.modules(),
           selectedModule: model.filters.soraModule,
-          onSelectModule: { key in model.selectSoraModule(key) }
+          onSelectModule: { key in model.selectSoraModule(key) },
+          catalogs: BrowseCatalogSource.groups(),
+          selectedCatalog: model.filters.catalogKey,
+          onSelectCatalog: { key in model.selectCatalog(key) }
         )
-        BrowseSearchField(text: $model.filters.text, disabled: model.context.disableSearch, placeholder: model.isSoraSource ? "Type a title to search" : "Any")
+        BrowseSearchField(text: $model.filters.text, disabled: titleDisabled, placeholder: titlePlaceholder)
       }
       buttons
       BrowseFilterBadgesView(badges: model.badges) { badge in
@@ -475,16 +568,27 @@ struct BrowseSearchHeader: View {
     .padding(.top, 8)
   }
 
+  /// SearchBar.svelte titleDisabled: feeds, and a catalog that cannot search.
+  private var titleDisabled: Bool {
+    model.context.disableSearch || (model.isCatalogSource && !model.catalogCanSearch)
+  }
+
+  private var titlePlaceholder: String {
+    if model.isSoraSource { return "Type a title to search" }
+    if model.isCatalogSource { return model.catalogCanSearch ? "Search the addon" : "Not searchable" }
+    return "Any"
+  }
+
   private var buttons: some View {
     let context = model.context
     let authorized = ProfilesService.shared.isAuthorized
-    // A Sora module source only searches the title: the AniList / TMDB filters are disabled.
-    let soraSource = model.isSoraSource
+    // A Sora module or a catalog source only searches the title: the AniList / TMDB filters are disabled.
+    let externalSource = model.ignoresFilters
     return HStack(spacing: 8) {
       BrowseIconButton(systemImage: "slider.horizontal.3", active: model.filters.activeCount > 0, badge: model.filters.activeCount, label: "Advanced Search") {
         showFilters = true
       }
-      .disabled(context.disableSearch || soraSource)
+      .disabled(context.disableSearch || externalSource)
       BrowseIconButton(systemImage: model.filters.showMyAnime ? "hourglass" : "eye.slash", active: model.filters.hideMyAnime || model.filters.showMyAnime, tint: model.filters.showMyAnime ? BrowsePalette.partialDub : BrowsePalette.tertiary, label: model.filters.showMyAnime ? "Show My Anime" : "Hide My Anime") {
         model.toggleHideMyAnime()
       }
@@ -495,11 +599,11 @@ struct BrowseSearchHeader: View {
           Label("Show My Anime", systemImage: "hourglass")
         }
       }
-      .disabled(context.disableHide || context.disableSearch || !authorized || soraSource)
+      .disabled(context.disableHide || context.disableSearch || !authorized || externalSource)
       BrowseIconButton(systemImage: "mic", active: model.filters.dubOnly, label: "Dubbed Audio") {
         model.filters.dubOnly.toggle()
       }
-      .disabled(context.disableSearch || soraSource)
+      .disabled(context.disableSearch || externalSource)
       PhotosPicker(selection: $photoItem, matching: .images) {
         BrowseIconLabel(systemImage: model.isTracing ? "hourglass" : "photo.badge.arrow.down", active: model.isTraceMode)
       }
@@ -549,8 +653,8 @@ struct BrowseCardModeButtons: View {
   }
 }
 
-/// Source select: Both / Anime / Western, then the enabled Sora modules in a "Sora Modules" submenu (Search page
-/// only, SearchBar.svelte buildSourceGroups).
+/// Source select: Both / Anime / Western, then the catalogs of each Stremio addon ("Catalogs · Addon" submenus) and
+/// the enabled Sora modules in a "Sora Modules" submenu (Search page only, SearchBar.svelte buildSourceGroups).
 @MainActor
 struct BrowseSourceMenu: View {
   @Binding var western: Bool?
@@ -561,16 +665,43 @@ struct BrowseSourceMenu: View {
   var selectedModule: String? = nil
   /// Picks a module (its key) or leaves it (nil, before Both / Anime / Western applies).
   var onSelectModule: ((String?) -> Void)? = nil
+  /// Catalogs of the enabled Stremio addons (BrowseCatalogSource.groups); empty on the Schedule page.
+  var catalogs: [BrowseCatalogGroup] = []
+  /// Key of the selected catalog, nil for AniList / TMDB.
+  var selectedCatalog: String? = nil
+  /// Picks a catalog (its key) or leaves it (nil, before Both / Anime / Western applies).
+  var onSelectCatalog: ((String?) -> Void)? = nil
+
+  /// A Sora module or a catalog is the source (Both / Anime / Western then have no checkmark).
+  private var externalSelected: Bool {
+    selectedModule != nil || selectedCatalog != nil
+  }
 
   private var title: String {
     if let selectedModule {
-      return modules.first { $0.key == selectedModule }?.name ?? SoraSearchSource.moduleName(selectedModule)
+      return modules.first { $0.key == selectedModule }?.name ?? BrowseSearchModel.moduleDisplayName(selectedModule)
     }
-    switch western {
+    if let selectedCatalog {
+      for group in catalogs {
+        if let option = group.catalogs.first(where: { $0.key == selectedCatalog }) { return option.name }
+      }
+      return "Removed Catalog"
+    }
+    return Self.basicTitle(western)
+  }
+
+  private static func basicTitle(_ value: Bool?) -> String {
+    switch value {
     case .none: return "Both"
     case .some(false): return "Anime"
     case .some(true): return "Western"
     }
+  }
+
+  private var systemImage: String {
+    if selectedModule != nil { return "puzzlepiece.extension" }
+    if selectedCatalog != nil { return "movieclapper" }
+    return "square.grid.2x2"
   }
 
   /// A long module name is shortened, so the title field keeps its room.
@@ -581,25 +712,58 @@ struct BrowseSourceMenu: View {
 
   private func pick(_ value: Bool?) {
     if selectedModule != nil { onSelectModule?(nil) }
+    if selectedCatalog != nil { onSelectCatalog?(nil) }
     western = value
   }
 
+  /// A menu entry, with a checkmark when it is the current source.
+  @ViewBuilder
+  private func entry(_ label: String, selected: Bool) -> some View {
+    if selected {
+      Label(label, systemImage: "checkmark")
+    } else {
+      Text(label)
+    }
+  }
+
   var body: some View {
-    Menu {
-      Button("Both") { pick(nil) }
-      Button("Anime") { pick(false) }
-      Button("Western") { pick(true) }
+    let basic = !externalSelected
+    return Menu {
+      Button {
+        pick(nil)
+      } label: {
+        entry("Both", selected: basic && western == nil)
+      }
+      Button {
+        pick(false)
+      } label: {
+        entry("Anime", selected: basic && western == false)
+      }
+      Button {
+        pick(true)
+      } label: {
+        entry("Western", selected: basic && western == true)
+      }
+      ForEach(catalogs) { group in
+        Menu {
+          ForEach(group.catalogs) { option in
+            Button {
+              onSelectCatalog?(option.key)
+            } label: {
+              entry(option.name, selected: option.key == selectedCatalog)
+            }
+          }
+        } label: {
+          Label("Catalogs · \(group.addonName)", systemImage: "movieclapper")
+        }
+      }
       if !modules.isEmpty {
         Menu {
           ForEach(modules) { module in
             Button {
               onSelectModule?(module.key)
             } label: {
-              if module.key == selectedModule {
-                Label(module.name, systemImage: "checkmark")
-              } else {
-                Text(module.name)
-              }
+              entry(module.name, selected: module.key == selectedModule)
             }
           }
         } label: {
@@ -608,7 +772,7 @@ struct BrowseSourceMenu: View {
       }
     } label: {
       HStack(spacing: 4) {
-        Image(systemName: selectedModule == nil ? "square.grid.2x2" : "puzzlepiece.extension")
+        Image(systemName: systemImage)
         Text(shortTitle)
           .lineLimit(1)
         Image(systemName: "chevron.down")
@@ -622,6 +786,8 @@ struct BrowseSourceMenu: View {
     }
     .disabled(disabled)
     .accessibilityLabel("Source")
+    // The selected source (the button text can be shortened).
+    .accessibilityValue(title)
   }
 }
 
@@ -725,7 +891,9 @@ struct BrowseSearchResults: View {
 
   var body: some View {
     Group {
-      if model.isEmpty {
+      if let catalog = model.catalogResults {
+        BrowseCatalogSourceResults(model: catalog, style: style, columns: columns, searching: !model.filters.trimmedText.isEmpty)
+      } else if model.isEmpty {
         placeholder
       } else {
         grid
@@ -734,8 +902,25 @@ struct BrowseSearchResults: View {
     .padding(.horizontal, 16)
   }
 
+  /// The selected module or catalog cannot be searched (once its search ran): Extensions settings or Both.
+  private var unavailableMessage: String? {
+    switch model.phase {
+    case .failed, .loaded: return model.unavailableSourceMessage
+    case .idle, .loading: return nil
+    }
+  }
+
   @ViewBuilder
   private var placeholder: some View {
+    if let message = unavailableMessage {
+      BrowseSourceUnavailableCard(message: message, height: 300, onRetry: { model.retry() }, onSearchBoth: { model.leaveExternalSource() })
+    } else {
+      phasePlaceholder
+    }
+  }
+
+  @ViewBuilder
+  private var phasePlaceholder: some View {
     switch model.phase {
     case .idle, .loading:
       skeletonGrid

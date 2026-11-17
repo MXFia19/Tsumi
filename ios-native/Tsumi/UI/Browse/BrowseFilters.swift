@@ -32,6 +32,9 @@ struct BrowseSearchFilters: Codable, Equatable {
   /// AniList / TMDB. Session only: it is not in CodingKeys, so it is never saved and a saved search always reopens on
   /// AniList / TMDB.
   var soraModule: String?
+  /// Source of the Search page: key of the Stremio addon catalog shown in full (BrowseCatalogSource.swift), nil for
+  /// AniList / TMDB. Session only like `soraModule` (not in CodingKeys).
+  var catalogKey: String?
 
   /// Statuses hidden / shown by the "Hide My Anime" button.
   static let myAnimeStatuses: [ListStatus] = [.current, .completed, .dropped, .paused, .repeating]
@@ -112,7 +115,7 @@ struct BrowseSearchFilters: Codable, Equatable {
 
   // MARK: Lossy decoding
 
-  /// `soraModule` is left out on purpose (session only, see above).
+  /// `soraModule` and `catalogKey` are left out on purpose (session only, see above).
   private enum CodingKeys: String, CodingKey {
     case text, western, genres, genresNot, tags, tagsNot, season, year, formats, formatsNot, status, statusNot, sort
     case hideMyAnime, showMyAnime, dubOnly, release
