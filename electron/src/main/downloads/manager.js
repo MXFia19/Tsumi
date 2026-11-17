@@ -10,6 +10,7 @@ import {
   buildLocalMaster, looksLikeHls, looksLikeDash
 } from './hls.js'
 import { sanitizeName, episodeLabel, downloadId, subtitleExtension, videoExtension, totalFromContentRange, httpErrorMessage } from './naming.js'
+import { HLS_JS_URL, isPinnedHlsJs } from './hlsjs.js'
 
 // Offline downloads (see common/modules/downloads.js for the renderer side).
 // The renderer owns the extensions, so it resolves a fresh stream URL each time a download starts (source
@@ -19,7 +20,6 @@ import { sanitizeName, episodeLabel, downloadId, subtitleExtension, videoExtensi
 // (/downloads/<id>/<file>) so the player plays them without network.
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-const HLS_JS_URL = 'https://cdn.jsdelivr.net/npm/hls.js@1.4.5'
 const SEGMENT_WORKERS = 4
 const RESOLVE_TIMEOUT = 180_000
 /** A stream already resolved by the player is used when a fresh resolution fails and it is younger than this. */
@@ -927,18 +927,27 @@ export default class DownloadManager {
     this.changed(item)
   }
 
-  /** hls.js copy for offline HLS playback (the player loads it from a CDN otherwise). */
+  /**
+   * hls.js copy for offline HLS playback (the player loads it from a CDN otherwise). Saved only when it is the pinned
+   * file (hlsjs.js), and served only then (routes.js): it runs in the app page. A copy that is missing, or that is not
+   * that file (older or damaged), is downloaded again.
+   */
   async ensureHlsJs () {
     const path = hlsJsPath()
-    if (this.hlsJsTask || (await exists(path))) return
+    if (this.hlsJsTask) return
     this.hlsJsTask = (async () => {
       try {
-        const response = await fetch(HLS_JS_URL)
+        if (isPinnedHlsJs(await fsp.readFile(path).catch(() => null))) return
+        const response = await fetch(HLS_JS_URL, { signal: AbortSignal.timeout(60_000) })
         if (!response.ok) return
-        const text = await response.text()
-        if (text.length < 10_000) return
+        const data = Buffer.from(await response.arrayBuffer())
+        if (!isPinnedHlsJs(data)) {
+          log.warn('[downloads] The hls.js file from the CDN is not the expected one: not saved')
+          return
+        }
         await fsp.mkdir(dirname(path), { recursive: true })
-        await fsp.writeFile(path, text)
+        await fsp.writeFile(`${path}.tmp`, data)
+        await fsp.rename(`${path}.tmp`, path)
       } catch {} finally {
         this.hlsJsTask = null
       }

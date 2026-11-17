@@ -5,8 +5,21 @@ import Debug from 'debug'
 const debug = Debug('ui:streaming')
 
 let hlsLibrary
+/** hls.js load in progress (loadHLSLibrary), shared by the streams that wait for it. */
+let hlsLoading = null
+let hlsErrorShown = false
 /** "http://localhost:<port>/<token>" of the local proxy (electron/src/main/streamProxy.js), null until it runs. */
 let proxyBase = null
+
+// hls.js runs in the app page, which has the IPC bridge: it is pinned to one exact file. The browser runs it only when
+// its SHA-384 matches (Subresource Integrity), so a compromised or altered CDN copy cannot run code here. The offline
+// copy of the downloads is checked against the same hash by the main process before it is saved and served
+// (electron/src/main/downloads/hlsjs.js holds the same URL and hash; hlsjs.test.mjs checks they agree).
+const HLS_JS_URL = 'https://cdn.jsdelivr.net/npm/hls.js@1.4.5/dist/hls.min.js'
+const HLS_JS_INTEGRITY = 'sha384-GuEz/RD9TfqZhxw9UmeaUmXVz/VDbz+NxBf7oRFs1rrMHPPA429NgphPL6PvdviR'
+// A CDN that is blocked or does not answer fails after this, instead of the browser's own timeout (minutes).
+const HLS_JS_TIMEOUT = 15000
+const HLS_JS_OFFLINE_TIMEOUT = 5000
 
 // Downloaded episodes are served by the local proxy itself (electron/src/main/downloads/routes.js).
 const localDownloadRx = /^http:\/\/(localhost|127\.0\.0\.1):\d+\/(?:[0-9a-f]+\/)?downloads\//i
@@ -31,41 +44,77 @@ function streamHost (url) {
   }
 }
 
-function loadScript (src) {
+/**
+ * Adds a script to the page. `label` names it in errors (never the full URL: the local one carries the proxy token).
+ * @param {string} src
+ * @param {{ label: string, integrity?: string, timeout?: number }} options
+ */
+function loadScript (src, { label, integrity, timeout = 0 }) {
   return new Promise((resolve, reject) => {
     const script = document.createElement('script')
+    let timer = null
+    const fail = (error) => {
+      clearTimeout(timer)
+      script.onload = script.onerror = null
+      script.remove()
+      reject(error)
+    }
+    if (integrity) {
+      // Subresource Integrity needs a CORS request (jsDelivr allows any origin).
+      script.integrity = integrity
+      script.crossOrigin = 'anonymous'
+    }
     script.src = src
     script.async = true
-    script.onload = resolve
-    script.onerror = () => {
-      script.remove()
-      reject(new Error(`Failed to load ${src}`))
+    script.onload = () => {
+      clearTimeout(timer)
+      resolve()
     }
+    // Also what the browser reports when the file does not match `integrity`.
+    script.onerror = () => fail(new Error(`${label} could not be loaded${integrity ? ' (unreachable, or not the expected file)' : ''}`))
+    if (timeout) timer = setTimeout(() => fail(new Error(`${label} did not answer within ${timeout / 1000} s`)), timeout)
     document.head.appendChild(script)
   })
 }
 
-async function loadHLSLibrary () {
-  if (hlsLibrary) return hlsLibrary
-
+/** hls.js: from the CDN, else the offline copy saved with the HLS downloads (served by the local proxy). */
+async function loadHLSScript () {
   try {
-    if (typeof window !== 'undefined' && !window.Hls) {
+    try {
+      await loadScript(HLS_JS_URL, { label: 'hls.js from cdn.jsdelivr.net', integrity: HLS_JS_INTEGRITY, timeout: HLS_JS_TIMEOUT })
+    } catch (error) {
+      debug('hls.js CDN failed, trying the offline copy:', error.message)
+      const base = await getProxyBaseInternal()
+      if (!base) throw error
       try {
-        await loadScript('https://cdn.jsdelivr.net/npm/hls.js@1.4.5')
-      } catch (error) {
-        // Offline: the copy saved with the HLS downloads (served by the local proxy).
-        const base = await getProxyBaseInternal()
-        if (!base) throw error
-        await loadScript(`${base}/downloads/hls.js`)
+        await loadScript(`${base}/downloads/hls.js`, { label: 'the offline hls.js', timeout: HLS_JS_OFFLINE_TIMEOUT })
+      } catch {
+        // The offline copy exists only once an HLS episode was downloaded: the CDN error is the one to show.
+        throw error
       }
     }
-
     hlsLibrary = window.Hls || null
     return hlsLibrary
   } catch (error) {
     debug('HLS.js unavailable, using native playback:', error)
+    if (!hlsErrorShown) {
+      hlsErrorShown = true
+      toast.error('HLS Player Unavailable', {
+        description: `${error.message}. HLS streams may not play: check the connection, or whether cdn.jsdelivr.net is blocked on this network.`,
+        duration: 10000
+      })
+    }
     return null
   }
+}
+
+async function loadHLSLibrary () {
+  if (hlsLibrary) return hlsLibrary
+  if (typeof window === 'undefined') return null
+  if (window.Hls) return (hlsLibrary = window.Hls)
+  // One load at a time; after a failure the next stream tries again.
+  if (!hlsLoading) hlsLoading = loadHLSScript().finally(() => { hlsLoading = null })
+  return hlsLoading
 }
 
 async function getProxyBaseInternal () {
