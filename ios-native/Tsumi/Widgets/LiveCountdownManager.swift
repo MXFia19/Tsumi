@@ -9,7 +9,9 @@ import UIKit
 //   automatically" setting when the app is opened / its lists refresh);
 // - its stale date is the airing time, so iOS shows "Out now" by itself when the episode airs;
 // - the next time the app runs (foreground or background refresh) it ends the aired ones, which iOS then
-//   dismisses about an hour after the airing time, and follows rescheduled episodes.
+//   dismisses about an hour after the airing time, and follows rescheduled episodes. A title whose next episode
+//   airs soon gets a new countdown the next time the app is in the foreground after that hour (carry-over), since
+//   an activity left running could stay "Out now" for hours when the app does not run again.
 
 @MainActor
 @Observable
@@ -31,6 +33,17 @@ final class LiveCountdownManager {
   static let maxRunning = 4
 
   private static let autoStartedKey = "tsumi.liveCountdown.autoStarted"
+  private static let carryOverKey = "tsumi.liveCountdown.carryOver"
+
+  /// Next episode of a countdown the app ended in its "Out now" window, started the next time the app is in the
+  /// foreground once that countdown is dismissed.
+  private struct CarryOver: Codable {
+    var episode: Int
+    var airingAt: Date
+    /// When the ended countdown leaves the lock screen.
+    var startAfter: Date
+    var autoStarted: Bool
+  }
 
   private init() {}
 
@@ -91,6 +104,8 @@ final class LiveCountdownManager {
     for activity in Activity<TsumiCountdownAttributes>.activities where activity.attributes.mediaId == mediaId {
       await activity.end(nil, dismissalPolicy: .immediate)
     }
+    var carried = loadCarryOver(now: Date())
+    if carried.removeValue(forKey: mediaId) != nil { saveCarryOver(carried) }
     reload()
   }
 
@@ -98,6 +113,7 @@ final class LiveCountdownManager {
     for activity in Activity<TsumiCountdownAttributes>.activities {
       await activity.end(nil, dismissalPolicy: .immediate)
     }
+    saveCarryOver([:])
     reload()
   }
 
@@ -137,6 +153,8 @@ final class LiveCountdownManager {
   /// called by ShellBackgroundRefresh), so a running countdown follows the schedule while the app is closed.
   func sync(with snapshot: TsumiWidgetSnapshot?) async {
     let now = Date()
+    var carried = loadCarryOver(now: now)
+    var carriedChanged = false
     for activity in Activity<TsumiCountdownAttributes>.activities {
       guard activity.activityState == .active || activity.activityState == .stale else { continue }
       let state = activity.content.state
@@ -151,25 +169,28 @@ final class LiveCountdownManager {
         await activity.update(ActivityContent(state: updated, staleDate: rescheduled.airingAt))
       } else if state.airingAt <= now {
         let next = Self.nextAiring(after: state, mediaId: mediaId, in: snapshot, now: now)
-        if let next, now >= state.airingAt.addingTimeInterval(TsumiWidgetSnapshot.outWindow) {
+        let outEnd = state.airingAt.addingTimeInterval(TsumiWidgetSnapshot.outWindow)
+        if let next, now >= outEnd {
           // "Out now" was shown for its window: count down to the next episode.
           let updated = TsumiCountdownAttributes.ContentState(episode: next.episode, airingAt: next.airingAt, isOut: false)
           await activity.update(ActivityContent(state: updated, staleDate: next.airingAt))
-        } else if next != nil {
-          // Still in the "Out now" window: kept running, so a later refresh can move it on to the next episode.
-          if !state.isOut {
-            var out = state
-            out.isOut = true
-            await activity.update(ActivityContent(state: out, staleDate: nil))
-          }
         } else {
+          // "Out now" window: ended now and dismissed at the end of the window. Left running, it stayed "Out now"
+          // until iOS ended it (8-12 hours) whenever the app did not run again (background refresh is
+          // opportunistic). A next episode airing soon gets a new countdown the next time the app is in the
+          // foreground once this one is dismissed (an activity can only be started in the foreground).
           var out = state
           out.isOut = true
-          let dismissAt = max(state.airingAt.addingTimeInterval(TsumiWidgetSnapshot.outWindow), now.addingTimeInterval(10 * 60))
+          let dismissAt = max(outEnd, now.addingTimeInterval(10 * 60))
           await activity.end(ActivityContent(state: out, staleDate: nil), dismissalPolicy: .after(dismissAt))
+          if let next {
+            carried[mediaId] = CarryOver(episode: next.episode, airingAt: next.airingAt, startAfter: dismissAt, autoStarted: activity.attributes.autoStarted)
+            carriedChanged = true
+          }
         }
       }
     }
+    if carriedChanged { saveCarryOver(carried) }
     reload()
     await autoStart(snapshot, now: now)
   }
@@ -184,29 +205,67 @@ final class LiveCountdownManager {
   }
 
   /// "Start Automatically": followed titles airing within the chosen hours, once per episode (a countdown the
-  /// user dismissed is not brought back).
+  /// user dismissed is not brought back). Also starts the carried-over next episodes (whatever the setting) once the
+  /// ended countdown of their title left the lock screen.
   private func autoStart(_ snapshot: TsumiWidgetSnapshot?, now: Date) async {
     let preferences = TsumiWidgetPreferences.shared.values
-    guard preferences.liveActivityAutoStart, let snapshot, UIApplication.shared.applicationState == .active, isEnabled else { return }
+    guard let snapshot, UIApplication.shared.applicationState == .active, isEnabled else { return }
+    var carried = loadCarryOver(now: now)
+    guard preferences.liveActivityAutoStart || !carried.isEmpty else { return }
     let horizon = now.addingTimeInterval(Double(preferences.liveActivityLeadHours) * 3600)
     var started = loadAutoStarted(now: now)
     var active = activeMediaIds
+    // Ended countdowns still on the lock screen ("Out now" until their dismissal) are not replaced before then.
+    let shown = Set(Activity<TsumiCountdownAttributes>.activities.filter { $0.activityState == .ended }.map { $0.attributes.mediaId })
     var seen = Set<String>()
     var changed = false
-    for airing in snapshot.airing.sorted(by: { $0.airingAt < $1.airingAt }) where airing.airingAt > now && airing.airingAt <= horizon {
-      guard seen.insert(airing.mediaId).inserted, !active.contains(airing.mediaId) else { continue }
+    var carriedChanged = false
+    for airing in snapshot.airing.sorted(by: { $0.airingAt < $1.airingAt }) where airing.airingAt > now {
+      let carry = carried[airing.mediaId].flatMap { $0.episode == airing.episode ? $0 : nil }
+      let automatic = preferences.liveActivityAutoStart && airing.airingAt <= horizon
+      guard carry != nil || automatic else { continue }
+      guard seen.insert(airing.mediaId).inserted, !active.contains(airing.mediaId), !shown.contains(airing.mediaId) else { continue }
+      if let carry, carry.startAfter > now, !automatic { continue }
       let key = "\(airing.mediaId)|\(airing.episode)"
-      guard started[key] == nil else { continue }
+      guard started[key] == nil else {
+        if carry != nil {
+          carried[airing.mediaId] = nil
+          carriedChanged = true
+        }
+        continue
+      }
       guard active.count < Self.maxRunning else { break }
-      let attributes = TsumiCountdownAttributes(mediaId: airing.mediaId, title: airing.title, totalEpisodes: airing.totalEpisodes, cover: airing.cover, color: airing.color, link: airing.link, autoStarted: true)
+      let attributes = TsumiCountdownAttributes(mediaId: airing.mediaId, title: airing.title, totalEpisodes: airing.totalEpisodes, cover: airing.cover, color: airing.color, link: airing.link, autoStarted: carry?.autoStarted ?? true)
       if await request(attributes, episode: airing.episode, airingAt: airing.airingAt, quiet: true) {
         started[key] = airing.airingAt.timeIntervalSince1970
         active.insert(airing.mediaId)
         changed = true
+        if carry != nil {
+          carried[airing.mediaId] = nil
+          carriedChanged = true
+        }
       }
     }
     if changed {
       UserDefaults.standard.set(started, forKey: Self.autoStartedKey)
+    }
+    if carriedChanged {
+      saveCarryOver(carried)
+    }
+  }
+
+  /// Carried-over next episodes still to air.
+  private func loadCarryOver(now: Date) -> [String: CarryOver] {
+    guard let data = UserDefaults.standard.data(forKey: Self.carryOverKey),
+          let stored = try? JSONDecoder().decode([String: CarryOver].self, from: data) else { return [:] }
+    return stored.filter { $0.value.airingAt > now }
+  }
+
+  private func saveCarryOver(_ value: [String: CarryOver]) {
+    if value.isEmpty {
+      UserDefaults.standard.removeObject(forKey: Self.carryOverKey)
+    } else if let data = try? JSONEncoder().encode(value) {
+      UserDefaults.standard.set(data, forKey: Self.carryOverKey)
     }
   }
 
