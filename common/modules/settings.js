@@ -58,8 +58,28 @@ sync.subscribe(value => {
   cache.setEntry(caches.GENERAL, 'sync', value)
 })
 
+/**
+ * The settings store keeps an object: anything else is ignored. A binding of a destroyed component (Svelte 4 calls it
+ * with undefined) once emptied the settings, which broke every reader and would have been saved.
+ * @param {import('simple-store-svelte').Writable<typeof defaults>} store
+ * @returns {import('simple-store-svelte').Writable<typeof defaults>}
+ */
+function objectStore (store) {
+  const set = (value) => {
+    if (value && typeof value === 'object') store.set(value)
+    else console.error('Settings: ignored a non-object value', value)
+  }
+  return {
+    subscribe: store.subscribe,
+    set,
+    update: (fn) => set(fn(store.value)),
+    get value () { return store.value },
+    set value (value) { set(value) }
+  }
+}
+
 /** @type {import('simple-store-svelte').Writable<typeof defaults>} */
-export const settings = writable({ ...defaults, ...scopedDefaults, ...storedSettings })
+export const settings = objectStore(writable({ ...defaults, ...scopedDefaults, ...storedSettings }))
 
 settings.subscribe(value => {
   cache.setEntry(caches.GENERAL, 'settings', value)

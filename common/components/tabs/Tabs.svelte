@@ -3,7 +3,7 @@
 </script>
 
 <script>
-  import { setContext, onDestroy } from 'svelte'
+  import { setContext, onDestroy, onMount } from 'svelte'
   import { writable } from 'simple-store-svelte'
 
   /** Index of the tab selected first (SettingsPage: the last one opened) */
@@ -16,10 +16,14 @@
   const selectedTab = writable(null)
   const selectedPanel = writable(null)
 
+  // While the tabs register, only the initial one is selected: selecting the first one meanwhile created its content
+  // and destroyed it in the same update when another tab was the initial one, and the binding of that destroyed
+  // content (SettingsPage: bind:settings) handed undefined to the settings store. The first tab is the fallback once
+  // they are all registered (onMount).
   setContext(TABS, {
     registerTab: tab => {
       tabs.push(tab)
-      selectedTab.update(current => (tabs.length - 1 === initial ? tab : current || tab))
+      if (tabs.length - 1 === initial) selectedTab.set(tab)
 
       onDestroy(() => {
         const i = tabs.indexOf(tab)
@@ -30,7 +34,7 @@
 
     registerPanel: panel => {
       panels.push(panel)
-      selectedPanel.update(current => (panels.length - 1 === initial ? panel : current || panel))
+      if (panels.length - 1 === initial) selectedPanel.set(panel)
 
       onDestroy(() => {
         const i = panels.indexOf(panel)
@@ -48,6 +52,11 @@
 
     selectedTab,
     selectedPanel
+  })
+
+  onMount(() => {
+    if (!selectedTab.value) selectedTab.set(tabs[0] || null)
+    if (!selectedPanel.value) selectedPanel.set(panels[0] || null)
   })
 </script>
 
