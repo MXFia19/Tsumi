@@ -1,6 +1,7 @@
 import { ELECTRON } from '@/modules/bridge.js'
 import { toast } from 'svelte-sonner'
 import Debug from 'debug'
+import { streamKindFromUrl, isPlaylistResponse } from './streamkind.js'
 
 const debug = Debug('ui:streaming')
 
@@ -180,7 +181,16 @@ export async function loadStream (video, streamUrl, options = {}) {
   const superseded = () => video._streamLoad !== load
   const pending = () => new Promise(() => {})
 
-  const isHLS = streamUrl.toLowerCase().includes('.m3u8')
+  // A link without ".m3u8" or a media file extension can still be a playlist (iOS plays those natively): its first
+  // bytes tell.
+  const kind = streamKindFromUrl(streamUrl)
+  let isHLS = kind === 'hls'
+  if (kind === 'unknown') {
+    const base = await getProxyBaseInternal()
+    if (superseded()) return pending()
+    isHLS = await sniffPlaylist(getProxyUrl(streamUrl, options.headers || {}, base))
+    if (superseded()) return pending()
+  }
 
   if (!isHLS) {
     const base = await getProxyBaseInternal()
@@ -271,6 +281,39 @@ export async function loadStream (video, streamUrl, options = {}) {
       reportFatal(video, streamUrl, options, data)
     })
   })
+}
+
+/**
+ * Whether the response of a stream link is an HLS playlist: its content type, else its first bytes. Only the start is
+ * read (Range, then the body is cancelled), and any failure or a 4 s wait counts as "not a playlist".
+ * @param {string} url the link as the player would load it (through the local proxy)
+ */
+async function sniffPlaylist (url) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 4_000)
+  try {
+    const res = await fetch(url, { headers: { Range: 'bytes=0-1023' }, signal: controller.signal })
+    if (!res.ok) return false
+    const type = res.headers.get('content-type')
+    if (isPlaylistResponse(type, '')) return true
+    if (/^(video|audio)\//i.test(type || '') || !res.body) return false
+    const reader = res.body.getReader()
+    let start = ''
+    const decoder = new TextDecoder()
+    while (start.length < 32) {
+      const { done, value } = await reader.read()
+      if (done) break
+      start += decoder.decode(value, { stream: true })
+    }
+    reader.cancel().catch(() => {})
+    return isPlaylistResponse(type, start)
+  } catch (error) {
+    debug('Stream type check failed, playing as a file:', error?.message || error)
+    return false
+  } finally {
+    clearTimeout(timer)
+    controller.abort()
+  }
 }
 
 export function stopStream (video) {

@@ -589,8 +589,6 @@
     })
   }
 
-  const isHlsUrl = (url) => !!url?.toLowerCase()?.includes('.m3u8')
-
   /** URL and headers of the stream playing: the server picked in the Servers menu, else the file's own. */
   function activeStream (file = current) {
     const server = activeServerIndex !== (file?.activeServerIndex || 0) ? streamServers[activeServerIndex] : null
@@ -678,7 +676,8 @@
     }
     if (stream !== streamToken || !video) return false
     watchHls(stream)
-    if (!isHlsUrl(url)) video.load()
+    // hls.js (streaming.js decides from the link or the content) owns the media source: load() would detach it.
+    if (!video._hlsInstance) video.load()
     return true
   }
 
