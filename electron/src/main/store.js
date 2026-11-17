@@ -1,5 +1,5 @@
 import { join, dirname } from 'node:path'
-import { mkdirSync, writeFileSync, readFileSync, unlinkSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, unlinkSync, existsSync, openSync, writeSync, fsyncSync, closeSync, renameSync, rmSync } from 'node:fs'
 
 class Store {
   /**
@@ -25,7 +25,7 @@ class Store {
    */
   set (key, val) {
     this.data[key] = val
-    writeFileSync(this.path, JSON.stringify(this.data))
+    writeAtomic(this.path, JSON.stringify(this.data))
   }
 
   /**
@@ -33,7 +33,7 @@ class Store {
    */
   reset () {
     this.data = {}
-    writeFileSync(this.path, JSON.stringify(this.data))
+    writeAtomic(this.path, JSON.stringify(this.data))
   }
 
   /**
@@ -41,6 +41,33 @@ class Store {
    */
   delete () {
     if (existsSync(this.path)) unlinkSync(this.path)
+  }
+}
+
+/**
+ * Replaces the file without ever leaving it half written: it is rewritten on every window move or resize, and a crash
+ * or power loss during a plain write would leave it empty (back to the defaults: crash counter, window state, ANGLE).
+ * The text goes to a temporary file, flushed to disk, then renamed over the old one (like downloads.json).
+ * A failed write (disk full, file locked) is logged: the store keeps the value in memory and the next write tries again.
+ * @param {string} path
+ * @param {string} text
+ */
+export function writeAtomic (path, text) {
+  const temp = `${path}.tmp`
+  try {
+    const fd = openSync(temp, 'w')
+    try {
+      writeSync(fd, text)
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    renameSync(temp, path)
+  } catch (error) {
+    console.warn(`Could not save ${path}: ${error?.code || error?.message || error}`)
+    try {
+      rmSync(temp, { force: true })
+    } catch {}
   }
 }
 
