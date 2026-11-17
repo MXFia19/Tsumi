@@ -2,8 +2,9 @@ import Foundation
 import Observation
 
 // Movie release alerts ("Films à surveiller", same behaviour as the desktop app): the bell of the details of a TMDB
-// movie adds it to a persisted list; the list is checked a few seconds after launch, every 6 hours while the app
-// runs and in the background refresh, and an in-app + system notification is posted when the movie comes out in
+// movie adds it to a persisted list; the list is checked a few seconds after launch, 5 seconds after an alert is
+// turned on, every 6 hours while the app runs and in the background refresh, and an in-app + system notification
+// is posted when the movie comes out in
 // theaters, then when it comes out on digital (the movie then leaves the list).
 
 /// A watched movie: enough to post the notification and reopen the details without a request.
@@ -49,12 +50,16 @@ enum MovieAlertRules {
   /// What to do with one watched movie. A release is due when its day (local midnight) has come, it was not
   /// announced yet and it is not before the day the alert was turned on (a release already out then never fires).
   /// Both due at once: only the digital release is announced, both are marked. The digital announcement removes
-  /// the entry.
+  /// the entry. An entry whose digital release was already out the day it was added is dropped silently (nothing
+  /// left to announce; the details bell is not offered for such a movie either).
   static func decide(_ entry: MovieAlertEntry, theatrical: String?, digital: String?, now: Date, calendar: Calendar) -> Decision {
     if isExpired(entry, now: now, calendar: calendar) {
       return Decision(notify: nil, markNotified: [], remove: true)
     }
     let addedDay = calendar.startOfDay(for: entry.addedAt)
+    if let digital, let digitalDay = MovieReleases.releaseDay(digital, calendar: calendar), digitalDay < addedDay {
+      return Decision(notify: nil, markNotified: [], remove: true)
+    }
     func due(_ kind: MovieRelease.Kind, _ value: String?) -> Bool {
       guard !entry.wasNotified(kind), let value, let day = MovieReleases.releaseDay(value, calendar: calendar) else { return false }
       return day <= now && day >= addedDay
@@ -122,6 +127,7 @@ final class MovieAlertsService {
 
   @ObservationIgnored private var loopTask: Task<Void, Never>?
   @ObservationIgnored private var runningCheck: Task<Void, Never>?
+  @ObservationIgnored private var addCheck: Task<Void, Never>?
   @ObservationIgnored private var lastCheck: Date?
 
   private init() {
@@ -146,7 +152,8 @@ final class MovieAlertsService {
     return isWatched(tmdbId)
   }
 
-  /// Turns the alert of `media` on.
+  /// Turns the alert of `media` on, then checks 5 seconds later (debounced) so that a movie out today is announced
+  /// at once instead of at the next 6 hour check.
   func add(_ media: Media) {
     guard Self.supports(media), let tmdbId = media.tmdbId, !isWatched(tmdbId) else { return }
     let entry = MovieAlertEntry(
@@ -160,6 +167,13 @@ final class MovieAlertsService {
     )
     entries.append(entry)
     save()
+    addCheck?.cancel()
+    addCheck = Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      if Task.isCancelled { return }
+      // A check already running is awaited; it also covers the entries added while it runs (runCheck).
+      await MovieAlertsService.shared.check()
+    }
   }
 
   /// Turns the alert of a movie off.
@@ -199,7 +213,7 @@ final class MovieAlertsService {
   }
 
   /// Checks every watched movie and queues the due notifications. A check already running is awaited instead of
-  /// starting a second one (launch loop and background refresh at the same time).
+  /// starting a second one (launch loop, background refresh and the check after `add` at the same time).
   func check() async {
     if let runningCheck {
       await runningCheck.value
@@ -219,7 +233,11 @@ final class MovieAlertsService {
     let calendar = ServiceDates.gregorian
     let regions = MovieReleases.regions
     var changed = false
-    for snapshot in entries {
+    // Every entry once, including the ones added while this check awaits its requests (a check started by `add`
+    // only awaits this one, so the new entry must not be left for the next 6 hour check).
+    var checked = Set<Int>()
+    while let snapshot = entries.first(where: { !checked.contains($0.tmdbId) }) {
+      checked.insert(snapshot.tmdbId)
       if MovieAlertRules.isExpired(snapshot, now: Date(), calendar: calendar) {
         changed = apply(MovieAlertRules.Decision(notify: nil, markNotified: [], remove: true), to: snapshot.tmdbId) || changed
         continue
