@@ -1,11 +1,14 @@
 import { SUPPORTS } from '@/modules/support.js'
 import { topLayer } from '@/modules/modalstack.js'
+import { arrowKeyStaysInControl } from '@/modules/navkeys.js'
 
 let lastTapElement = null
 let lastTapTarget = null
 let lastTapCurrent = null
 let lastHoverElement = null
 let lastInteractionMethod = 'mouse'
+/** The control the D-pad last moved the focus to (arrowKeyStaysInControl), until it loses the focus or is clicked. */
+let dpadFocusedElement = null
 
 const noop = _ => {}
 
@@ -29,8 +32,17 @@ function handlesEnter (node, e) {
   return !target?.matches?.(NATIVE_ENTER_CLICK)
 }
 
-document.addEventListener('mousedown', () => lastInteractionMethod = 'mouse')
-document.addEventListener('touchstart', () => lastInteractionMethod = 'touch', { passive: true })
+document.addEventListener('mousedown', () => {
+  lastInteractionMethod = 'mouse'
+  dpadFocusedElement = null
+})
+document.addEventListener('touchstart', () => {
+  lastInteractionMethod = 'touch'
+  dpadFocusedElement = null
+}, { passive: true })
+document.addEventListener('focusout', (e) => {
+  if (e.target === dpadFocusedElement) dpadFocusedElement = null
+})
 document.addEventListener('focusin', (e) => {
   if (lastInteractionMethod !== 'dpad') return
   const activeEl = document.activeElement
@@ -569,6 +581,8 @@ function navigateDPad (direction = 'up') {
       element.readOnly = true
     }
     element.focus()
+    // Set after focus(): its focusout on the previous control clears the previous one.
+    dpadFocusedElement = element
     if (isInput && !wasReadOnly) setTimeout(() => { element.readOnly = false })
     element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
     // return
@@ -591,6 +605,8 @@ function navigateDPad (direction = 'up') {
 queueMicrotask(() => {
   document.addEventListener('keydown', e => {
     if (DirectionKeyMap[e.key]) {
+      // ←/→ move the caret of a text field, arrows change a select or a range (see navkeys.js for a D-pad focus).
+      if (arrowKeyStaysInControl(e.target, e.key, e.target === dpadFocusedElement)) return
       e.preventDefault()
       lastInteractionMethod = 'dpad'
       navigateDPad(DirectionKeyMap[e.key])

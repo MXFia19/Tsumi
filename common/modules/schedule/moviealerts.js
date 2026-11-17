@@ -6,6 +6,12 @@ import { releaseDate, releaseDay, THEATRICAL_TYPES, DIGITAL_TYPES } from './movi
 /** Alerts still waiting after this long are dropped (a digital release that never got a date). */
 export const ALERT_RETENTION_DAYS = 548
 
+/**
+ * A movie in theaters for longer than this with no digital date is not offered an alert (old movies whose digital
+ * release TMDB never listed). iOS: MovieAlertRules.
+ */
+export const STALE_THEATRICAL_DAYS = 183
+
 /** Badge of the notification list for each release. */
 export const RELEASE_BADGES = { theatrical: 'In Theaters', digital: 'Digital' }
 
@@ -29,12 +35,17 @@ export function movieReleaseDays (results, regions) {
 }
 
 /**
- * Whether an alert can still be turned on: the movie is not on digital yet (or its digital day is unknown).
- * @param {{ digital?: string | null }} days
+ * Whether an alert can still be turned on: the movie is not on digital yet, or its digital day is unknown and it
+ * came out in theaters STALE_THEATRICAL_DAYS ago at most (or has no theatrical day either).
+ * @param {{ theatrical?: string | null, digital?: string | null }} days
  * @param {number} [now]
  */
 export function canAlert (days, now = Date.now()) {
-  return !days?.digital || releaseDay(days.digital).getTime() >= startOfDay(now)
+  if (days?.digital) return releaseDay(days.digital).getTime() >= startOfDay(now)
+  if (!days?.theatrical) return true
+  // Whole days between the local midnights (rounded: a DST change makes one day 23 or 25 hours).
+  const sinceTheatrical = Math.round((startOfDay(now) - releaseDay(days.theatrical).getTime()) / 86_400_000)
+  return sinceTheatrical <= STALE_THEATRICAL_DAYS
 }
 
 /**

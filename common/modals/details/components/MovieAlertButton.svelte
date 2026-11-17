@@ -20,7 +20,8 @@
   }
 
   $: on = $movieAlerts.some(alert => alert.idTmdb === media?.idTmdb)
-  // Hidden once on digital, except to turn off an alert still on.
+  // Hidden once on digital, or out in theaters for over 6 months with no digital date (canAlert), except to turn
+  // off an alert still on.
   $: shown = isAlertable(media) && days && (on || canAlert(days))
   $: upcoming = days ? upcomingReleases(days) : ''
   $: tip = on ? 'Turn off the release alert' : `Notify me when it comes out${upcoming ? ` (${upcoming})` : ''}`

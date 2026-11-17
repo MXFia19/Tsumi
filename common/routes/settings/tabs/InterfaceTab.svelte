@@ -3,6 +3,7 @@
   import { click } from '@/modules/click.js'
   import HomeSections from '@/routes/settings/components/HomeSections.svelte'
   import SpoilerSettings from '@/routes/settings/components/SpoilerSettings.svelte'
+  import MovieAlertsSettings from '@/routes/settings/components/MovieAlertsSettings.svelte'
   import { IPC } from '@/modules/bridge.js'
   import SettingCard from '@/routes/settings/components/SettingCard.svelte'
   import { SUPPORTS } from '@/modules/support.js'
@@ -244,6 +245,7 @@
     <button type='button' disabled={listStatus.every(option => settings.releasesNotify.includes(option[1]))} use:click={() => { settings.releasesNotify = [...settings.releasesNotify, ''] }} class='btn btn-primary mb-10 mr-10 d-flex align-items-center justify-content-center'><span>Add Status</span></button>
   </div>
 </SettingCard>
+<MovieAlertsSettings />
 
 <h4 class='mb-10 font-weight-bold'>Home Screen Settings</h4>
 {#if Helper.isAuthorized()}

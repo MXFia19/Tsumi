@@ -3,6 +3,7 @@
   import { SUPPORTS } from '@/modules/support.js'
   import { capitalize } from '@/modules/util.js'
   import { IPC, VERSION } from '@/modules/bridge.js'
+  import { redactedSettings } from '@/modules/settingsexport.js'
   import Debug from 'debug'
   const debug = Debug('ui:settings-view')
   // The tab opened last, selected again when Settings opens (for the session).
@@ -25,7 +26,8 @@
     version = data
     debug(
       `v${version} ${platformMap[VERSION.platform] || 'dev'} ${VERSION.arch || 'dev'} ${capitalize(VERSION.session) || ''}`,
-      JSON.stringify(settings)
+      // Saved to the log file: no TURN login, no extension manifest URL.
+      JSON.stringify(redactedSettings(settings.value))
     )
   })
   IPC.emit('version')

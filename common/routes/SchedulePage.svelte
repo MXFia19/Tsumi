@@ -8,6 +8,7 @@
   import { cache, caches } from '@/modules/cache.js'
   import { tmdbClient } from '@/modules/tmdb.js'
   import { releaseKinds } from '@/modules/schedule/movies.js'
+  import { schedulePageEntries } from '@/modules/schedule/listing.js'
   import Helper from '@/modules/helper.js'
 
   const key = writable({})
@@ -19,14 +20,28 @@
     cache.setEntry(caches.HISTORY, 'lastSchedule', searched)
   })
 
-  async function fetchAllScheduleEntries (variables) {
-    const getAiringTime = (m) => {
-      const node = nextAiring(m?.airingSchedule?.nodes, variables)
-      if (!node?.airingAt) return Infinity
-      const time = Number(node.airingAt)
-      return time < 10000000000 ? time * 1000 : time
-    }
+  /**
+   * Time (ms) of the next airing or release of a schedule entry: Infinity without a time, null when nothing is to
+   * come (the entry is left out).
+   */
+  function scheduleTime (media, variables) {
+    const node = nextAiring(media?.airingSchedule?.nodes, variables)
+    if (!node) return null
+    if (!node.airingAt) return Infinity
+    const value = Number(node.airingAt)
+    const time = Number.isNaN(value) ? new Date(node.airingAt).getTime() : value // seconds, ms, or an ISO date
+    return time < 10000000000 ? time * 1000 : time
+  }
 
+  // Entries listed by the pages of the current load ($key): a later page of the TMDB shows and movies can repeat one.
+  let listed = { key: null, seen: new Set() }
+  function listedSoFar (page) {
+    if (page === 1 || listed.key !== key.value) listed = { key: key.value, seen: new Set() }
+    return listed.seen
+  }
+
+  async function fetchAllScheduleEntries (variables) {
+    const seen = listedSoFar(variables.page || 1)
     const fetchAnime = async () => {
       const results = { data: { Page: { media: [], pageInfo: { hasNextPage: false } } } }
       const airingLists = await (variables.hideSubs ? animeSchedule.dubAiringLists.value : animeSchedule.subAiringLists.value)
@@ -102,16 +117,9 @@
 
     const mixedMedia = [...(animeRes?.data?.Page?.media || []), ...(tmdbRes?.data?.Page?.media || []), ...(movieRes?.data?.Page?.media || [])]
 
-    // Final duplicate filter and universal sort (TMDB shows and movies have separate id spaces)
-    const seenIds = new Set()
-    const sortedMedia = mixedMedia
-      .filter(m => {
-        const key = `${m?.format}:${m?.id}`
-        if (!m || seenIds.has(key)) return false
-        seenIds.add(key)
-        return nextAiring(m?.airingSchedule?.nodes, variables)
-      })
-      .sort((a, b) => getAiringTime(a) - getAiringTime(b))
+    // Final duplicate filter (across the pages of this load), excluded formats (the AniList query only filters the
+    // anime), and universal sort. SearchPage keeps the pages in this order (order prop).
+    const sortedMedia = schedulePageEntries(mixedMedia, { time: m => scheduleTime(m, variables), seen, formatNot: variables.format_not })
 
     return {
       data: {
@@ -128,4 +136,4 @@
   $search.load = (page, __, variables) => SectionsManager.wrapResponse(fetchAllScheduleEntries({ ...variables, page }), 150)
 </script>
 
-<SearchPage {key} {search} />
+<SearchPage {key} {search} order={scheduleTime} />

@@ -1,6 +1,6 @@
 // Movie release alerts, pure logic. Run with: node common/modules/schedule/moviealerts.test.mjs
 import assert from 'node:assert/strict'
-import { movieReleaseDays, canAlert, dueRelease, releaseMessage, upcomingReleases, startOfDay, ALERT_RETENTION_DAYS } from './moviealerts.js'
+import { movieReleaseDays, canAlert, dueRelease, releaseMessage, upcomingReleases, startOfDay, ALERT_RETENTION_DAYS, STALE_THEATRICAL_DAYS } from './moviealerts.js'
 
 let passed = 0
 let failed = 0
@@ -39,8 +39,22 @@ test('canAlert until the digital release day', () => {
   assert.equal(canAlert(days, at(2026, 11, 16)), true)
   assert.equal(canAlert(days, at(2027, 1, 6, 23)), true)
   assert.equal(canAlert(days, at(2027, 1, 7)), false)
-  assert.equal(canAlert({ theatrical: '2020-01-01', digital: null }, at(2026, 11, 16)), true)
+  assert.equal(canAlert({ theatrical: null, digital: null }, at(2026, 11, 16)), true)
   assert.equal(canAlert(null), true)
+})
+
+test('canAlert: no digital day, in theaters for more than STALE_THEATRICAL_DAYS', () => {
+  assert.equal(STALE_THEATRICAL_DAYS, 183)
+  // Decades-old movie without a digital date on TMDB: no alert.
+  assert.equal(canAlert({ theatrical: '2020-01-01', digital: null }, at(2026, 11, 16)), false)
+  // 2026-05-17 is 183 days before 2026-11-16 (a DST change in between): still offered, one day more is not.
+  assert.equal(canAlert({ theatrical: '2026-05-17', digital: null }, at(2026, 11, 16, 23)), true)
+  assert.equal(canAlert({ theatrical: '2026-05-16', digital: null }, at(2026, 11, 16, 0)), false)
+  // Upcoming or recent theatrical release, digital unknown: offered.
+  assert.equal(canAlert({ theatrical: '2026-11-18', digital: null }, at(2026, 11, 16)), true)
+  assert.equal(canAlert({ theatrical: '2026-09-01' }, at(2026, 11, 16)), true)
+  // A digital day decides alone, even for an old theatrical release.
+  assert.equal(canAlert({ theatrical: '2020-01-01', digital: '2027-01-06' }, at(2026, 11, 16)), true)
 })
 
 test('dueRelease: nothing before the theatrical day', () => {

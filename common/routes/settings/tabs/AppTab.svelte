@@ -4,6 +4,7 @@
   import { SUPPORTS } from '@/modules/support.js'
   import { IPC, VERSION } from '@/modules/bridge.js'
   import { validateImportedSettings } from '@/modules/settingsimport.js'
+  import { exportableSettings, redactedSettings, withDeviceSettingsKept } from '@/modules/settingsexport.js'
 
   async function importSettings () {
     let imported
@@ -18,7 +19,8 @@
       return
     }
     try {
-      await cache.write(caches.GENERAL, 'settings', imported.settings)
+      // The export leaves out the TURN login and the extensions (settingsexport.js): the device keeps its own.
+      await cache.write(caches.GENERAL, 'settings', withDeviceSettingsKept(imported.settings, cache.getEntry(caches.GENERAL, 'settings')))
     } catch (error) {
       toast.error('Failed to import settings', { description: `The settings could not be saved: ${error?.message || error}`, duration: 5_000 })
       return
@@ -94,7 +96,7 @@
 
   let unsubscribeDebug
   unsubscribeDebug = debugStore.subscribe(value => {
-    if (value && debugPrev === '') setTimeout(() => debug('Current Settings: ', JSON.stringify(settings)))
+    if (value && debugPrev === '') setTimeout(() => debug('Current Settings: ', JSON.stringify(redactedSettings(settings))))
     debugPrev = value
   })
 
@@ -110,12 +112,15 @@
       platform: VERSION.platform,
       userAgent: navigator.userAgent,
       support: SUPPORTS,
-      settings
+      // Pasted in support chats: no TURN login, no extension manifest URL (they can carry private tokens).
+      settings: redactedSettings(settings)
     }
     copyToClipboard(JSON.stringify(deviceInfo, null, 2), 'device info')
   }
 
   IPC.on('device-info', writeAppInfo)
+
+  const managementDescription = 'Import saved settings from your clipboard, export your current configuration to back it up or share with others, and restore everything back to default values if needed. This is especially useful for syncing preferences across devices, sharing settings with friends, or starting fresh with recommended defaults.\nThe export leaves out your extensions and your Watch Together TURN login, which can hold private tokens: importing keeps the ones of this device.'
 </script>
 
 <h4 class='mb-10 font-weight-bold'>App Settings</h4>
@@ -151,7 +156,7 @@
     </select>
   </div>
 </SettingCard>
-<SettingCard title='Reset Notifications' description='Resets all notifications that have been cached, this is not recommended unless you are experiencing issues. This will also reset the last time you have been notified, so expect previous notifications to appear again.'>
+<SettingCard title='Reset Notifications' description='Resets all notifications that have been cached, this is not recommended unless you are experiencing issues. This will also reset the last time you have been notified, so expect previous notifications to appear again, and turn off your movie release alerts.'>
   <ConfirmButton click={() => cache.resetNotifications()} class='btn btn-primary mt-5 d-flex align-items-center justify-content-center' confirmText='Confirm Reset' confirmClass='btn-danger-dim long-button' cancelClass='btn-secondary long-button' actionClass='d-inline-flex d-md-block' dataToggle='tooltip' dataPlacement='top' dataTitle='Resets Your Notifications Within The App'>
     <span class='text-truncate'>Reset Notifications</span>
   </ConfirmButton>
@@ -166,10 +171,10 @@
     <span class='text-truncate'>Reset Caches</span>
   </ConfirmButton>
 </SettingCard>
-<SettingCard title='Settings Management' description='Import saved settings from your clipboard, export your current configuration to back it up or share with others, and restore everything back to default values if needed. This is especially useful for syncing preferences across devices, sharing settings with friends, or starting fresh with recommended defaults.'>
+<SettingCard title='Settings Management' description={managementDescription}>
   <div class='d-inline-flex flex-column'>
     <button use:click={importSettings} class='btn btn-primary d-flex align-items-center justify-content-center' type='button'><span class='text-truncate'>Import from Clipboard</span></button>
-    <button use:click={() => copyToClipboard(JSON.stringify(cache.getEntry(caches.GENERAL, 'settings')), 'settings')} class='btn btn-primary mt-5 d-flex align-items-center justify-content-center' type='button'><span class='text-truncate'>Export to Clipboard</span></button>
+    <button use:click={() => copyToClipboard(JSON.stringify(exportableSettings(cache.getEntry(caches.GENERAL, 'settings'))), 'settings')} class='btn btn-primary mt-5 d-flex align-items-center justify-content-center' type='button'><span class='text-truncate'>Export to Clipboard</span></button>
     <ConfirmButton click={() => resetSettings()} class='btn btn-danger mt-5 d-flex align-items-center justify-content-center' confirmText='Confirm Reset' confirmClass='btn-danger-dim long-button' cancelClass='btn-secondary long-button' actionClass='d-inline-flex d-md-block' dataToggle='tooltip' dataPlacement='top' dataTitle='Restores All Settings Back To Their Recommended Defaults'>
       <span class='text-truncate'>Reset to Defaults</span>
     </ConfirmButton>

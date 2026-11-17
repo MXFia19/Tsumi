@@ -1,7 +1,10 @@
 <script>
   import SettingCard from '@/routes/settings/components/SettingCard.svelte'
+  import ConfirmButton from '@/components/inputs/ConfirmButton.svelte'
   import { click } from '@/modules/click.js'
+  import { toast } from 'svelte-sonner'
   import { traktStatus, traktLink, traktCancel, traktUnlink, traktOpenSignIn } from '@/modules/sync/trakt.js'
+  import { pendingListUpdates, retryListUpdates, discardListUpdates } from '@/modules/sync/listqueue.js'
 
   export let settings
 
@@ -17,12 +20,41 @@
     return 'Not connected'
   }
 
+  // Episode progress not saved to the list yet (sync/listqueue.js: offline, or a list error), sent again on its own.
+  $: pendingCount = $pendingListUpdates.length
+  $: pendingError = [...$pendingListUpdates].reverse().find(entry => entry.error && entry.error !== 'offline')?.error
+  let retrying = false
+  async function retryPending () {
+    if (retrying) return
+    retrying = true
+    try {
+      const left = await retryListUpdates()
+      if (left) toast.warning('List updates still pending', { description: `${left} ${left === 1 ? 'update' : 'updates'} could not be saved yet, ${left === 1 ? 'it is' : 'they are'} sent again later.` })
+      else toast.success('List updates saved')
+    } finally {
+      retrying = false
+    }
+  }
+
   const positionDescription = 'Keeps the position of the episode you are watching in the note of its AniList entry (the comments on MyAnimeList), so you can stop on one device and resume at the same second on another one.\nTsumi only adds, updates and removes its own "[Tsumi]" line: the rest of your note is never changed. The line is removed once the episode is completed. Only for titles on your list.'
   // The notice is required by the Trakt API Use Policy.
   const traktDescription = 'Connect your Trakt account to scrobble the shows and movies you watch, and to resume them where you left off on another device.\nTsumi uses Trakt but is not endorsed or certified by Trakt.'
 </script>
 
 <h4 class='mb-10 font-weight-bold'>Sync Settings</h4>
+{#if pendingCount}
+  <SettingCard title='Pending List Updates' description={`Episode progress that could not be saved to your list yet (offline, or an AniList / MyAnimeList error). It is sent again when the connection comes back and every 10 minutes.${pendingError ? `\nLast error: ${pendingError}` : ''}`}>
+    <div class='d-flex flex-column align-items-md-end mw-full'>
+      <div class='font-weight-semi-bold text-truncate mw-full mb-5'>{pendingCount} list {pendingCount === 1 ? 'update' : 'updates'} pending</div>
+      <div class='d-flex'>
+        <button type='button' use:click={retryPending} disabled={retrying} class='btn btn-primary d-flex align-items-center justify-content-center mr-10'><span class='text-truncate'>{retrying ? 'Retrying…' : 'Retry'}</span></button>
+        <ConfirmButton click={() => discardListUpdates()} class='btn btn-danger d-flex align-items-center justify-content-center' confirmText='Confirm Discard' confirmClass='btn-danger-dim long-button' cancelClass='btn-secondary long-button' actionClass='d-inline-flex' dataToggle='tooltip' dataPlacement='top' dataTitle='Forgets These Updates: Your List Keeps Its Current Progress'>
+          <span class='text-truncate'>Discard</span>
+        </ConfirmButton>
+      </div>
+    </div>
+  </SettingCard>
+{/if}
 <SettingCard title='Sync playback position across devices' description={positionDescription}>
   <div class='custom-switch'>
     <input type='checkbox' id='sync-playback-position' bind:checked={settings.syncPlaybackPosition} />

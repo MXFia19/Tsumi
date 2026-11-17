@@ -24,9 +24,12 @@ export const preferredSources = new Map()
 
 const emptyPage = () => ({ data: { Page: { pageInfo: { hasNextPage: false }, media: [] } } })
 
-async function searchPage (ext, query, page) {
+/** The module search in progress: the next one (another title or module) aborts it in the sandbox. */
+let currentSearch = null
+
+async function searchPage (ext, query, page, signal) {
   if (!query || page > 1) return emptyPage()
-  const raw = await callExtension(ext, 'searchResults', [query])
+  const raw = await callExtension(ext, 'searchResults', [query], { signal })
   const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
   const seen = new Set()
   const media = (Array.isArray(parsed) ? parsed : [])
@@ -48,7 +51,15 @@ export function soraSection (ext) {
     // Up to 100 results (searchPage keeps that many), like iOS: the search page asks for its default page size.
     load: (pageNumber = 1, perPage = 100, variables = null) => {
       const query = typeof variables?.search === 'string' ? variables.search.trim() : ''
-      return SectionsManager.wrapResponse(searchPage(ext, query, pageNumber), perPage)
+      if (pageNumber > 1) return SectionsManager.wrapResponse(searchPage(ext, query, pageNumber), perPage)
+      // A new search replaces the results (SearchPage): the previous module search is no longer needed.
+      currentSearch?.abort()
+      const controller = new AbortController()
+      currentSearch = controller
+      const res = searchPage(ext, query, pageNumber, controller.signal).finally(() => {
+        if (currentSearch === controller) currentSearch = null
+      })
+      return SectionsManager.wrapResponse(res, perPage)
     },
     variables: { soraModule: ext.key }
   }

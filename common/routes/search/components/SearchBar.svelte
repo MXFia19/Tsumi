@@ -1,6 +1,7 @@
 <script context='module'>
-  const badgeKeys = ['title', 'search', 'genre', 'genre_not', 'tag', 'tag_not', 'season', 'year', 'format', 'format_not', 'status', 'status_not', 'sort', 'hideSubs', 'hideMyAnime', 'hideStatus', 'showMyAnime', 'showStatus']
-  const badgeDisplayNames = { title: BookUser, search: Type, genre: Hash, genre_not: Hash, tag: Hash, tag_not: Hash, season: CalendarRange, year: Leaf, format: Tv, format_not: MonitorUp, status: MonitorPlay, status_not: MonitorX, sort: ArrowDownWideNarrow, hideMyAnime: EyeOff, showMyAnime: Hourglass, hideSubs: Mic }
+  // release: the "Release" filter of the schedule (removable badge, enables Reset Filters).
+  const badgeKeys = ['title', 'search', 'release', 'genre', 'genre_not', 'tag', 'tag_not', 'season', 'year', 'format', 'format_not', 'status', 'status_not', 'sort', 'hideSubs', 'hideMyAnime', 'hideStatus', 'showMyAnime', 'showStatus']
+  const badgeDisplayNames = { title: BookUser, search: Type, release: Clapperboard, genre: Hash, genre_not: Hash, tag: Hash, tag_not: Hash, season: CalendarRange, year: Leaf, format: Tv, format_not: MonitorUp, status: MonitorPlay, status_not: MonitorX, sort: ArrowDownWideNarrow, hideMyAnime: EyeOff, showMyAnime: Hourglass, hideSubs: Mic }
   const sortOptions = { TITLE_ROMAJI: 'Title', SEARCH_MATCH: 'Relevance', START_DATE_DESC: 'Release Date', SCORE_DESC: 'Score', POPULARITY_DESC: 'Popularity', UPDATED_AT_DESC: 'Date Updated', UPDATED_TIME_DESC: 'Last Updated', STARTED_ON_DESC: 'Start Date', FINISHED_ON_DESC: 'Completed Date', PROGRESS_DESC: 'Your Progress', USER_SCORE_DESC: 'Your Score' }
   const formatOptions = { TV: 'TV Show', MOVIE: 'Movie', TV_SHORT: 'TV Short', SPECIAL: 'Special', OVA: 'OVA', ONA: 'ONA' }
 
@@ -460,7 +461,7 @@
                 {#if badge.key === key && (badge.key !== 'hideStatus' && badge.key !== 'showStatus' && (search.userList || badge.key !== 'title')) && !(badge.key === 'sort' && badge.value === 'TRENDING_DESC')}
                   <div use:click={() => removeBadge(badge)} class='badge border-0 py-5 px-10 text-capitalize mr-10 text-white text-nowrap d-flex align-items-center mb-5' class:bg-dark-light={!badge.key.includes('_not')} class:bg-danger-very-dim={badge.key.includes('_not')}>
                     <svelte:component this={badge.key === 'genre' ? genreIcons[badge.value] || badgeDisplayNames[badge.key] : badgeDisplayNames[badge.key]} class='mr-5 square-scale-18' />
-                    <span>{badge.key === 'sort' ? getSortDisplayName(badge.value) : (badge.key === 'format' || badge.key === 'format_not') ? getFormatDisplayName(badge.value) : (badge.key === 'hideMyAnime' ? 'Hide My Anime' : badge.key === 'showMyAnime' ? 'Show My Anime' : badge.key === 'hideSubs' ? 'Dubbed' : ('' + badge.value).replace(/_/g, ' ').toLowerCase())}</span>
+                    <span>{badge.key === 'sort' ? getSortDisplayName(badge.value) : badge.key === 'release' ? (RELEASE_FILTERS[badge.value] || badge.value) : (badge.key === 'format' || badge.key === 'format_not') ? getFormatDisplayName(badge.value) : (badge.key === 'hideMyAnime' ? 'Hide My Anime' : badge.key === 'showMyAnime' ? 'Show My Anime' : badge.key === 'hideSubs' ? 'Dubbed' : ('' + badge.value).replace(/_/g, ' ').toLowerCase())}</span>
                     <button on:click={() => removeBadge(badge)} class='pointer bg-transparent border-0 icon text-white position-relative pl-0 pr-0 pt-0 x-filter d-flex align-items-center z-1' type='button' data-toggle='tooltip' data-placement='bottom' data-target-breakpoint='md' data-title='Remove Filter'><X size='1.3rem' strokeWidth='3' /></button>
                   </div>
                 {/if}

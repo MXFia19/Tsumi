@@ -28,7 +28,11 @@
         if (group.label && group.items.some(item => item.value === value)) expanded[group.id] = true
       }
       // Focus the current option so the keyboard / D-pad starts there.
-      setTimeout(() => menu?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' }))
+      setTimeout(() => {
+        const selected = menu?.querySelector('[aria-selected="true"]')
+        selected?.focus?.({ preventScroll: true })
+        selected?.scrollIntoView?.({ block: 'nearest' })
+      })
     }
   }
 
@@ -41,8 +45,17 @@
     if (item.value !== value) dispatch('change', item.value)
   }
 
+  let pointerInside = false
   function onPointerDown (event) {
-    if (open && root && !root.contains(event.target)) open = false
+    pointerInside = !!root?.contains(event.target)
+    if (open && root && !pointerInside) open = false
+  }
+
+  /** The focus left the picker (Tab, D-pad): the menu closes like a native select. */
+  function onFocusOut (event) {
+    // A click on the menu background or its scrollbar moves the focus to nothing: the menu stays.
+    if (pointerInside && !event.relatedTarget) return
+    if (open && root && !root.contains(event.relatedTarget)) open = false
   }
 
   function onKeyDown (event) {
@@ -58,7 +71,7 @@
 </script>
 
 <!-- svelte-ignore a11y-no-static-element-interactions -->
-<div class='position-relative w-full' bind:this={root} on:keydown={onKeyDown}>
+<div class='position-relative w-full' bind:this={root} on:keydown={onKeyDown} on:focusout={onFocusOut}>
   <button type='button' class='form-control bg-dark-light rounded-1 d-flex align-items-center text-left source-button' aria-haspopup='listbox' aria-expanded={open} {disabled} on:click|preventDefault={toggleOpen}>
     <span class='text-truncate flex-grow-1'>{currentLabel}</span>
     <ChevronDown size='1.6rem' class='flex-shrink-0 ml-5' />
