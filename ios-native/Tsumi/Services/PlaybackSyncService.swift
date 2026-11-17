@@ -220,6 +220,7 @@ final class PlaybackSyncService {
   }
 
   private func readEntry(_ media: Media, _ service: NoteService) async -> NoteEntry? {
+    let account = AccountStore.shared.current?.id
     var entry: NoteEntry
     switch service {
     case .anilist:
@@ -245,6 +246,8 @@ final class PlaybackSyncService {
         entry = NoteEntry(exists: false)
       }
     }
+    // The profile changed during the request: the note is the previous account's.
+    guard AccountStore.shared.current?.id == account else { return nil }
     lastRead[Self.cacheKey(media, service)] = (entry, Date())
     return entry
   }
@@ -277,8 +280,11 @@ final class PlaybackSyncService {
   func saveNotePosition(_ media: Media, _ position: NotePosition?, upToEpisode: Int? = nil) async -> Bool {
     guard let service = noteService(media) else { return false }
     let key = Self.cacheKey(media, service)
+    let account = AccountStore.shared.current?.id
     return await serial(key) { [weak self] in
       guard let self else { return false }
+      // A position of the previous profile is never written to the note of the current one.
+      guard AccountStore.shared.current?.id == account else { return false }
       let cached = self.lastRead[key]
       let fresh: NoteEntry?
       if let cached, Date().timeIntervalSince(cached.date) < Self.readReuse {
@@ -294,6 +300,7 @@ final class PlaybackSyncService {
       }
       let next = PlaybackPositionNote.with(current, position)
       if next == current { return true }
+      guard AccountStore.shared.current?.id == account else { return false }
       let ok = await self.writeNotes(media, service, next)
       if ok {
         var updated = entry
