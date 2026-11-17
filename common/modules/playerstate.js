@@ -127,6 +127,20 @@ export function inEndChapters (chapters, time, duration) {
 }
 
 /**
+ * Whole seconds the "Up next" card shows before the next episode starts. The countdown follows the video (as on the
+ * iPhone): it waits while paused or buffering and runs faster at a higher speed. It never shows more than what is left
+ * of the episode (autoplay takes over at its end).
+ * @param {number} startsAt video time (s) the next episode starts at
+ * @param {number} time video time (s)
+ * @param {number} [duration] length of the episode (s)
+ */
+export function upNextRemaining (startsAt, time, duration) {
+  const end = Number(duration) > 0 ? Math.min(startsAt, Number(duration)) : startsAt
+  const left = end - time
+  return Number.isFinite(left) ? Math.max(0, Math.ceil(left)) : 0
+}
+
+/**
  * Quality menu entries of hls.js levels, best first: "1080p", "720p"... (bitrate when two levels share a height or
  * when the height is unknown).
  * @param {{ height?: number, bitrate?: number }[]} levels

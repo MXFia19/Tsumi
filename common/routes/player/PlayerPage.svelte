@@ -24,7 +24,7 @@
   import { playbackSync } from '@/modules/sync/session.js'
   import { downloadsSupported, downloadFromPlayer, updateEntryOrQueue } from '@/modules/downloads/downloads.js'
   import { HoldSpeed, holdSpeedOf, holdSpeedLabel } from '@/modules/holdspeed.js'
-  import { resumePosition, parseSubtitleOffset, rememberOffset, subtitleUrlOf, inEndChapters, hlsLevelOptions, CHAPTER_KINDS } from '@/modules/playerstate.js'
+  import { resumePosition, parseSubtitleOffset, rememberOffset, subtitleUrlOf, inEndChapters, upNextRemaining, hlsLevelOptions, CHAPTER_KINDS } from '@/modules/playerstate.js'
   import { audioTrackOptions, pickAudioTrack } from '@/modules/audiotracks.js'
   import { ArrowDownToLine, Gauge } from 'lucide-svelte'
 
@@ -514,6 +514,8 @@
   let lastGoodTime = 0
   /** The episode had its first loadedmetadata (resume, autoplay, prompts done): a reload restores where it was. */
   let episodeLoaded = false
+  /** loadToken of the episode that already asked for the next one (tryPlayNext, or playNext through the extensions). */
+  let advancedToken = -1
 
   /** Everything tied to the episode playing back to its initial state: new episode, or player closed. */
   function resetEpisodeState () {
@@ -543,6 +545,7 @@
     targetTime = 0
     chapters = []
     currentSkippable = null
+    autoSkipped = new Set()
     completed = false
     filler = null
     recap = null
@@ -1323,8 +1326,15 @@
     // Watch Together: the host plays the next queued item ("Up next"), else nothing as before.
     if (state.value) return !externalPlayback && !!state.value.episodeEnded()
     if (!$settings.playerAutoplay || !hasNext) return false
-    playNext()
+    // One request at a time: the next episode of an extension is looked for while this one keeps playing (Up next
+    // "Play now", Skip or auto-skip on the last chapter, then `ended`). Asking again would restart that search, or
+    // re-open the extension results under the user's cursor. Once that menu was closed, a new request opens it again.
+    if (!nextRequestPending()) playNext()
     return true
+  }
+  /** This episode asked for the next one, which the extensions are still looking for (results or default extension). */
+  function nextRequestPending () {
+    return advancedToken === loadToken && (modal.exists(modal.EXTENSION_MENU) || modal.exists(modal.DEFAULT_LOADING))
   }
   function playNext () {
     if (hasNext) {
@@ -1337,6 +1347,7 @@
         media?.media?.nextAiringEpisode?.episode - 1 ||
         (media?.media?.episodes || getMediaMaxEp(media?.media)) > media?.episode
       ) {
+        advancedToken = loadToken
         playAnime(media.media, media.episode + 1)
       }
     }
@@ -2040,23 +2051,35 @@
   }
 
   let currentSkippable = null
-  $: currentSkippable && $settings.playerSkip && skip() // "Auto-Skip Intro/Outro" (PlayerTab.svelte)
+  /** Start (ms) of the chapters auto-skip already skipped in this episode. */
+  let autoSkipped = new Set()
+  // "Auto-Skip Intro/Outro" (PlayerTab.svelte) skips each chapter once, as on iPhone (autoSkippedChapterStart): seeking
+  // back into a skipped intro plays it, and the last chapter (which plays on while the next episode is looked for)
+  // does not ask for the next episode again on every timeupdate.
   function checkSkippableChapters () {
-    const current = findChapter(currentTime)
-    if (current) {
-      currentSkippable = isChapterSkippable(current)
+    const chapter = findChapter(currentTime)
+    if (!chapter) return
+    currentSkippable = isChapterSkippable(chapter)
+    if (currentSkippable && $settings.playerSkip && !externalPlayback && !autoSkipped.has(chapter.start)) {
+      autoSkipped.add(chapter.start)
+      skip()
     }
+  }
+
+  /** Auto-skip is about to jump over the chapter playing at `time` (Up next waits for it). */
+  function autoSkipPending (time) {
+    const chapter = $settings.playerSkip && findChapter(time)
+    return !!chapter && !!isChapterSkippable(chapter) && !autoSkipped.has(chapter.start)
   }
 
   // ---- "Up next": while the credits / preview close the episode (AniSkip, TheIntroDB or file chapters) and autoplay
   // is on, a card counts down 10 s of playback to the next episode. Full player only (not the miniplayer or PiP), and
   // not in Watch Together, where the lobby queue handles the end (same as the iPhone player).
   const UP_NEXT_S = 10
-  /** { label, remaining } while the card shows */
+  /** { label, startsAt, remaining } while the card shows: startsAt is the video time the next episode starts at */
   let upNext = null
   /** "Cancel" was clicked: no card again for this episode */
   let upNextDismissed = false
-  let upNextTimer = null
 
   /** Never an episode title or a file name (spoilers): "Episode 5". */
   function nextLabel () {
@@ -2070,32 +2093,26 @@
     return !externalPlayback && !miniplayer && !pip && !state.value && $settings.playerAutoplay && hasNext
   }
 
+  // Runs on timeupdate.
   function checkUpNext () {
     if (!video) return
     const time = video.currentTime
-    // Auto-skip already jumps over a skippable chapter (and to the next episode from the last one).
-    const show = !upNextDismissed && !($settings.playerSkip && currentSkippable) && canAdvance() &&
+    // Not while auto-skip is about to jump over this chapter (to the next episode from the last one), nor once the next
+    // episode was asked for (its extension search runs while this one plays on).
+    const show = !upNextDismissed && advancedToken !== loadToken && !autoSkipPending(time) && canAdvance() &&
       safeduration - time > 2 && inEndChapters(chapters, time, safeduration)
-    if (show && !upNext) startUpNext()
-    else if (!show && upNext) clearUpNext()
-  }
-
-  function startUpNext () {
-    clearInterval(upNextTimer)
-    const token = loadToken
-    upNext = { label: nextLabel(), remaining: UP_NEXT_S }
-    upNextTimer = setInterval(() => {
-      if (token !== loadToken || !upNext) return clearUpNext()
-      // Paused, buffering or hidden: the countdown waits.
-      if (paused || buffering || hidden) return
-      upNext = { ...upNext, remaining: upNext.remaining - 1 }
-      if (upNext.remaining <= 0) playUpNext()
-    }, 1_000)
+    if (!show) {
+      if (upNext) clearUpNext()
+      return
+    }
+    // Counted in playback time, as on iPhone: it waits while paused or buffering, and runs faster while held faster.
+    if (!upNext) upNext = { label: nextLabel(), startsAt: time + UP_NEXT_S, remaining: UP_NEXT_S }
+    const remaining = upNextRemaining(upNext.startsAt, time, safeduration)
+    if (remaining !== upNext.remaining) upNext = { ...upNext, remaining }
+    if (time >= upNext.startsAt && !video.paused && !hidden) playUpNext()
   }
 
   function clearUpNext () {
-    clearInterval(upNextTimer)
-    upNextTimer = null
     upNext = null
   }
 

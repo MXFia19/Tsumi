@@ -1,6 +1,6 @@
 // Player pure helpers. Run with: node common/modules/playerstate.test.mjs
 import assert from 'node:assert/strict'
-import { chapterKind, rememberOffset, resumePosition, parseSubtitleOffset, subtitleUrlOf, inEndChapters, hlsLevelOptions, episodeRangeOf, isTmdbMedia } from './playerstate.js'
+import { chapterKind, rememberOffset, resumePosition, parseSubtitleOffset, subtitleUrlOf, inEndChapters, upNextRemaining, hlsLevelOptions, episodeRangeOf, isTmdbMedia } from './playerstate.js'
 
 let passed = 0
 let failed = 0
@@ -128,6 +128,21 @@ test('inEndChapters is false when content follows the credits', () => {
   // an "Ending" chapter in the first half is not the end of the episode
   const early = [{ start: 0, end: 300000, text: 'ED' }, { start: 300000, end: 1440000, text: 'Credits' }]
   assert.equal(inEndChapters(early, 100, 1440), false)
+})
+
+test('upNextRemaining counts the video time left before the next episode', () => {
+  // Card shown at 1300 s: the next episode starts at 1310 s.
+  assert.equal(upNextRemaining(1310, 1300, 1440), 10)
+  assert.equal(upNextRemaining(1310, 1300.2, 1440), 10)
+  assert.equal(upNextRemaining(1310, 1301, 1440), 9)
+  assert.equal(upNextRemaining(1310, 1309.9, 1440), 1)
+  assert.equal(upNextRemaining(1310, 1310, 1440), 0)
+  // Seeked past it: never negative.
+  assert.equal(upNextRemaining(1310, 1320, 1440), 0)
+  // Never more than what is left of the episode.
+  assert.equal(upNextRemaining(1445, 1435, 1440), 5)
+  assert.equal(upNextRemaining(1310, 1300), 10)
+  assert.equal(upNextRemaining(1310, NaN, 1440), 0)
 })
 
 test('hlsLevelOptions lists the best quality first', () => {
