@@ -320,7 +320,10 @@ final class ProfilesService {
 
   /// Sign Out of the current profile (swapProfiles(null)): the first other profile becomes current.
   func logout() {
+    let signedOut = current
     swapProfiles(nil, newProfile: false)
+    // Its offline progress can no longer be sent.
+    if let signedOut { DownloadProgressQueue.shared.dropAccount(signedOut.id) }
   }
 
   /// Switch to another profile; the current one moves to the other profiles.
@@ -335,6 +338,7 @@ final class ProfilesService {
       value.sync.removeAll { $0 == profile.viewer.id }
     }
     reload()
+    DownloadProgressQueue.shared.dropAccount(profile.id)
   }
 
   /// "Sync List Entries" switch of an other profile.
@@ -380,7 +384,12 @@ final class ProfilesService {
   /// location.reload() equivalent: user specific data is reset and reloaded.
   private func accountChanged(previous: AccountProfile?) {
     if previous?.id != current?.id {
+      // Per-account memory of the previous profile: list entries and hearts of the store, hearts toggled in this
+      // session, positions read from its notes (the AniList caches are kept per viewer, AniListService.viewerKey).
       MediaStore.shared.clearListEntries()
+      AniListService.shared.accountChanged()
+      PlaybackSyncService.shared.accountChanged()
+      BrowseFavouriteStore.shared.changed()
     }
     MediaListService.shared.accountChanged()
     HomeSectionsService.shared.rebuild()

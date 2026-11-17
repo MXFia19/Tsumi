@@ -168,6 +168,16 @@ final class PlaybackSyncService {
     remotePositions[mediaKey] = position
   }
 
+  /// Another AniList / MyAnimeList account is in use (ProfilesService): the positions read from the previous
+  /// account's notes, its cached note reads and the resume offers built from them are dropped. Trakt positions stay
+  /// (Trakt is connected separately).
+  func accountChanged() {
+    remotePositions = remotePositions.filter { $0.value.source == "trakt" }
+    lastRead.removeAll()
+    pendingResume = nil
+    offer = nil
+  }
+
   /// Notes of the user lists (AniListService.userLists asks for them): the positions of every entry are known
   /// after each list refresh, without one request per title. Key: media key, value: the note.
   func ingestListNotes(_ notes: [String: String]) {
