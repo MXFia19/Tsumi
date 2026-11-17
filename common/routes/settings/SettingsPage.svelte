@@ -23,10 +23,8 @@
   export let version = VERSION.app || '' // app.getVersion() of the main process (preload.js)
   IPC.on('version', (data) => {
     version = data
-    debug(
-      `v${version} ${platformMap[VERSION.platform] || 'dev'} ${VERSION.arch || 'dev'} ${capitalize(VERSION.session) || ''}`,
-      JSON.stringify(settings)
-    )
+    // Not the settings: they hold credentials (TURN server, tokens...) and the log can be exported and shared.
+    debug(`v${version} ${platformMap[VERSION.platform] || 'dev'} ${VERSION.arch || 'dev'} ${capitalize(VERSION.session) || ''}`)
   })
   IPC.emit('version')
   IPC.emit('discord-rpc', settings.value.enableRPC)
