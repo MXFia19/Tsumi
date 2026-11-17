@@ -215,7 +215,8 @@
   export let updateCurrent
   let streamServers = []
   // "Download Episode" of the More menu: episodes played from an extension (not a downloaded file).
-  $: canDownload = downloadsSupported && !!current?.media?.media && !current?.offline
+  // A module result opened as it is (sora/resultpage.js) has no title the Downloads page could open.
+  $: canDownload = downloadsSupported && !!current?.media?.media && !current.media.media.isSora && !current?.offline
   let activeServerIndex = 0
   $: updateFiles(files)
   let video = null
@@ -1628,7 +1629,8 @@
     },
     KeyO: {
       fn: () => {
-        if (media?.media) modal.toggle(modal.ANIME_DETAILS, media.media)
+        // A module result opened as it is (sora/resultpage.js) has no details page.
+        if (media?.media && !media.media.isSora) modal.toggle(modal.ANIME_DETAILS, media.media)
       },
       icon: Eye,
       id: 'eye',
@@ -2650,7 +2652,7 @@
     const isTmdb = media?.isTmdb || (typeof media?.id === 'string' && media.id.startsWith('tmdb-'))
     const isMovie = media?.format === 'MOVIE'
     if (w2g) buttons.push({ label: 'Join Watch Together', url: `${TSUMI_LINK}w2g/?c=${encodeURIComponent(w2g)}` })
-    if (media?.id) {
+    if (media?.id && !media.isSora) {
       if (isTmdb) {
         const tmdbId = typeof media.id === 'string' ? media.id.replace(/^tmdb-(tv-|movie-)?/, '') : media.idTmdb
         if (tmdbId) buttons.push({ label: isMovie ? 'View Movie' : 'View Show', url: `https://www.themoviedb.org/${isMovie ? 'movie' : 'tv'}/${tmdbId}` })
@@ -3325,7 +3327,7 @@
         >
           <Keyboard size='2.5rem' strokeWidth={2.5} />
         </span>
-        {#if $playPage && media?.media}
+        {#if $playPage && media?.media && !media.media.isSora}
           <span
             class='icon text-white ctrl mr-5 d-flex align-items-center'
             title='Now Playing [O]'

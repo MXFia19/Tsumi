@@ -45,6 +45,7 @@ const debug = Debug('ui:history')
  * @property {string} DEFAULT_LOADING
  * @property {string} TRAILER
  * @property {string} ANIME_DETAILS
+ * @property {string} SORA_RESULT
  */
 
 /** @type {import('simple-store-svelte').Writable<boolean>} */
@@ -142,7 +143,7 @@ export const modal = (() => {
       id: 'server_selector',
       priority: 6,
       get siblings () {
-        return [MODALS.EXTENSION_MENU, MODALS.DEFAULT_LOADING, MODALS.ANIME_DETAILS]
+        return [MODALS.EXTENSION_MENU, MODALS.DEFAULT_LOADING, MODALS.ANIME_DETAILS, MODALS.SORA_RESULT]
       }
     },
     DEFAULT_LOADING: {
@@ -161,6 +162,14 @@ export const modal = (() => {
     },
     ANIME_DETAILS: {
       id: 'anime_details',
+      priority: 9,
+      get siblings () {
+        return []
+      }
+    },
+    // Page of a module result opened as it is (modals/SoraResultModal.svelte): the server choice opens over it.
+    SORA_RESULT: {
+      id: 'sora_result',
       priority: 9,
       get siblings () {
         return []

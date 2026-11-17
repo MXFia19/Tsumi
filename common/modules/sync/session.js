@@ -93,7 +93,8 @@ class PlaybackSync {
     }
     const media = fileMedia?.media
     const episode = Number(fileMedia?.episode)
-    const valid = media?.id != null && !fileMedia?.failed && isValidNumber(fileMedia?.episode)
+    // A module result opened as it is (sora/resultpage.js): no Trakt title and no position shared with other devices.
+    const valid = media?.id != null && !media.isSora && !fileMedia?.failed && isValidNumber(fileMedia?.episode)
     const key = valid ? `${media.id}:${episode}` : null
     if (key === (this.item?.key ?? null)) {
       if (this.item && media) this.item.media = media

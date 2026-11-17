@@ -6,13 +6,16 @@ import { modal } from '@/modules/navigation.js'
 import { toast } from 'svelte-sonner'
 import Debug from 'debug'
 import { matchTargets, pickBestMatch, resultMedia, cleanResultTitle } from './match.js'
+import { moduleLinksResults, openModuleResult } from './resultpage.js'
 
 const debug = Debug('ui:sora-search')
 
 // Sora modules as a Source of the search page (SearchBar.svelte): the Title is searched in the module itself and its
 // results are shown as cards. Opening one finds the matching AniList / TMDB title (details page, list tracking) and
 // remembers the module and result, so Play uses them directly instead of searching every extension again
-// (ExtensionModal.svelte playAnime, ExtensionResults.svelte). Remembered for the session only.
+// (ExtensionModal.svelte playAnime, ExtensionResults.svelte). Remembered for the session only. A module whose
+// "Link results to AniList / TMDB" setting is off, or a result nothing matches ("Open as is"), opens as it is
+// instead: the module page with its own episodes (sora/resultpage.js).
 
 /** Enabled Sora modules (Stremio addons are listed by catalog instead). */
 export function soraModules () {
@@ -124,13 +127,21 @@ let opening = null
 let lookups = 0
 
 /**
- * Card click on a module result: opens the details of the matching title and remembers the module result for Play.
- * The last result clicked wins: an earlier lookup still running is dropped.
+ * Card click on a module result: opens the details of the matching title and remembers the module result for Play,
+ * or the module page when the module's results are not linked. The last result clicked wins: an earlier lookup still
+ * running is dropped.
  * @param {any} media card media built by resultMedia
  */
 export async function openSoraResult (media) {
   const sora = media?.sora
-  if (!sora || opening === sora.href) return
+  if (!sora) return
+  if (!moduleLinksResults(sora.extensionKey)) {
+    lookups++
+    opening = null
+    openModuleResult(media)
+    return
+  }
+  if (opening === sora.href) return
   const lookup = ++lookups
   opening = sora.href
   const toastId = toast.loading(`Looking for "${sora.title}" on AniList and TMDB…`)
@@ -141,7 +152,11 @@ export async function openSoraResult (media) {
       return
     }
     if (!match) {
-      toast.error('No AniList or TMDB title matches this result', { id: toastId, description: `${sora.title} (${sora.extensionName})` })
+      toast.error('No AniList or TMDB title matches this result', {
+        id: toastId,
+        description: `${sora.title} (${sora.extensionName})`,
+        action: { label: 'Open as is', onClick: () => openModuleResult(media) }
+      })
       return
     }
     preferredSources.set(match.id, { extensionKey: sora.extensionKey, href: sora.href, title: sora.title })

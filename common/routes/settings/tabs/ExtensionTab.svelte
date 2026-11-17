@@ -1,6 +1,7 @@
 <script>
   import { click } from '@/modules/click.js'
   import ConfirmButton from '@/components/inputs/ConfirmButton.svelte'
+  import ModuleLinkSwitch from '@/routes/settings/components/ModuleLinkSwitch.svelte'
   import { manager } from '@/modules/extension.js'
   import { maskUrl } from '@/modules/sandbox/network.js'
   import { onDestroy } from 'svelte'
@@ -245,6 +246,9 @@
             {#if defaultExt.manifest?.version}<span class='badge border-0 bg-light pl-10 pr-10 mt-10 font-scale-16'>{defaultExt.manifest.version}</span>{/if}
             {#if defaultExt.manifest?.streamType}<span class='badge border-0 bg-light pl-10 pr-10 ml-10 mt-10 font-scale-16'>{defaultExt.manifest.streamType}</span>{/if}
           </div>
+          {#if settings.extensions?.[defaultExt.key] && defaultExt.manifest?.type !== 'stremio'}
+            <ModuleLinkSwitch extensionKey={defaultExt.key} config={settings.extensions[defaultExt.key]} />
+          {/if}
           {#if !defaultExt.enabled}
             <div class='text-warning font-scale-14 mt-10'>Disabled: playback opens the extension list instead.</div>
           {/if}
@@ -319,6 +323,9 @@
           {#if ext.manifest?.quality}<span class='badge border-0 bg-light pl-10 pr-10 ml-10 mt-10 font-scale-16'>{ext.manifest.quality}</span>{/if}
           {#if ext.manifest?.type && ext.manifest.type !== 'stremio'}<span class='badge border-0 bg-light pl-10 pr-10 ml-10 mt-10 font-scale-16'>{ext.manifest.type}</span>{/if}
         </div>
+        {#if settings.extensions?.[ext.key] && ext.manifest?.type !== 'stremio'}
+          <ModuleLinkSwitch extensionKey={ext.key} config={settings.extensions[ext.key]} />
+        {/if}
         {#if status?.state === 'loading'}
           <div class='text-muted font-scale-14 mt-10 d-flex align-items-center'><Loader size='1.4rem' class='mr-5 spinning' />Loading...</div>
         {:else if status?.state === 'error'}

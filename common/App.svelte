@@ -36,6 +36,7 @@
   import Router from '@/routes/Router.svelte'
   import DetailsModal from '@/modals/details/DetailsModal.svelte'
   import ExtensionModal from '@/modals/extension/ExtensionModal.svelte'
+  import SoraResultModal from '@/modals/SoraResultModal.svelte'
   import DefaultLoadingModal from '@/modals/extension/DefaultLoadingModal.svelte'
   import ServerSelectorModal from '@/modals/extension/ServerSelectorModal.svelte'
   import Menubar from '@/components/Menubar.svelte'
@@ -130,6 +131,7 @@
     />
     <DetailsModal />
     <ExtensionModal />
+    <SoraResultModal />
     <DefaultLoadingModal />
     <ServerSelectorModal />
     <NotificationsModal />

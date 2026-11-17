@@ -26,7 +26,8 @@ function pickMedia (media) {
  * @param {number | { number: number, season?: number, localEpisode?: number }} episode
  */
 export function shareNowPlaying (media, episode) {
-  if (!media?.id || !state.value) return
+  // A module result opened as it is (sora/resultpage.js) only exists for this user's module: nothing to share.
+  if (!media?.id || media.isSora || !state.value) return
   state.value.shareMedia({ media: pickMedia(media), episode })
 }
 

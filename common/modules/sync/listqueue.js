@@ -86,6 +86,8 @@ function enqueue (filemedia, error) {
  * @param {{ media: any, episode?: any, failed?: boolean }} filemedia
  */
 export async function updateEntryOrQueue (filemedia) {
+  // A module result opened as it is (sora/resultpage.js) is on no list.
+  if (filemedia?.media?.isSora) return { status: 'skipped' }
   if (isOffline()) {
     enqueue(filemedia, 'offline')
     return { status: 'queued' }

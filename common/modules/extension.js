@@ -359,6 +359,25 @@ class ExtensionManager {
     }
   }
 
+  /**
+   * "Link results to AniList / TMDB" of a Sora module: off, its search results open as they are
+   * (sora/searchsource.js, sora/resultpage.js).
+   */
+  setLinkResults (key, link) {
+    if (!settings.value.extensions?.[key]) return
+    settings.set({
+      ...settings.value,
+      extensions: {
+        ...settings.value.extensions,
+        [key]: {
+          ...settings.value.extensions[key],
+          linkResults: !!link
+        }
+      }
+    })
+    this.notify()
+  }
+
   setDefault (key) {
     settings.set({
       ...settings.value,
@@ -505,6 +524,7 @@ export const manager = {
   installExtension: (preview) => extensionManager.installExtension(preview),
   removeExtension: (key) => extensionManager.removeExtension(key),
   toggleExtension: (key, enabled) => extensionManager.toggleExtension(key, enabled),
+  setLinkResults: (key, link) => extensionManager.setLinkResults(key, link),
   setDefault: (key) => extensionManager.setDefault(key),
   unsetDefault: () => extensionManager.unsetDefault(),
   setStar: (key) => extensionManager.setStar(key),

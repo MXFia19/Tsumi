@@ -41,6 +41,91 @@
       80
     )
   }
+
+  /** Stream of an extractStreamUrl answer, null without a link (a bare link or { url } also works). */
+  export function streamFrom (raw) {
+    try {
+      return parseStreamResponse(raw)
+    } catch {
+      const url = typeof raw === 'string' ? raw : raw?.url || raw?.streamUrl
+      return url ? { url, headers: {}, subtitle: null } : null
+    }
+  }
+
+  /**
+   * Opens the player on a stream of an extension result.
+   * @param {{ source: string, origin: object }} launch name of the extension / addon the stream comes from (Watch
+   *   Together shows it as the source) and its search result ("Download Episode" of the player resolves a fresh link
+   *   from it)
+   */
+  export function launchStream (
+    streamData,
+    episodeNum,
+    capturedMedia,
+    capturedEpisode,
+    launch,
+    serverIndex = 0,
+    server = null
+  ) {
+    const url = server?.streamUrl || streamData.url
+    const headers = server?.headers || streamData.headers || {}
+    const episodeRef = typeof capturedEpisode === 'object' && capturedEpisode !== null ? capturedEpisode : null
+
+    currentMedia.set({ media: capturedMedia, episode: episodeNum })
+    // Watch Together: let the other participants start the same episode.
+    shareNowPlaying(capturedMedia, episodeRef || episodeNum)
+    files.set([
+      {
+        name: `${anilistClient.title(capturedMedia)} - Episode ${episodeNum}.mp4`,
+        url,
+        streamHeaders: headers,
+        streamServers: streamData.servers || [],
+        subtitle: streamData.subtitle || null,
+        length: 0,
+        media: {
+          media: capturedMedia,
+          episode: episodeNum,
+          parseObject: {
+            anime_title: anilistClient.title(capturedMedia),
+            episode_number: episodeNum
+          }
+        },
+        activeServerIndex: serverIndex,
+        sourceName: launch.source,
+        ...launch.origin,
+        episodeRef
+      }
+    ])
+
+    page.navigateTo(page.PLAYER)
+  }
+
+  /**
+   * Plays a stream: with several servers, the one picked earlier this session or the server choice; then the player.
+   * onLaunch runs once the player opens (closes the menu the stream was picked from).
+   */
+  export function startStream (streamData, episodeNum, media, episode, launch, onLaunch = () => {}) {
+    const servers = streamData.servers
+    const play = (index, server = null) => {
+      launchStream(streamData, episodeNum, media, episode, launch, index, server)
+      onLaunch()
+    }
+    if (servers && servers.length > 1) {
+      const preferred = sessionServer.value
+      const index = preferred ? servers.findIndex((s, i) => (s.title || `Server ${i + 1}`) === preferred) : -1
+      if (index !== -1) {
+        play(index, servers[index])
+        return
+      }
+      modal.open(modal.SERVER_SELECTOR, {
+        servers,
+        onSelect: (serverIndex) => play(serverIndex, servers[serverIndex]),
+        onBack: () => {}
+      })
+      return
+    }
+    play(0)
+  }
 </script>
 
 <script>
@@ -272,65 +357,11 @@
         { signal }
       )
       if (!active()) return
-      let streamData
-      try {
-        streamData = parseStreamResponse(raw)
-      } catch {
-        const url = typeof raw === 'string' ? raw : raw?.url || raw?.streamUrl
-        if (url) streamData = { url, headers: {}, subtitle: null }
-      }
+      const streamData = streamFrom(raw)
 
       if (!streamData?.url) {
         toast.error('No stream URL found for this episode')
         done()
-        return
-      }
-
-      // Show server selector modal if multiple servers available
-      if (streamData.servers && streamData.servers.length > 1) {
-        const episodeNum =
-          typeof capturedEpisode === 'object'
-            ? capturedEpisode.number
-            : targetEp.number || capturedEpisode
-        const capturedStreamData = streamData
-
-        const sessionPref = sessionServer.value
-        if (sessionPref) {
-          const matchedIndex = capturedStreamData.servers.findIndex(
-            (s, i) => (s.title || `Server ${i + 1}`) === sessionPref
-          )
-          if (matchedIndex !== -1) {
-            done()
-            launchPlayer(
-              capturedStreamData,
-              episodeNum,
-              capturedMedia,
-              capturedEpisode,
-              launch,
-              matchedIndex,
-              capturedStreamData.servers[matchedIndex]
-            )
-            return
-          }
-        }
-
-        done()
-        modal.open(modal.SERVER_SELECTOR, {
-          servers: capturedStreamData.servers,
-          onSelect: (serverIndex) => {
-            const server = capturedStreamData.servers[serverIndex]
-            launchPlayer(
-              capturedStreamData,
-              episodeNum,
-              capturedMedia,
-              capturedEpisode,
-              launch,
-              serverIndex,
-              server
-            )
-          },
-          onBack: () => {}
-        })
         return
       }
 
@@ -339,61 +370,13 @@
           ? capturedEpisode.number
           : targetEp.number || capturedEpisode
       done()
-      launchPlayer(streamData, episodeNum, capturedMedia, capturedEpisode, launch, 0)
+      startStream(streamData, episodeNum, capturedMedia, capturedEpisode, launch, close)
     } catch (error) {
       if (!active() || error?.name === 'AbortError') return
       debug('Failed to get stream URL:', error)
       toast.error('Stream failed: ' + (error?.message || error))
       done()
     }
-  }
-
-  /**
-   * @param {{ source: string, origin: object }} launch name of the extension / addon the stream comes from (Watch
-   *   Together shows it as the source) and its search result ("Download Episode" of the player resolves a fresh link
-   *   from it)
-   */
-  function launchPlayer (
-    streamData,
-    episodeNum,
-    capturedMedia,
-    capturedEpisode,
-    launch,
-    serverIndex = 0,
-    server = null
-  ) {
-    const url = server?.streamUrl || streamData.url
-    const headers = server?.headers || streamData.headers || {}
-    const episodeRef = typeof capturedEpisode === 'object' && capturedEpisode !== null ? capturedEpisode : null
-
-    $currentMedia = { media: capturedMedia, episode: episodeNum }
-    // Watch Together: let the other participants start the same episode.
-    shareNowPlaying(capturedMedia, episodeRef || episodeNum)
-    files.set([
-      {
-        name: `${anilistClient.title(capturedMedia)} - Episode ${episodeNum}.mp4`,
-        url,
-        streamHeaders: headers,
-        streamServers: streamData.servers || [],
-        subtitle: streamData.subtitle || null,
-        length: 0,
-        media: {
-          media: capturedMedia,
-          episode: episodeNum,
-          parseObject: {
-            anime_title: anilistClient.title(capturedMedia),
-            episode_number: episodeNum
-          }
-        },
-        activeServerIndex: serverIndex,
-        sourceName: launch.source,
-        ...launch.origin,
-        episodeRef
-      }
-    ])
-
-    page.navigateTo(page.PLAYER)
-    close()
   }
 
   // Only a new search object starts a search: Svelte re-sends object props whenever the modal store changes (another
