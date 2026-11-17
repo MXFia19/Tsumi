@@ -1,6 +1,6 @@
 // Cache and retry policy. Run with: node common/modules/cachepolicy.test.mjs
 import assert from 'node:assert/strict'
-import { HOUR, DAY, WEEK, MINUTE, SECOND, TTL, jitter, expiresIn, mappingTtl, tmdbDetailsTtl, tmdbSeasonTtl, staleKeys, staleMappingKeys, retryAfterMs, retryDelay, STALE_GRACE } from './cachepolicy.js'
+import { HOUR, DAY, WEEK, MINUTE, SECOND, TTL, jitter, expiresIn, mappingTtl, tmdbDetailsTtl, tmdbSeasonTtl, staleKeys, staleMappingKeys, retryAfterMs, retryDelay, STALE_GRACE, isAniListId, isTmdbCopy, tmdbPollution, tmdbKind, sameKind, mediaKey } from './cachepolicy.js'
 
 let passed = 0
 let failed = 0
@@ -114,6 +114,57 @@ test('retryDelay backs off exponentially and gives up', () => {
   assert.equal(retryDelay(error, 0, { retries: 0, now }), null)
   assert.equal(retryDelay(error, 5, { retries: 10, base: SECOND, max: 8 * SECOND, now }), 8 * SECOND)
   assert.equal(retryDelay(error, undefined, { base: SECOND, now }), SECOND)
+})
+
+test('isAniListId: numbers and numeric keys, not TMDB ids', () => {
+  assert.equal(isAniListId(21), true)
+  assert.equal(isAniListId('21'), true)
+  assert.equal(isAniListId('tmdb-21'), false)
+  assert.equal(isAniListId(0), false)
+  assert.equal(isAniListId('012'), false)
+  assert.equal(isAniListId(1.5), false)
+  assert.equal(isAniListId(null), false)
+})
+
+test('isTmdbCopy: TMDB data under an AniList id (animap-mapped title)', () => {
+  assert.equal(isTmdbCopy({ id: 120377, idTmdb: 105248, isTmdb: true, format: 'TV' }), true)
+  assert.equal(isTmdbCopy({ id: 'tmdb-94605', idTmdb: 94605, isTmdb: true, format: 'TV' }), false)
+  assert.equal(isTmdbCopy({ id: 120377, idMal: 42310, format: 'ONA' }), false)
+  assert.equal(isTmdbCopy(null), false)
+})
+
+test('tmdbPollution drops pure TMDB copies and cleans merged AniList entries', () => {
+  const entries = {
+    120377: { id: 120377, idMal: 42310, title: { userPreferred: 'Cyberpunk: Edgerunners' }, format: 'TV', isTmdb: true, idTmdb: 105248, originalLanguage: 'ja', mediaListEntry: { progress: 3 } },
+    5114: { id: 5114, idTmdb: 31910, isTmdb: true, format: 'TV', title: { userPreferred: 'Fullmetal Alchemist: Brotherhood' } },
+    21: { id: 21, idMal: 21, format: 'TV', logo: 'logo.png' },
+    'tmdb-94605': { id: 'tmdb-94605', idTmdb: 94605, isTmdb: true, format: 'TV' }
+  }
+  const { dropped, cleaned } = tmdbPollution(entries)
+  assert.deepEqual(dropped, ['5114'])
+  assert.deepEqual(cleaned, [['120377', { id: 120377, idMal: 42310, title: { userPreferred: 'Cyberpunk: Edgerunners' }, format: 'TV', mediaListEntry: { progress: 3 } }]])
+  assert.equal(entries[120377].isTmdb, true) // the loaded entries are not changed in place
+  assert.deepEqual(tmdbPollution({}), { dropped: [], cleaned: [] })
+  assert.deepEqual(tmdbPollution(null), { dropped: [], cleaned: [] })
+})
+
+test('tmdbKind / sameKind / mediaKey tell a TMDB show and movie with the same id apart', () => {
+  const show = { id: 'tmdb-1399', format: 'TV', isTmdb: true }
+  const movie = { id: 'tmdb-1399', format: 'MOVIE', isTmdb: true }
+  assert.equal(tmdbKind(show), 'tv')
+  assert.equal(tmdbKind(movie), 'movie')
+  assert.equal(tmdbKind({ id: 21, format: 'MOVIE' }), null)
+  assert.equal(tmdbKind({ id: 'tmdb-1399' }), null)
+  assert.equal(sameKind(movie, show), false)
+  assert.equal(sameKind(show, movie), false)
+  assert.equal(sameKind(show, { ...show, title: 'x' }), true)
+  assert.equal(sameKind(show, { id: 'tmdb-1399' }), true) // unknown format: the cached copy is used
+  assert.equal(sameKind({ id: 21, format: 'MOVIE' }, { id: 21, format: 'TV' }), true) // AniList: one media per id
+  assert.equal(sameKind(undefined, show), true)
+  assert.equal(mediaKey(show), 'tmdb-1399:tv')
+  assert.equal(mediaKey(movie), 'tmdb-1399:movie')
+  assert.equal(mediaKey({ id: 21, format: 'TV' }), 21)
+  assert.equal(mediaKey(null), undefined)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

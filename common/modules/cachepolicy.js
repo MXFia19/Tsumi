@@ -204,3 +204,70 @@ export function retryDelay (error, attempt, { retries = 3, base = SECOND, max = 
   if (after !== null) return Math.min(after + SECOND, Math.max(max, base))
   return Math.min(base * 2 ** count, Math.max(max, base))
 }
+
+// Media cache keys. AniList media are cached under their AniList id (a number). TMDB titles are cached under
+// "tmdb-<id>", shows and movies alike (the ids Watch Together and older data use), so a show and a movie with the same
+// TMDB id share a key: the last one cached replaces the other (iOS keeps them apart with "tmdb-tv-" / "tmdb-movie-").
+
+/** Fields of TMDB titles that AniList media never have (tmdb.js normalizeMedia, getSchedule, details enrichment). */
+export const TMDB_ONLY_FIELDS = ['isTmdb', 'idTmdb', 'originalLanguage', 'next_episode_to_air', 'last_episode_to_air', '_tmdbEnriched', 'stremioId']
+
+/** True for an AniList media id: a positive integer (cache keys loaded from the database are strings). */
+export function isAniListId (id) {
+  if (typeof id === 'number') return Number.isInteger(id) && id > 0
+  return typeof id === 'string' && /^[1-9]\d*$/.test(id)
+}
+
+/**
+ * True for TMDB data carrying an AniList id: tmdb.js normalizeMedia gives the titles animap maps to AniList their
+ * AniList id. Such a copy must never be cached: merged into the AniList media, it replaced its title, format, episodes
+ * and status, and its isTmdb / idTmdb stayed for good (TMDB episodes and numbering for an anime).
+ */
+export function isTmdbCopy (media) {
+  return !!media?.isTmdb && isAniListId(media.id)
+}
+
+/**
+ * Media cache entries that older versions polluted with TMDB copies (see isTmdbCopy). `dropped`: copies with no AniList
+ * data at all (never answered by AniList: no idMal key), removed. `cleaned`: AniList media merged with a copy, without
+ * the TMDB fields (the TMDB title, format, episodes... are replaced when AniList answers again, see cache.js).
+ * @param {Record<string, any>} entries media cache: id -> media
+ * @returns {{ dropped: string[], cleaned: [string, any][] }}
+ */
+export function tmdbPollution (entries) {
+  const dropped = []
+  const cleaned = []
+  for (const [key, media] of Object.entries(entries || {})) {
+    if (!isAniListId(key) || !media || typeof media !== 'object' || !(media.isTmdb || media.idTmdb)) continue
+    if (!('idMal' in media)) {
+      dropped.push(key)
+      continue
+    }
+    const clean = { ...media }
+    for (const field of TMDB_ONLY_FIELDS) delete clean[field]
+    cleaned.push([key, clean])
+  }
+  return { dropped, cleaned }
+}
+
+/** "movie" or "tv" for a TMDB title ("tmdb-<id>"), null for an AniList media or when its format is unknown. */
+export function tmdbKind (media) {
+  if (typeof media?.id !== 'string' || !media.id.startsWith('tmdb-') || !media.format) return null
+  return media.format === 'MOVIE' ? 'movie' : 'tv'
+}
+
+/**
+ * Whether `cached` (the media cache entry of the same id) can stand for `data`: always, except a TMDB show for a TMDB
+ * movie or the reverse (they share "tmdb-<id>"). Unknown formats are trusted.
+ */
+export function sameKind (cached, data) {
+  const cachedKind = tmdbKind(cached)
+  const dataKind = tmdbKind(data)
+  return !cachedKind || !dataKind || cachedKind === dataKind
+}
+
+/** Identity of a title: its id, with the kind for TMDB titles ("tmdb-123:movie" and "tmdb-123:tv" are two titles). */
+export function mediaKey (media) {
+  const kind = tmdbKind(media)
+  return kind ? `${media.id}:${kind}` : media?.id
+}

@@ -1,5 +1,5 @@
 import { generalDefaults, historyDefaults, queryDefaults, notifyDefaults } from './util.js'
-import { staleKeys, staleMappingKeys, QUERY_LIMITS, UNPRUNED_QUERIES } from './cachepolicy.js'
+import { staleKeys, staleMappingKeys, QUERY_LIMITS, UNPRUNED_QUERIES, isTmdbCopy, tmdbPollution, sameKind } from './cachepolicy.js'
 import { parseDateOnly } from './dates.js'
 import { writable } from 'simple-store-svelte'
 import equal from 'fast-deep-equal/es6'
@@ -386,6 +386,18 @@ function createBatchWriter (userID, firstFlushDelay = 10_000, subsequentFlushDel
 /** @type {import('simple-store-svelte').Writable<Record<number, import('./al.d.ts').Media>>} */
 export let mediaCache
 
+/**
+ * The cached copy of a media, used in place of the media a card, the details or the episode list were given. Undefined
+ * when the cache has none, or when it holds the other TMDB title of that id: a TMDB show and a TMDB movie share the key
+ * "tmdb-<id>", and a show must never show or open as the movie (or the reverse).
+ * @param {any} data the media (its id, and its format for TMDB titles)
+ * @param {Record<string, any>} [value] the media cache, its current value by default (store subscribers pass theirs)
+ */
+export function cachedCopy (data, value = mediaCache?.value) {
+  const cached = data?.id != null ? value?.[data.id] : undefined
+  return cached && sameKind(cached, data) ? cached : undefined
+}
+
 class Cache {
   /** @type {string} */
   cacheID = (JSON.parse(localStorage.getItem('ALviewer')) || JSON.parse(localStorage.getItem('MALviewer')))?.viewer?.data?.Viewer?.id || 'default'
@@ -520,6 +532,7 @@ class Cache {
     })
 
     debug('Caches have successfully been loaded!')
+    this.#refreshCleaned()
   }
 
   /**
@@ -531,6 +544,7 @@ class Cache {
    */
   #pruneLoaded (cacheMap) {
     const now = Date.now()
+    this.#cleanTmdbCopies(cacheMap)
     const drop = (cache, keys) => {
       if (!keys.length) return
       const data = cacheMap.get(cache.key) || {}
@@ -558,6 +572,51 @@ class Cache {
     } catch (error) {
       debug('Failed to prune the caches', error)
     }
+  }
+
+  /** AniList media cleaned of TMDB data at startup, queried again once the app has started. */
+  #cleanedIds = []
+
+  /**
+   * One-time cleanup of the media cache: older versions cached the TMDB copy of animap-mapped titles under their
+   * AniList id (see isTmdbCopy), which replaced the AniList media and kept isTmdb / idTmdb for good (TMDB episodes,
+   * numbering and list updates for an anime). Copies with no AniList data are removed; AniList media lose their TMDB
+   * fields and are queried again from AniList (title, format, episodes...). Nothing caches such copies any more
+   * (updateMedia), so later starts find none.
+   * @param {Map<string, Object>} cacheMap cacheKey -> loaded { key: value }
+   */
+  #cleanTmdbCopies (cacheMap) {
+    try {
+      const medias = cacheMap.get(caches.MEDIA_CACHE.key)
+      const { dropped, cleaned } = tmdbPollution(medias)
+      if (!dropped.length && !cleaned.length) return
+      for (const key of dropped) delete medias[key]
+      for (const [key, media] of cleaned) medias[key] = media
+      if (dropped.length) remove(this.cacheID, caches.MEDIA_CACHE, dropped).catch(error => debug('Failed to remove the TMDB media copies', error))
+      if (cleaned.length) putMany(this.cacheID, caches.MEDIA_CACHE, cleaned).catch(error => debug('Failed to write the cleaned media', error))
+      this.#cleanedIds = cleaned.map(([key]) => Number(key))
+      debug(`Removed ${dropped.length} TMDB media copies and cleaned ${cleaned.length} AniList media of TMDB data`)
+    } catch (error) {
+      debug('Failed to clean the TMDB media copies', error)
+    }
+  }
+
+  /** Queries the media cleaned at startup again (#cleanTmdbCopies), once the app has started. */
+  #refreshCleaned () {
+    const ids = this.#cleanedIds
+    this.#cleanedIds = []
+    if (!ids.length) return
+    setTimeout(async () => {
+      try {
+        if (!this.anilistClient) {
+          const { anilistClient } = await import('@/modules/anilist.js')
+          this.anilistClient = anilistClient
+        }
+        await this.anilistClient.searchAllIDS({ id: ids, skipCache: true })
+      } catch (error) {
+        debug('Failed to query the cleaned media again', error)
+      }
+    }, 20_000)
   }
 
   /** Writes to the mappings store since its size was last checked. */
@@ -782,6 +841,8 @@ class Cache {
     const mediaMap = new Map(filledMedias.filter(Boolean).map(m => [m.id, m]))
     mediaCache.update(current => {
       for (const [id, media] of mediaMap.entries()) {
+        // TMDB data under an AniList id (animap-mapped title, see isTmdbCopy): it would replace the AniList media.
+        if (isTmdbCopy(media)) continue
         const cached = current[id] || {}
         // TMDB shows and movies can share an id ("tmdb-<id>", kept for Watch Together and iOS): never mix their fields.
         const existing = (media.isTmdb && cached.isTmdb && media.format && cached.format && (media.format === 'MOVIE') !== (cached.format === 'MOVIE')) ? {} : cached

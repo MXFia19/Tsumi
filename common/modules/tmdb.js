@@ -2,7 +2,7 @@ import Bottleneck from 'bottleneck'
 import { cache, caches } from '@/modules/cache.js'
 import { anilistClient } from '@/modules/anilist.js'
 import { releaseRegions, movieReleaseNodes, MOVIE_WINDOW_DAYS } from '@/modules/schedule/movies.js'
-import { TTL, expiresIn, tmdbDetailsTtl, tmdbSeasonTtl } from '@/modules/cachepolicy.js'
+import { TTL, expiresIn, tmdbDetailsTtl, tmdbSeasonTtl, isTmdbCopy } from '@/modules/cachepolicy.js'
 import { toLocalDate } from '@/modules/dates.js'
 import { status } from '@/modules/networking.js'
 import Debug from 'debug'
@@ -44,7 +44,7 @@ const TMDB_GENRE_NAME_TO_ID = Object.fromEntries(Object.entries(TMDB_GENRES).map
 
 // TMDB answers are TTL entries of the mappings cache (cache.js, policy in cachepolicy.js): details and seasons stay
 // fresh for hours while a show airs and weeks once it ended, and "Reset caches" clears them. Keys carry the media
-// type: a show and a movie can have the same TMDB id (the media ids "tmdb-<id>" do not, see cache.js updateMedia).
+// type: a show and a movie can have the same TMDB id (the media ids "tmdb-<id>" do not, see cachedCopy in cache.js).
 const offline = () => !!status.value?.match?.(/offline/i)
 
 /**
@@ -168,6 +168,11 @@ class TMDBClient {
     return TMDB_GENRES[id] || 'Unknown'
   }
 
+  /**
+   * Media object of a TMDB item. A title animap maps to AniList gets its AniList id (Sora matching and Stremio catalogs
+   * open the AniList entry): that TMDB copy is never cached (cache.js updateMedia, isTmdbCopy), lists that show it use
+   * withAniList.
+   */
   normalizeMedia (tmdbItem) {
     if (!tmdbItem) return null
     const isTv = tmdbItem.media_type === 'tv' || tmdbItem.first_air_date
@@ -306,33 +311,8 @@ class TMDBClient {
       results.sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
     }
 
-    for (let i = 0; i < results.length; i++) {
-      const resList = results[i]
-      const tmdbType = resList.format === 'TV' ? 'tv' : 'movie'
-      const anilistId = this.tmdbToAnilist[`${tmdbType}-${resList.idTmdb}`]
-      if (anilistId) {
-        try {
-          const aniQuery = await anilistClient.searchIDSingle({ id: anilistId })
-          if (aniQuery?.data?.Media) {
-            const anilistMedia = aniQuery.data.Media
-            results[i] = {
-              ...anilistMedia,
-              ...results[i],
-              genres: anilistMedia.genres,
-              tags: anilistMedia.tags,
-              episodes: anilistMedia.episodes,
-              stats: anilistMedia.stats,
-              relations: anilistMedia.relations,
-              id: anilistId
-            }
-          }
-        } catch (e) {
-          debug('Failed to merge anilist id:', anilistId, e)
-        }
-      }
-    }
-
-    await cache.updateMedia(results)
+    const media = await this.withAniList(results)
+    await cache.updateMedia(media)
 
     return {
       data: {
@@ -340,10 +320,34 @@ class TMDBClient {
           pageInfo: {
             hasNextPage
           },
-          media: results
+          media
         }
       }
     }
+  }
+
+  /**
+   * TMDB titles mapped to AniList (normalizeMedia gives them the AniList id) as their AniList media, with the TMDB
+   * banner and logo (like iOS TMDBService.merge); the ones AniList does not answer stay TMDB titles ("tmdb-<id>").
+   * The TMDB copy was merged over the AniList media before: cached, it replaced its title, format, episodes and status,
+   * and its isTmdb / idTmdb stayed for good.
+   * @param {any[]} list normalized TMDB media
+   * @returns {Promise<any[]>}
+   */
+  async withAniList (list) {
+    const ids = [...new Set(list.filter(isTmdbCopy).map(item => item.id))]
+    if (!ids.length) return list
+    const res = await Promise.resolve(anilistClient.searchAllIDS({ id: ids })).catch(error => {
+      debug('Failed to get the AniList media of mapped TMDB titles', error)
+      return null
+    })
+    const found = new Map((res?.data?.Page?.media || []).filter(media => media?.id).map(media => [media.id, media]))
+    return list.map(item => {
+      if (!isTmdbCopy(item)) return item
+      const anime = found.get(item.id)
+      if (!anime) return { ...item, id: `tmdb-${item.idTmdb}` }
+      return { ...anime, bannerImage: item.bannerImage || anime.bannerImage, logo: item.logo || anime.logo }
+    })
   }
 
   getSchedule = this.limiter.wrap(async (pageArg = 1) => {
@@ -700,7 +704,7 @@ class TMDBClient {
     if (mediaType === 'movie') {
       const details = await this.getDetails(tmdbId, 'movie')
       if (details?.belongs_to_collection?.id) {
-        const parts = await this.getCollection(details.belongs_to_collection.id)
+        const parts = await this.withAniList(await this.getCollection(details.belongs_to_collection.id))
         // Sort by release date so sequels appear in order
         const sorted = [...parts].sort((a, b) => (a.seasonYear || 0) - (b.seasonYear || 0))
         // Map to relations format for UI (relations usually have relationType)
@@ -728,7 +732,7 @@ class TMDBClient {
       return true
     })
 
-    const normalized = uniqueRecs.map(item => this.normalizeMedia(item)).filter(Boolean)
+    const normalized = await this.withAniList(uniqueRecs.map(item => this.normalizeMedia(item)).filter(Boolean))
     if (normalized.length > 0) await cache.updateMedia(normalized)
 
     return { relations: [], recommendations: normalized }
