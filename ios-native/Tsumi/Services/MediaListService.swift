@@ -360,6 +360,8 @@ final class MediaListService {
   /// Scoring.svelte saveEntry: saves status / progress / score (0-10), with toasts and profile syncing.
   @discardableResult
   func save(_ media: Media, status: ListStatus, progress: Int, score: Double, repeatCount: Int? = nil) async -> Bool {
+    // A Sora module result played as it is has no AniList / MyAnimeList entry.
+    guard !media.isSoraResult else { return false }
     guard let account = AccountStore.shared.current else {
       ServiceMessages.shared.post(.error, "Failed to Update List", "You need to be logged in.")
       return false
@@ -425,7 +427,7 @@ final class MediaListService {
   /// anime.js setStatus: changes the status keeping the score / repeat count (neither is sent, no toast).
   @discardableResult
   func setStatus(_ status: ListStatus, media: Media, progress: Int? = nil) async -> Bool {
-    guard let account = AccountStore.shared.current else { return false }
+    guard !media.isSoraResult, let account = AccountStore.shared.current else { return false }
     let current = MediaStore.shared.media(media.id) ?? media
     let existing = entry(for: current)
     let input = makeInput(current, status: status, progress: progress ?? existing?.progress ?? 0, score: nil, repeatCount: nil, account: account)
@@ -437,7 +439,9 @@ final class MediaListService {
   /// or there was nothing to update. The score is never sent (it is read rounded), so it never changes here.
   @discardableResult
   func updateAfterWatching(_ media: Media, episode: Int?, failed: Bool = false) async -> Bool {
-    guard let account = AccountStore.shared.current, media.source == .anilist, let anilistId = media.anilistId else { return true }
+    // Nothing to update for a Sora module result played as it is (true: not worth queuing either).
+    guard !media.isSoraResult, let account = AccountStore.shared.current, media.source == .anilist,
+          let anilistId = media.anilistId else { return true }
     if failed {
       ServiceMessages.shared.post(.error, "Failed to Update Progress", "The currently playing media failed to be identified, episode progress will not be updated.")
       return true

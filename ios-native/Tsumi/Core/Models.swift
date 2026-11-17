@@ -6,6 +6,8 @@ import Foundation
 enum MediaSource: String, Codable, Hashable {
   case anilist
   case tmdb
+  /// A Sora module result opened as it is (module page, SoraResultView.swift): not an AniList / TMDB title.
+  case sora
 }
 
 enum TMDBType: String, Codable, Hashable {
@@ -204,9 +206,16 @@ struct Media: Identifiable, Codable, Hashable {
 
   var isMovie: Bool { format == .movie || tmdbType == .movie }
   var isAnime: Bool { source == .anilist }
+  /// Pseudo media of a Sora module result played from its module page (id "sora-<extensionKey>-<href>", like PC
+  /// match.js resultMedia): no AniList / TMDB title behind it, so no lookups, list or progress updates, Watch
+  /// Together, Trakt, remote resume or next-episode autoplay for it. The id prefix also catches one decoded without
+  /// its source (a peer's payload).
+  var isSoraResult: Bool { source == .sora || id.hasPrefix(Media.soraResultPrefix) }
 
   static func anilistKey(_ id: Int) -> String { "al-\(id)" }
   static func tmdbKey(_ id: Int, _ type: TMDBType) -> String { "tmdb-\(type.rawValue)-\(id)" }
+  static let soraResultPrefix = "sora-"
+  static func soraResultKey(extensionKey: String, href: String) -> String { "\(soraResultPrefix)\(extensionKey)-\(href)" }
 
   enum CodingKeys: String, CodingKey {
     case id, source, anilistId, malId, tmdbId, tmdbType, imdbId
@@ -224,7 +233,8 @@ extension Media {
     let id = try container.decode(String.self, forKey: .id)
     self.init(
       id: id,
-      source: container.svcValue(MediaSource.self, .source) ?? (id.hasPrefix("tmdb-") ? .tmdb : .anilist),
+      source: container.svcValue(MediaSource.self, .source)
+        ?? (id.hasPrefix("tmdb-") ? .tmdb : id.hasPrefix(Media.soraResultPrefix) ? .sora : .anilist),
       title: container.svcValue(MediaTitle.self, .title) ?? MediaTitle(),
       images: container.svcValue(MediaImages.self, .images) ?? MediaImages(),
       format: container.svcValue(MediaFormat.self, .format) ?? .unknown,

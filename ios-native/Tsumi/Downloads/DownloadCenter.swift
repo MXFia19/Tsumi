@@ -254,6 +254,9 @@ final class DownloadCenter {
   /// Queues episodes of one title. `source` keeps the extension / search result to use; `seed` is the stream the
   /// player already resolved (fallback only).
   func download(media: Media, episodes: [(ref: EpisodeRef, title: String?)], source: DownloadSource? = nil, seed: DownloadSeed? = nil) {
+    // Downloads are listed, resumed and re-resolved by their AniList / TMDB title: not offered for a Sora module
+    // result played as it is (its player has no "Download Episode").
+    guard !media.isSoraResult else { return }
     start()
     if ExtensionManager.shared.enabledExtensions().isEmpty && seed == nil {
       ServiceMessages.shared.post(.error, "No extension enabled", "Downloads use your extensions to find the episode. Add or enable one in Settings > Extensions.")
@@ -294,6 +297,7 @@ final class DownloadCenter {
 
   /// "Download Episode" of the player: the episode playing, from the result it was played from.
   func downloadFromPlayer(session: PlaybackSession, source: PlaybackSource?, extensionKey: String) {
+    guard !session.media.isSoraResult else { return }
     let server = session.currentServer
     if let server, server.url.isFileURL || server.url.host == "127.0.0.1" {
       ServiceMessages.shared.post(.info, "Already downloaded", "This episode plays from your downloads.")

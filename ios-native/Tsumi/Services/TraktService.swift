@@ -495,6 +495,8 @@ final class TraktService {
 
   /// Target of an episode / movie; nil when it can't be told (anime without mappings, anime scrobbling off).
   func target(for media: Media, episode ref: EpisodeRef) async -> TraktTarget? {
+    // A Sora module result played as it is is no Trakt title: never scrobbled.
+    if media.isSoraResult { return nil }
     if media.source == .tmdb, let tmdbId = media.tmdbId {
       if media.isMovie { return TraktTarget(movieIds: ["tmdb": String(tmdbId)]) }
       guard let found = await tmdbEpisode(media, ref) else { return nil }

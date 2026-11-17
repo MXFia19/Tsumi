@@ -50,6 +50,8 @@ struct ShellRouteDestination: View {
       DownloadsView()
         .onAppear { ShellState.shared.downloadsOnScreen += 1 }
         .onDisappear { ShellState.shared.downloadsOnScreen = max(ShellState.shared.downloadsOnScreen - 1, 0) }
+    case .soraResult(let result):
+      SoraResultView(result: result)
     }
   }
 }

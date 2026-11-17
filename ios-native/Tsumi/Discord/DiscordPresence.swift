@@ -621,7 +621,8 @@ enum DiscordActivityBuilder {
       let encoded = lobby.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? lobby
       buttons.append(.init(label: "Join Watch Together", url: "\(tsumiLink)w2g/?c=\(encoded)"))
     }
-    if let media {
+    // No title page for a Sora module result played as it is (no "View on AniList" / TMDB link).
+    if let media, !media.isSoraResult {
       if media.source == .tmdb {
         if let tmdbId = media.tmdbId {
           let isMovie = media.isMovie

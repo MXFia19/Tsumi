@@ -340,6 +340,8 @@ final class PlayerController {
   /// checkAvail (hasNext) using the media episode counts when no episode list is available.
   private var mediaHasNext: Bool {
     let media = session.media
+    // A Sora module result played as it is only has the episodes its module listed (the episode list).
+    if media.isSoraResult { return false }
     if media.isMovie && (media.episodes ?? 1) <= 1 { return false }
     let aired = (media.nextAiring?.episode ?? 0) - 1
     let available = aired > 0 ? aired : PlayerEpisodeMath.maxEpisode(media)
@@ -945,7 +947,7 @@ final class PlayerController {
     updateNowPlayingPlayback()
     onPlaybackEnded?(session.media, session.episode)
     let watchingTogether = isWatchTogetherActive?() ?? false
-    if AppSettings.shared.values.playerAutoplay && !watchingTogether && hasNext {
+    if autoplaysNextEpisode && !watchingTogether && hasNext {
       Task { [weak self] in
         await self?.playNext()
       }
@@ -1639,7 +1641,9 @@ final class PlayerController {
     let media = session.media
     let episode = session.episode
     let total = safeDuration
-    guard total > 0 else { return }
+    // AniSkip and TheIntroDB know AniList / TMDB titles only (a Sora module result played as it is keeps the file's
+    // own chapters).
+    guard total > 0, !media.isSoraResult else { return }
     let generation = episodeGeneration
     var found: [PlayerChapter] = []
     // No AniSkip for episode 0 (a prologue), like PC getChaptersAniSkip (`!file.media?.episode`): AniSkip numbers
@@ -1680,7 +1684,7 @@ final class PlayerController {
         // Last chapter: the next episode (tryPlayNext). In Watch Together never on this device alone (each
         // member would load it): the seek to the end goes to the lobby and ends the episode, whose end path
         // (onPlaybackEnded) lets the host play the next queued item.
-        if (total - chapter.end).rounded(.towardZero) == 0 && hasNext && AppSettings.shared.values.playerAutoplay
+        if (total - chapter.end).rounded(.towardZero) == 0 && hasNext && autoplaysNextEpisode
             && !(isWatchTogetherActive?() ?? false) {
           currentSkippable = nil
           // Same as "Play Now": no Up next card for this episode any more (it would show in the same tick, then
@@ -1707,6 +1711,12 @@ final class PlayerController {
 
   // MARK: - Up next
 
+  /// The next episode starts by itself (end of the episode, Up next card, skip of the last chapter): the Autoplay
+  /// setting, never for a Sora module result played as it is (its episodes are separate videos, a VOD list...).
+  private var autoplaysNextEpisode: Bool {
+    AppSettings.shared.values.playerAutoplay && !session.media.isSoraResult
+  }
+
   /// "Up next" card: in the last credits / preview chapters of the episode (embedded, AniSkip or TheIntroDB),
   /// with autoplay on and a next episode. The next episode starts when the countdown (playback time) runs out.
   /// Not in Watch Together: autoplay is off there and the lobby's own "Up next" (the host's queue) runs at the
@@ -1730,7 +1740,7 @@ final class PlayerController {
     // at the end as before).
     guard phase == .ready, !hasEnded, !isScrubbing, loadingEpisode == nil, fillerPrompt == nil,
           !isMinimized, !isPictureInPictureActive, !isExternalOverlayPresented,
-          upNextDoneGeneration != episodeGeneration, AppSettings.shared.values.playerAutoplay,
+          upNextDoneGeneration != episodeGeneration, autoplaysNextEpisode,
           !(isWatchTogetherActive?() ?? false), !autoSkipOwnsChapter,
           PlayerChapterLogic.isInOutroTail(currentTime, chapters: chapters, duration: safeDuration) else { return nil }
     return nextEpisodeRef

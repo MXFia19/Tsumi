@@ -47,6 +47,8 @@ enum ShellRoute: Hashable {
   case catalogs
   /// Offline downloads (toolbar button / offline banner), pushed on the current tab.
   case downloads
+  /// Page of a Sora module result opened as it is (no AniList / TMDB match), pushed on the Search stack.
+  case soraResult(SoraSearchResult)
 }
 
 /// Observable shell state shared by the root view, the toolbar and the wiring.
@@ -146,10 +148,24 @@ enum ShellNavigation {
   /// handleAnime / modal.open(ANIME_DETAILS): replaces any root sheet with the details of `media`
   /// (shown over the player when the player is visible).
   static func openDetails(_ media: Media) {
+    // A module result played as it is has no AniList / TMDB details (they would look up a title it is not).
+    guard !media.isSoraResult else { return }
     let router = AppRouter.shared
     if router.showNotifications { router.showNotifications = false }
     if router.showProfiles { router.showProfiles = false }
     router.open(media)
+  }
+
+  /// Module page of a Sora module result (SoraResultView), pushed on the Search stack the result was tapped on.
+  static func openSoraResult(_ result: SoraSearchResult) {
+    let state = ShellState.shared
+    var path = state.path(for: .search)
+    path.append(ShellRoute.soraResult(result))
+    state.setPath(path, for: .search)
+    // "Open as is" of a toast that came after leaving the Search page (another tab, a sheet opened meanwhile).
+    if AppRouter.shared.selectedTab != .search || ShellLayers.rootSheet != nil {
+      showTab(.search)
+    }
   }
 
   /// Opens the details once running presentations finished (e.g. a catalog grid sheet that is closing).

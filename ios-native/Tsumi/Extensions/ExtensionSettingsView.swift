@@ -3,8 +3,9 @@ import SwiftUI
 /// Settings > Extensions (common/routes/settings/tabs/ExtensionTab.svelte): add by manifest URL
 /// (Sora module or Stremio addon, shown before it is installed: name, the hosts it says it uses, "updated in place"
 /// when it is already installed, plain http script warning, Install / Update), default extension zone (drag & drop,
-/// or tap to choose), list with star, delete (with confirmation), enable switch (also on the default card) and
-/// badges (version, stream type, quality, type, plain http). Each card shows the load state: loading, error with
+/// or tap to choose), list with star, delete (with confirmation), enable switch (also on the default card),
+/// badges (version, stream type, quality, type, plain http) and, on Sora modules, the "Link results to AniList /
+/// TMDB" switch of their Search page results. Each card shows the load state: loading, error with
 /// Retry (failed loads are also retried when the device gets back online), update waiting for approval, update
 /// applied. Only the host of a manifest URL is shown (the URL can carry a private token).
 @MainActor
@@ -216,6 +217,7 @@ struct ExtensionSettingsView: View {
         .accessibilityLabel("Remove as Default")
       }
       badgeRow(versionAndStreamOnly: true, ext)
+      linkResultsRow(ext)
       statusRow(ext)
     }
     .padding(15)
@@ -255,6 +257,7 @@ struct ExtensionSettingsView: View {
         }
       }
       badgeRow(versionAndStreamOnly: false, ext)
+      linkResultsRow(ext)
       statusRow(ext)
     }
     .padding(15)
@@ -354,6 +357,30 @@ struct ExtensionSettingsView: View {
       }
     }
     .padding(.top, badges.isEmpty ? 0 : 10)
+  }
+
+  /// "Link results to AniList / TMDB" of a Sora module (Stremio addons have none: their results are not opened from
+  /// the Search page). Off: a result tapped on the Search page opens its module page (SoraResultView) instead of
+  /// the matching title.
+  @ViewBuilder
+  private func linkResultsRow(_ ext: InstalledExtension) -> some View {
+    if ext.kind == .sora {
+      Toggle(isOn: Binding(
+        get: { ext.linkResults },
+        set: { manager.setLinkResults(ext.key, $0) }
+      )) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Link results to AniList / TMDB")
+            .font(.subheadline)
+            .foregroundStyle(.white)
+          Text("Off: results of this module open as they are, with its own episodes and no list tracking. For modules that are not anime, shows or movies.")
+            .font(.caption)
+            .foregroundStyle(ExtensionPalette.muted)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .padding(.top, 10)
+    }
   }
 
   /// Manifest or script loaded over plain http.

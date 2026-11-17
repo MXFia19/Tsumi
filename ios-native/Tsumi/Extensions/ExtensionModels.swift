@@ -83,16 +83,47 @@ struct ExtensionManifest: Codable, Hashable {
   var iconURL: URL? { URL.lenient(iconUrl) }
 }
 
-/// One installed extension as persisted (settings.extensions[key] = { url, enabled, manifest }).
+/// One installed extension as persisted (settings.extensions[key] = { url, enabled, manifest, linkResults }).
 struct InstalledExtension: Codable, Identifiable, Hashable {
   var key: String
   var url: String
   var enabled: Bool
   var kind: ExtensionKind
   var manifest: ExtensionManifest
+  /// Sora modules: a result tapped on the Search page opens its AniList / TMDB match (true, the default), or the
+  /// module page as it is (false: modules that are not anime, shows or movies). Stored only when false, like PC
+  /// (`linkResults` absent = true), so the settings of either app round-trip.
+  var linkResults: Bool = true
 
   var id: String { key }
   var displayName: String { manifest.sourceName.isEmpty ? key : manifest.sourceName }
+
+  enum CodingKeys: String, CodingKey {
+    case key, url, enabled, kind, manifest, linkResults
+  }
+}
+
+extension InstalledExtension {
+  /// Same required keys as before; `linkResults` is optional (lists stored by older versions have none).
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    key = try container.decode(String.self, forKey: .key)
+    url = try container.decode(String.self, forKey: .url)
+    enabled = try container.decode(Bool.self, forKey: .enabled)
+    kind = try container.decode(ExtensionKind.self, forKey: .kind)
+    manifest = try container.decode(ExtensionManifest.self, forKey: .manifest)
+    linkResults = (try? container.decodeIfPresent(Bool.self, forKey: .linkResults)) ?? true
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(key, forKey: .key)
+    try container.encode(url, forKey: .url)
+    try container.encode(enabled, forKey: .enabled)
+    try container.encode(kind, forKey: .kind)
+    try container.encode(manifest, forKey: .manifest)
+    if !linkResults { try container.encode(false, forKey: .linkResults) }
+  }
 }
 
 /// A loaded extension ready to be called (entries of ExtensionManager.extensions in extension.js):

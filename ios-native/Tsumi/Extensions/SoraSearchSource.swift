@@ -3,7 +3,9 @@ import Foundation
 // Sora modules as a Source of the Search page (common/modules/sora/searchsource.js + match.js): the title is searched
 // in the module itself and its results are shown as cards (SearchView.swift, BrowseSoraCards.swift). Opening one finds
 // the matching AniList / TMDB title (details, list tracking) and remembers the module result, so Play uses it directly
-// instead of searching every extension (PlaybackRequestCoordinator.play). Remembered for the session only.
+// instead of searching every extension (PlaybackRequestCoordinator.play). Remembered for the session only. A module
+// whose "Link results to AniList / TMDB" is off (InstalledExtension.linkResults) opens its results as they are
+// instead, on their module page (SoraResultSource.swift, SoraResultView.swift).
 
 /// One `searchResults` entry of a Sora module, shown as a card of the Search page (resultMedia of match.js).
 struct SoraSearchResult: Identifiable, Hashable {

@@ -278,6 +278,18 @@ enum PlaybackResolver {
     )
   }
 
+  /// Stream of one episode of a Sora module result played as it is (module page, SoraResultView): `extractStreamUrl`
+  /// of that episode href in that module. No other extension is searched and no episode is matched by number.
+  @MainActor
+  static func resolveSoraResultEpisode(_ source: PlaybackSource, episodeHref: String, onStatus: @escaping (String) -> Void) async throws -> ExtensionStream {
+    onStatus("Connecting to extension...")
+    let ext = try await SoraResultSource.module(source.extensionKey)
+    onStatus("Loading stream...")
+    let stream = try await fetchStream(ext, episodeHref: episodeHref)
+    try Task.checkCancellation()
+    return stream
+  }
+
   /// After a stream is found: remembered server, server choice or direct playback.
   @MainActor
   static func nextStep(media: Media, episode: EpisodeRef, stream: ExtensionStream, extensionKey: String) -> PlaybackResolutionStep {

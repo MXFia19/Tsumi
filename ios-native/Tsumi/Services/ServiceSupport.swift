@@ -699,9 +699,13 @@ final class ServiceMessages {
     var title: String
     var detail: String
     var date: Date
+    /// Label of the toast's action button (sonner `action`), nil without one.
+    var actionLabel: String? = nil
   }
 
   private(set) var messages: [Message] = []
+  /// Handlers of the action buttons by toast id, kept out of the messages (which are compared for the animations).
+  @ObservationIgnored private var actions: [UUID: @MainActor () -> Void] = [:]
 
   var latest: Message? { messages.last }
 
@@ -710,6 +714,25 @@ final class ServiceMessages {
   /// Posts a toast if the `toasts` setting allows it, with the same rules as the Svelte app:
   /// All | "Warnings / Successes" | Errors | None (e.g. Scoring.svelte, helper.js, networking.js).
   func post(_ kind: Kind, _ title: String, _ detail: String = "") {
+    append(kind, title, detail, actionLabel: nil)
+  }
+
+  /// Toast with an action button (sonner `action: { label, onClick }`): the button runs `action` and closes it.
+  func post(_ kind: Kind, _ title: String, _ detail: String = "", actionLabel: String, action: @escaping @MainActor () -> Void) {
+    guard let id = append(kind, title, detail, actionLabel: actionLabel) else { return }
+    actions[id] = action
+  }
+
+  /// The action button of a toast: closes it, then runs its handler.
+  func performAction(_ id: UUID) {
+    let action = actions[id]
+    dismiss(id)
+    action?()
+  }
+
+  /// Id of the toast added, nil when the setting hides it.
+  @discardableResult
+  private func append(_ kind: Kind, _ title: String, _ detail: String, actionLabel: String?) -> UUID? {
     let setting = AppSettings.shared.values.toasts
     let allowed: Bool
     switch kind {
@@ -718,17 +741,25 @@ final class ServiceMessages {
     case .warning: allowed = setting.contains("All") || setting.contains("Warnings")
     case .info: allowed = !setting.contains("None")
     }
-    if !allowed { return }
-    messages.append(Message(id: UUID(), kind: kind, title: title, detail: detail, date: Date()))
-    if messages.count > 20 { messages.removeFirst(messages.count - 20) }
+    if !allowed { return nil }
+    let id = UUID()
+    messages.append(Message(id: id, kind: kind, title: title, detail: detail, date: Date(), actionLabel: actionLabel))
+    if messages.count > 20 {
+      messages.removeFirst(messages.count - 20)
+      let kept = Set(messages.map(\.id))
+      actions = actions.filter { kept.contains($0.key) }
+    }
+    return id
   }
 
   func dismiss(_ id: UUID) {
     messages.removeAll { $0.id == id }
+    actions[id] = nil
   }
 
   func clear() {
     messages.removeAll()
+    actions.removeAll()
   }
 
   /// Posts from any thread.

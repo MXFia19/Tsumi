@@ -694,6 +694,8 @@ final class WatchTogetherClient {
     // mode as a non-host (the others drop it anyway): the lobby media stays the host's, so the Join card and "Add next
     // episode" still point at it.
     guard isInLobby, following, !controlLocked else { return }
+    // A Sora module result played as it is is no title the others can open: never shared.
+    guard !media.isSoraResult else { return }
     let mediaJSON = W2GMediaPayload.json(from: media)
     let episodeJSON = W2GMediaPayload.episodeJSON(episode)
     let payloadId = mediaJSON["id"] ?? W2GJSON.null

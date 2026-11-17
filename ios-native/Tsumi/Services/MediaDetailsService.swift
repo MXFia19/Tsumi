@@ -69,6 +69,8 @@ final class MediaDetailsService: @unchecked Sendable {
 
   /// Full media for the details screen: fresh data, relations and recommendations as media.
   func details(for media: Media) async -> Media {
+    // A Sora module result played as it is is no AniList / TMDB title: nothing to look up.
+    if media.isSoraResult { return media }
     if media.source == .tmdb {
       return await tmdbDetails(media)
     }
@@ -257,6 +259,9 @@ final class MediaDetailsService: @unchecked Sendable {
 
   /// First pass of the episode list: no per-episode Jikan request, every remote source behind a short timeout.
   func quickEpisodes(for media: Media) async -> [EpisodeInfo] {
+    // A Sora module result played as it is lists its module's episodes (SoraResultSessions), no AniList / TMDB /
+    // ani.zip / Kitsu ones.
+    if media.isSoraResult { return [] }
     if media.source == .tmdb { return await tmdbEpisodes(media) }
     return await anilistEpisodes(media)
   }

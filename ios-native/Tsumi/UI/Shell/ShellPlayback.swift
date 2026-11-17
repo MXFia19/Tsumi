@@ -56,6 +56,8 @@ enum ShellPlayback {
 
   /// Watch Together 'media' → w2g-play → playAnime(cached media, episode).
   static func playRemote(_ media: Media, episode: EpisodeRef) {
+    // A peer's Sora module result played as it is: not a title this device can look up or search the extensions for.
+    guard !media.isSoraResult else { return }
     if let controller = PlayerPresentation.shared.controller {
       let session = controller.session
       let loading = controller.loadingEpisode
@@ -77,7 +79,8 @@ enum ShellPlayback {
 
   /// Watch Together 'setindex' → the active player switches episode (not shared back).
   static func applyRemoteIndex(_ index: Int) {
-    guard let controller = PlayerPresentation.shared.controller else { return }
+    // Not shared with the lobby: its episode index is about another title.
+    guard let controller = PlayerPresentation.shared.controller, !controller.session.media.isSoraResult else { return }
     let current = controller.session.episode
     var switches = false
     if !controller.episodeList.isEmpty {
@@ -227,6 +230,10 @@ enum ShellPlayback {
 
   /// Every hook of the player (see PARITY/player.md "Wiring notes for the app step").
   private static func wire(_ controller: PlayerController, media: Media, extensionKey: String, source: PlaybackSource?) {
+    if media.isSoraResult {
+      wireSoraResult(controller, media: media)
+      return
+    }
     // playNext / playLast / episode list / setindex: the same search result as the episode playing (a dub or
     // variant picked by hand is kept), no dialog over the player. When that fails: playAnime → default
     // extension or the picker, like PlayerPage.svelte.
@@ -344,6 +351,43 @@ enum ShellPlayback {
     // Watch Together v2.4 "Up next" at the end of an episode: in onPlaybackEnded above, with the sync end.
   }
 
+  /// Hooks of a Sora module result played as it is (Media.isSoraResult, module page): the other episodes of its
+  /// module page from the same module by their href, and the local resume position (media id + episode). Nothing
+  /// that needs an AniList / TMDB title is wired: no list update (nor its offline queue), no remote resume note or
+  /// Trakt scrobble (PlaybackSyncService), no Watch Together sharing or sync, no details, no download, no "Last
+  /// Watched" entry. The player itself skips the next-episode autoplay and the online lookups for it.
+  private static func wireSoraResult(_ controller: PlayerController, media: Media) {
+    controller.loadEpisode = { [weak controller] ref in
+      guard let found = SoraResultSessions.shared.episode(ref, for: media.id) else {
+        throw ExtensionFailure("Episode \(ref.number) is not listed by this result")
+      }
+      let serverTitle = controller?.session.currentServer?.title
+      let list = controller?.episodeList ?? []
+      let stream = try await PlaybackResolver.resolveSoraResultEpisode(found.source, episodeHref: found.episode.href) { _ in }
+      let playback = ShellEpisodeResolver.pick(
+        media: media,
+        found: PlaybackSourceStream(stream: stream, episode: found.episode.ref, source: found.source),
+        preferredServerTitle: serverTitle
+      )
+      return ShellPlayback.session(
+        media: media,
+        episode: playback.episode,
+        servers: playback.servers,
+        selectedServer: playback.selectedIndex,
+        subtitleURL: playback.subtitleURL,
+        episodes: list
+      )
+    }
+    controller.resumePosition = { media, episode in
+      AnimeProgressService.shared.record(mediaKey: media.id, episode: episode.number)?.currentTime
+    }
+    controller.onProgress = { snapshot in
+      AnimeProgressService.shared.set(mediaKey: snapshot.media.id, episode: snapshot.episode.number, currentTime: snapshot.currentTime, safeDuration: snapshot.duration)
+    }
+    // No Jikan filler / recap lookup: not an anime of MyAnimeList.
+    controller.episodeFlagsLookup = nil
+  }
+
   /// Display name of an installed extension / addon (Watch Together `status.source`), the key when unknown.
   static func extensionName(_ key: String) -> String {
     ExtensionManager.shared.installed.first { $0.key == key }?.displayName ?? key
@@ -409,7 +453,7 @@ enum ShellEpisodeResolver {
   }
 
   /// Server of the session memory, else the one playing now, else the first one.
-  private static func pick(media: Media, found: PlaybackSourceStream, preferredServerTitle: String?) -> ResolvedPlayback {
+  static func pick(media: Media, found: PlaybackSourceStream, preferredServerTitle: String?) -> ResolvedPlayback {
     let stream = found.stream
     let index = stream.rememberedIndex(StreamSessionMemory.preferredServerTitle)
       ?? stream.rememberedIndex(preferredServerTitle)
@@ -425,6 +469,11 @@ final class ShellEpisodeListLoader {
   var onLoad: (([EpisodeInfo]) -> Void)?
 
   func start(media: Media) {
+    if media.isSoraResult {
+      // The module page's own episodes: no AniList / TMDB / ani.zip / Kitsu / Jikan episode list for it.
+      finish(SoraResultSessions.shared.entry(for: media.id)?.episodes.map(\.info) ?? [])
+      return
+    }
     Task { @MainActor in
       let list = await MediaDetailsService.shared.episodes(for: media)
       self.finish(list)
