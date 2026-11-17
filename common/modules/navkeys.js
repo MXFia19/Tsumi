@@ -1,5 +1,6 @@
 // Keyboard back / forward through the app's own history (Shiru 6.9.0): Alt+Left / Alt+Right and the keyboard's
-// BrowserBack / BrowserForward keys, wired by navigation.js next to the mouse back / forward buttons.
+// BrowserBack / BrowserForward keys, wired by navigation.js next to the mouse back / forward buttons. Also which
+// arrow keys the D-pad navigation of click.js leaves to text fields, selects and ranges.
 // Pure functions (no imports, see navkeys.test.mjs).
 
 const NON_TEXT_INPUTS = new Set(['button', 'submit', 'reset', 'checkbox', 'radio', 'range', 'color', 'file', 'image'])
@@ -29,4 +30,34 @@ export function isTypingTarget (target) {
   if (tag === 'TEXTAREA' || tag === 'SELECT') return true
   if (tag !== 'INPUT') return false
   return !NON_TEXT_INPUTS.has(String(target.type || 'text').toLowerCase())
+}
+
+/**
+ * An arrow key pressed on this control is left to it (caret, value) instead of the D-pad navigation (click.js).
+ * A field the user clicked or tabbed into keeps every arrow key: text fields and selects, and ranges.
+ * A field the D-pad itself moved to keeps navigating, since a remote has no Tab key to leave it (↓ on a select of a
+ * settings list must reach the next row, not change the value): only ←/→ stay in the control there, to change a
+ * range, or to move the caret of a text field until its start / end, where the next press leaves the field.
+ * @param {any} target keydown target
+ * @param {string} key 'ArrowLeft' | 'ArrowRight' | 'ArrowUp' | 'ArrowDown'
+ * @param {boolean} [dpadFocused] the D-pad moved the focus to this control
+ */
+export function arrowKeyStaysInControl (target, key, dpadFocused = false) {
+  if (!target || typeof target !== 'object') return false
+  const tag = String(target.tagName || '').toUpperCase()
+  const horizontal = key === 'ArrowLeft' || key === 'ArrowRight'
+  if (tag === 'INPUT' && String(target.type || '').toLowerCase() === 'range') return !dpadFocused || horizontal
+  if (!isTypingTarget(target)) return false
+  if (!dpadFocused) return true
+  if (!horizontal || tag === 'SELECT') return false
+  let start = null
+  let end = null
+  try {
+    start = target.selectionStart
+    end = target.selectionEnd
+  } catch {}
+  // No caret API (number, email, contenteditable): the field keeps ←/→.
+  if (typeof start !== 'number' || typeof end !== 'number') return true
+  if (start !== end) return true // the arrow collapses the selection first
+  return key === 'ArrowLeft' ? start > 0 : end < String(target.value ?? '').length
 }
