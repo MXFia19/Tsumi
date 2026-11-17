@@ -60,5 +60,12 @@ test('pickAudioTrack: then the preferred language, then Japanese, else the defau
   assert.equal(pickAudioTrack(null), -1)
 })
 
+test('pickAudioTrack: Latin American Spanish before Spain', () => {
+  const spanish = [{ name: 'Castellano', lang: 'es-ES' }, { name: 'Latino', lang: 'es-419' }, { name: 'English', lang: 'en' }]
+  assert.equal(pickAudioTrack(spanish, { preferred: 'lat' }), 1)
+  assert.equal(pickAudioTrack(spanish, { preferred: 'spa' }), 0)
+  assert.equal(pickAudioTrack([{ name: 'Castellano', lang: 'es' }, { name: 'English', lang: 'en' }], { preferred: 'lat' }), 0)
+})
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed) process.exit(1)

@@ -238,6 +238,8 @@
         delete search.stremioCatalog
         delete search.catalogKey
         delete search.soraModule
+        // Back to a normal search: saved again (lastSearched), card buttons and Reset back to normal.
+        delete search.clearNext
       }
       search = { ...search, western: value === 'western' ? true : value === 'anime' ? false : null }
     }

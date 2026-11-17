@@ -57,6 +57,11 @@ export function pickAudioTrack (tracks, { remembered = null, preferred = '' } = 
   }
   for (const wanted of [preferred, 'jpn']) {
     if (!wanted) continue
+    // Latin American Spanish (setting "lat"): an es-419 / es-MX / "latino" track before Spain's Spanish.
+    if (String(wanted).toLowerCase() === 'lat') {
+      const latin = tracks.findIndex(track => sameLanguage(track?.lang, 'es') && /419|lat|mx/i.test(`${track?.lang || ''} ${track?.name || ''}`))
+      if (latin !== -1) return latin
+    }
     const index = tracks.findIndex(track => sameLanguage(track?.lang, wanted))
     if (index !== -1) return index
   }
