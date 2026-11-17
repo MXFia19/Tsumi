@@ -1638,7 +1638,9 @@ final class PlayerController {
     guard total > 0 else { return }
     let generation = episodeGeneration
     var found: [PlayerChapter] = []
-    if media.isAnime, let malId = media.malId {
+    // No AniSkip for episode 0 (a prologue), like PC getChaptersAniSkip (`!file.media?.episode`): AniSkip numbers
+    // from 1.
+    if media.isAnime, let malId = media.malId, episode.number > 0 {
       found = await PlayerAniSkip.chapters(malId: malId, episode: episode.number, duration: total)
     }
     if found.isEmpty, generation == episodeGeneration, !isClosed {

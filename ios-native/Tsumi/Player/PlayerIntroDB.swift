@@ -68,9 +68,11 @@ enum PlayerIntroDB {
 
   /// introDbQuery: TMDB id for TMDB movies, TMDB id with the season / episode for TMDB shows (from the episode,
   /// else from the absolute number and the TMDB seasons), ani.zip TVDB numbering for anime. nil when the episode
-  /// cannot be placed (better no chapters than the skip times of another episode).
+  /// cannot be placed (better no chapters than the skip times of another episode), episode 0 included
+  /// (`tmdbSeasonEpisode` gives nil for 0).
   static func query(media: Media, episode: EpisodeRef) async -> Query? {
-    let number = max(episode.number, 1)
+    // Episode 0 (a prologue) stays 0: no skip times rather than episode 1's (negative numbers count as 1, like PC).
+    let number = episode.number < 0 ? 1 : episode.number
     if media.source == .tmdb {
       guard let tmdb = media.tmdbId, tmdb > 0 else { return nil }
       if media.isMovie { return Query(tmdb: tmdb) }
@@ -101,7 +103,8 @@ enum PlayerIntroDB {
       guard let tmdb = positive(ids?.tmdbId) else { return nil }
       return Query(tmdb: tmdb)
     }
-    let entry = aniZip.episodes[String(max(episode, 1))]
+    // Episode 0 stays 0: ani.zip has no "0" entry for most shows, so no skip times rather than episode 1's.
+    let entry = aniZip.episodes[String(episode < 0 ? 1 : episode)]
     guard let tvdb = positive(entry?.tvdbShowId) ?? positive(ids?.tvdbId),
           let season = entry?.seasonNumber, season >= 0,
           let number = positive(entry?.episodeNumber) else { return nil }
