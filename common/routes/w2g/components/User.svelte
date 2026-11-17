@@ -117,8 +117,8 @@
   {/if}
   {#if canManage && member && !member.isSelf}
     <div class='d-flex align-items-center flex-shrink-0 ml-5'>
-      <!-- A v1 client cannot act as host (mode, kick, requests). -->
-      {#if member.protocol >= 2}
+      <!-- A v1 client cannot act as host (mode, kick, requests), nor a channel that copied another member's ids (v2.6). -->
+      {#if member.protocol >= 2 && !member.shadow}
         <button type='button' class='btn btn-sm d-flex align-items-center justify-content-center action' class:confirm={confirming === 'host'}
           title='Make host' aria-label='Make {member.name} the host' use:click={() => confirm('host', () => onTransfer?.(member.userId))}>
           {#if confirming === 'host'}<span class='px-5 font-size-12'>Make host?</span>{:else}<Crown size='1.6rem' />{/if}

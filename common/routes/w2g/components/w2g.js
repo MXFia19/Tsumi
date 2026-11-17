@@ -13,8 +13,9 @@ import {
   appliesCountdown, FEATURES, voiceOffers, voiceLinkAction, acceptsVoiceOffer, duckLevel,
   emptyQueue, queueReduce, queueChanges, sameQueueEntry, describeQueueChange, queueItemLabel, nextEpisodeTarget, acceptsQueue,
   QUEUE_ADVANCE_S, QUEUE_COUNTDOWN_S,
-  ChunkAssembler, validateEvent, USER_EVENTS, rateStep, memberKey, pairIds, resolveHostKey, nextRtt, iceServers, indexKind,
-  sameEpisode, MAX_EVENT_CHARS, MAX_INDEX, MAX_MESSAGE_LENGTH, MAX_NAME_LENGTH, TENTATIVE_HOST_MS
+  ChunkAssembler, validateEvent, rateClass, rateStep, RATE_LIMITS, memberKey, shadowKey, pairIds, resolveHostKey, nextRtt,
+  iceServers, indexKind, sameEpisode, mediaKey, sameMediaKey, isInitialState, cleanUrl,
+  MAX_EVENT_CHARS, MAX_INDEX, MAX_MESSAGE_LENGTH, MAX_NAME_LENGTH, TENTATIVE_HOST_MS
 } from '@/routes/w2g/components/sync.js'
 import { VoiceEngine, voiceDuck } from '@/routes/w2g/components/voice.js'
 import Helper from '@/modules/helper.js'
@@ -27,8 +28,9 @@ const debug = Debug('ui:w2g')
 
 /**
  * @typedef {import('@/modules/al.d.ts').Viewer | { id: string, displayName?: string }} W2GUser
- * @typedef {{ user: W2GUser, peer?: import('p2pt').Peer<any>, userId: string, sessionId?: string | null, key: string, protocol?: number, client?: string, features?: string[] }} PeerEntry
- *   userId: `init.id` as a string (the wire identity); key: memberKey(userId, sessionId), who it is on this device
+ * @typedef {{ user: W2GUser, peer?: import('p2pt').Peer<any>, userId: string, sessionId?: string | null, key: string, protocol?: number, client?: string, features?: string[], shadow?: boolean }} PeerEntry
+ *   userId: `init.id` as a string (the wire identity); key: memberKey(userId, sessionId), who it is on this device;
+ *   shadow: v2.6, another channel already owned that member key, this one is keyed sync.js shadowKey (no authority)
  * @typedef {Record<string, PeerEntry>} PeerList
  * @typedef {{ media: object, episode: number | { number: number, season?: number, localEpisode?: number }, key: string }} SharedMedia
  * @typedef {{ message: string, user: W2GUser | null, type: 'incoming' | 'outgoing' | 'system', date: Date, emoji?: string }} ChatEntry
@@ -36,7 +38,7 @@ const debug = Debug('ui:w2g')
  * @typedef {{ id: string, kind: 'pause' | 'play' | 'seek', time?: number, userId: string, name: string, expiresAt: number }} HostRequest
  * @typedef {{ from: string, name: string, media: any, episode: SharedMedia['episode'], key: string, time: number, paused: boolean, receivedAt: number }} Invite
  * @typedef {{ joined: boolean, muted: boolean, speaking: boolean, link?: 'connecting' | 'connected' | null, localMuted?: boolean, volume?: number }} MemberVoice
- * @typedef {{ userId: string, wireId: string, user: W2GUser, name: string, isSelf: boolean, isHost: boolean, badge: import('./sync.js').Badge, protocol?: number, client?: string, rtt?: number, source?: string, canInvite?: boolean, voice?: MemberVoice, hasVoice?: boolean }} MemberView
+ * @typedef {{ userId: string, wireId: string, user: W2GUser, name: string, isSelf: boolean, isHost: boolean, badge: import('./sync.js').Badge, protocol?: number, client?: string, shadow?: boolean, rtt?: number, source?: string, canInvite?: boolean, voice?: MemberVoice, hasVoice?: boolean }} MemberView
  *   userId: the member key, what kick / transferHost / invite / setMemberVoice take; wireId: its `init.id`
  * @typedef {{ joined: boolean, starting: boolean, hasMic: boolean, muted: boolean, pushToTalk: boolean, held: boolean, transmitting: boolean, speaking: boolean, error: string | null }} VoiceView
  * @typedef {{ peer: import('p2pt').Peer<any>, key: string, userId: string, client?: string }} Sender transport peer of an event
@@ -60,14 +62,6 @@ const QUIET_EVENTS = new Set([EventTypes.StatusEvent, EventTypes.PingEvent, Even
 
 /** Id of an anonymous participant, kept for the whole app session. */
 const anonymousId = generateRandomHexCode(16)
-
-/** Unique id of a title + episode, used to avoid re-sharing what everyone already plays. */
-function mediaKey ({ media, episode }) {
-  const ep = typeof episode === 'object' && episode !== null
-    ? `${episode.season ?? ''}:${episode.localEpisode ?? episode.number}`
-    : String(episode)
-  return `${media?.id}:${ep}`
-}
 
 /**
  * Watch Together lobby: participants find each other through public WebSocket
@@ -207,7 +201,11 @@ export class W2GClient extends EventEmitter {
   #chunks = new ChunkAssembler()
   /** @type {string | null} transport id of the frame P2PT is parsing */
   #chunkPeer = null
-  /** @type {Map<string, { tokens: number, at: number, allowed: boolean }>} v2.5 rate limit of hand-made events, per member key */
+  /**
+   * v2.5 / v2.6 rate limits (sync.js RATE_LIMITS), per data channel (transport id) then bucket: sending `init` again
+   * does not reset them.
+   * @type {Map<string, Map<string, { tokens: number, at: number, allowed: boolean }>>}
+   */
   #rates = new Map()
   /** v2.5: the app was frozen until then (pongs of older pings are no RTT samples). */
   #resumedAt = -Infinity
@@ -336,14 +334,16 @@ export class W2GClient extends EventEmitter {
   shareMedia ({ media, episode }) {
     const key = mediaKey({ media, episode })
     debug(`shareMedia: ${this.media?.key} -> ${key}`)
-    // localKey: our own key for a media received from another client, which may format it differently.
-    if (this.media?.key === key || this.media?.localKey === key) {
+    // localKey: our own key for a media received from another client, which may use other ids. v2.6: keys are compared
+    // canonically ("21:5" and an older app's "21::5" are one episode), or the players reload each other forever.
+    if (this.media && (sameMediaKey(this.media.key, key) || sameMediaKey(this.media.localKey, key))) {
       this.#launched = { media: this.media.media, episode: this.media.episode, key: this.media.key }
       return
     }
     this.#launched = { media, episode, key }
-    // Watching on our own: never drag the others.
-    if (!this.isFollowing) return
+    // Watching on our own: never drag the others. v2.6: nor in `host` mode as a non-host (the others drop it anyway):
+    // the lobby media stays the host's, so the Join card and "Add next episode" still point at it.
+    if (!this.isFollowing || this.controlLocked) return
     this.#setMedia({ media, episode, key, localKey: key })
     this.#sendToPeers(new Event(EventTypes.MediaEvent, { media, episode, key }))
   }
@@ -387,7 +387,7 @@ export class W2GClient extends EventEmitter {
 
     if (this.controlLocked) {
       const target = this.#hostTarget(Date.now())
-      if (target && (target.mediaKey === null || target.mediaKey === this.local.mediaKey)) {
+      if (target && (target.mediaKey === null || sameMediaKey(target.mediaKey, this.local.mediaKey))) {
         this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostKey })
       }
       this.emit('blocked', { action, time: state.time, paused })
@@ -413,7 +413,7 @@ export class W2GClient extends EventEmitter {
    */
   setLocalStatus ({ state, time, mediaKey, rate, source, nowPlaying }, { force = false } = {}) {
     const key = mediaKey ? String(mediaKey) : ''
-    const launched = this.#launched?.key === key ? this.#launched : null
+    const launched = key && this.#launched && sameMediaKey(this.#launched.key, key) ? this.#launched : null
     const playerState = normalizeState(state) || 'idle'
     const next = {
       state: playerState,
@@ -436,7 +436,7 @@ export class W2GClient extends EventEmitter {
     const changed = previous.state !== next.state || previous.mediaKey !== next.mediaKey || previous.rate !== next.rate ||
       previous.source !== next.source || JSON.stringify(previous.nowPlaying ?? null) !== JSON.stringify(next.nowPlaying)
     // Started the lobby episode ourselves: no need to offer "Rejoin" anymore.
-    if (next.mediaKey && this.rejoinOffer.value?.key === next.mediaKey) this.rejoinOffer.value = null
+    if (next.mediaKey && this.rejoinOffer.value && sameMediaKey(this.rejoinOffer.value.key, next.mediaKey)) this.rejoinOffer.value = null
     if (changed) this.localStatus.value = { ...next }
     if (changed || force) this.#sendStatus()
   }
@@ -457,19 +457,19 @@ export class W2GClient extends EventEmitter {
     // v2.4: a queued item the host started is loaded: the existing countdown starts everyone together.
     const queued = this.#pendingQueueStart
     if (queued && now - queued.at > JOIN_TTL_MS) this.#pendingQueueStart = null
-    else if (queued && queued.key === this.local.mediaKey) {
+    else if (queued && this.#onLocalKey(queued.key)) {
       this.#pendingQueueStart = null
       // Once the player reported its loaded state (position, play / pause).
       const timer = setTimeout(() => {
         this.#inviteTimers.delete(timer)
-        if (!this.#destroyed && this.isHost && this.local.mediaKey === queued.key) this.startTogether(QUEUE_COUNTDOWN_S)
+        if (!this.#destroyed && this.isHost && this.#onLocalKey(queued.key)) this.startTogether(QUEUE_COUNTDOWN_S)
       }, 300)
       this.#inviteTimers.add(timer)
       return
     }
     const join = this.#pendingJoin
     if (join && now - join.joinedAt > JOIN_TTL_MS) this.#pendingJoin = null
-    else if (join && join.key === this.local.mediaKey) {
+    else if (join && this.#onLocalKey(join.key)) {
       this.#pendingJoin = null
       if (join.kind === 'lobby') {
         // v2.3 Join: the reference's expected time and play / pause state, read now that we are loaded.
@@ -484,10 +484,11 @@ export class W2GClient extends EventEmitter {
     }
     if (!this.isFollowing) return
     const rejoin = this.#pendingRejoin
-    if (rejoin && (now - rejoin.at > JOIN_TTL_MS || rejoin.key === this.local.mediaKey)) {
+    const rejoined = !!rejoin && this.#onLocalKey(rejoin.key)
+    if (rejoin && (now - rejoin.at > JOIN_TTL_MS || rejoined)) {
       this.#pendingRejoin = null
       // "Rejoin" then syncs, whatever the auto-sync setting.
-      if (rejoin.key === this.local.mediaKey) {
+      if (rejoined) {
         this.#syncToHost(now)
         return
       }
@@ -495,7 +496,7 @@ export class W2GClient extends EventEmitter {
     if (this.isHost || this.hostKey == null) return
     if (this.effectiveMode !== 'host' && settings.value.w2gAutoSync === false) return
     const target = this.#hostTarget(Date.now())
-    if (!target || target.mediaKey === null || target.mediaKey !== this.local.mediaKey) return
+    if (!target || target.mediaKey === null || !this.#onLocalKey(target.mediaKey)) return
     this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostKey })
   }
 
@@ -507,7 +508,7 @@ export class W2GClient extends EventEmitter {
       this.emit('info', { text: 'Nothing to sync with yet' })
       return false
     }
-    if (target.mediaKey !== null && target.mediaKey !== this.local.mediaKey) {
+    if (target.mediaKey !== null && !sameMediaKey(target.mediaKey, this.local.mediaKey)) {
       this.emit('info', { text: 'The host is on another episode' })
       return false
     }
@@ -593,7 +594,7 @@ export class W2GClient extends EventEmitter {
     this.#pendingJoin = { kind: 'lobby', key: media.key, joinedAt: Date.now() }
     this.#sendStatus()
     this.emit('joinableRemoved')
-    this.emit('media', media)
+    this.#play(media, { pending: true })
     return true
   }
 
@@ -607,7 +608,7 @@ export class W2GClient extends EventEmitter {
     if (this.isFollowing) this.#setMedia(shared)
     this.#launched = { media: invite.media, episode: invite.episode, key: invite.key }
     this.#pendingJoin = { ...invite, joinedAt: Date.now() }
-    this.emit('media', shared)
+    this.#play(shared, { pending: true })
     return true
   }
 
@@ -650,7 +651,7 @@ export class W2GClient extends EventEmitter {
     this.rejoinOffer.value = null
     this.#launched = { media: media.media, episode: media.episode, key: media.key }
     this.#pendingRejoin = { key: media.key, at: Date.now() }
-    this.emit('media', media)
+    this.#play(media, { pending: true })
     return true
   }
 
@@ -691,7 +692,8 @@ export class W2GClient extends EventEmitter {
    */
   transferHost (key) {
     const target = this.#memberOf(String(key))
-    if (!this.isHost || !target?.peer) return false
+    // v2.6: never to a channel that copied another member's ids (see sync.js shadowKey).
+    if (!this.isHost || !target?.peer || target.shadow) return false
     // A v1 client would not know it is host: it could not change the mode, kick or answer requests.
     if ((target.protocol ?? 1) < PROTOCOL_VERSION) return false
     const mode = this.mode
@@ -841,6 +843,7 @@ export class W2GClient extends EventEmitter {
         badge,
         protocol: entry.protocol,
         client: entry.client,
+        shadow: !!entry.shadow,
         rtt: signal.rtt,
         source: signal.status?.source || '',
         nowPlaying: signal.status?.nowPlaying ?? null,
@@ -917,7 +920,8 @@ export class W2GClient extends EventEmitter {
       episode,
       key,
       title: (title || media.title?.userPreferred || media.title?.english || media.title?.romaji || '').slice(0, 120),
-      cover: (cover || media.coverImage?.medium || media.coverImage?.extraLarge || '').slice(0, 500),
+      // v2.6: an http(s) URL of at most 500 characters, or none (a cut URL would be a broken one).
+      cover: cleanUrl(cover || media.coverImage?.medium || media.coverImage?.extraLarge || '', 500),
       addedBy: this.selfId,
       addedByName: memberName(this.self)
     }
@@ -989,7 +993,7 @@ export class W2GClient extends EventEmitter {
     this.#pendingQueueStart = { key: item.key, at: Date.now() }
     this.#sendToPeers(new Event(EventTypes.MediaEvent, shared))
     this.#system(`You started ${queueItemLabel(item)} from Up next`)
-    this.emit('media', this.media)
+    this.#play(this.media, { pending: true })
     return true
   }
 
@@ -1180,6 +1184,7 @@ export class W2GClient extends EventEmitter {
     debug(`#onPeerclose: ${peer.id}`)
     this.#chunks.forget(peer.id)
     this.#channels.delete(peer.id)
+    this.#rates.delete(peer.id)
     const entry = this.peers.value[peer.id]
     if (!entry) return
     this.peers.update(peers => {
@@ -1201,7 +1206,6 @@ export class W2GClient extends EventEmitter {
     })
     this.#lastSeen.delete(key)
     this.#presence.delete(key)
-    this.#rates.delete(key)
     this.#forgetVoice(key)
     // v2.5: its invite prompt and its requests can't be answered anymore.
     this.#removeInvite(key)
@@ -1271,10 +1275,14 @@ export class W2GClient extends EventEmitter {
     }
     const now = Date.now()
     this.#lastSeen.set(sender.key, now)
-    // v2.5: chat, reactions, requests, invites and queue changes: a burst, then a few per second.
-    if (USER_EVENTS.includes(type)) {
-      const bucket = rateStep(this.#rates.get(sender.key), now)
-      this.#rates.set(sender.key, bucket)
+    // v2.5: chat, reactions, requests, invites and queue changes: a burst, then a few per second. v2.6: `init`, `ping`
+    // and voice offers too, and per data channel (sending `init` with new ids does not reset them).
+    const rate = rateClass(type, payload)
+    if (rate) {
+      let buckets = this.#rates.get(peer.id)
+      if (!buckets) this.#rates.set(peer.id, (buckets = new Map()))
+      const bucket = rateStep(buckets.get(rate), now, RATE_LIMITS[rate])
+      buckets.set(rate, bucket)
       if (!bucket.allowed) {
         debug('Rate limited', sender.key, type)
         return
@@ -1359,18 +1367,27 @@ export class W2GClient extends EventEmitter {
   #onInit (peer, user) {
     const userId = String(user.id)
     const sessionId = user.sessionId ?? null
-    const key = memberKey(userId, sessionId)
+    const claimed = memberKey(userId, sessionId)
     if (this.#banned.has(userId)) {
       this.#bannedPeers.add(peer.id)
       this.#closePeer(peer.id)
       return
     }
     // Our own instance (a channel back to ourselves, or someone copying our session id).
-    if (key === this.selfKey) return
+    if (claimed === this.selfKey) return
+    const previous = this.peers.value[peer.id]
+    // v2.6: a channel keeps the identity of its first `init` (an app never changes its id or session id in a lobby):
+    // a later `init` may only update the name, never make it another member.
+    if (previous && (previous.userId !== userId || (previous.sessionId ?? null) !== sessionId)) {
+      debug('Ignoring an init that changes the identity of', peer.id)
+      return
+    }
+    // v2.6: a member key belongs to the first open channel that claimed it. Another channel with the same ids is a
+    // separate member without authority (sync.js shadowKey): it can't take the host's role by copying its ids.
+    const owned = !previous && Object.entries(this.peers.value).some(([peerId, entry]) => peerId !== peer.id && entry.peer && entry.key === claimed)
+    const shadow = previous ? !!previous.shadow : owned
+    const key = previous?.key ?? (shadow ? shadowKey(claimed, peer.id) : claimed)
     const known = this.#hasMember(key)
-    // Another channel already speaks for that member: an older app (no session id) that came back before its
-    // previous channel closed.
-    const again = Object.entries(this.peers.value).some(([peerId, entry]) => peerId !== peer.id && entry.peer && entry.key === key)
     this.peers.update(peers => {
       peers[peer.id] = {
         peer,
@@ -1378,6 +1395,7 @@ export class W2GClient extends EventEmitter {
         userId,
         sessionId,
         key,
+        shadow,
         // A v1 client sends no `protocol`.
         protocol: isFiniteNumber(user.protocol) ? user.protocol : 1,
         client: user.client,
@@ -1396,9 +1414,6 @@ export class W2GClient extends EventEmitter {
       })
       this.#system(`${remoteName(user)} joined`)
     }
-    // That member is the host but came back as a new instance: it does not know it is host (only the host tells
-    // newcomers), tell it.
-    if (again && key === this.hostKey && !this.isHost && !this.lobby.value.tentative) this.#sendEvent(peer, this.#hostEvent(key, this.mode))
   }
 
   /**
@@ -1409,9 +1424,11 @@ export class W2GClient extends EventEmitter {
     // v2.5: in `host` mode only the host changes the lobby media.
     if (this.effectiveMode === 'host' && sender.key !== this.hostKey) return
     const localKey = mediaKey(shared)
-    // Keep the sender's key so every client of the lobby compares the same string.
+    // Keep the sender's key so every client of the lobby (older apps too) compares the same string. v2.6: an episode
+    // we already share, written another way ("21::5" for "21:5"), is no change: re-applying it made two players
+    // reload each other forever.
     const key = shared.key || localKey
-    if (key === this.media?.key) return
+    if (this.media && sameMediaKey(key, this.media.key)) return
     this.#setMedia({ ...shared, key, localKey })
     // Watching on our own: remember the lobby media for "Rejoin", but do not start it.
     if (!this.isFollowing) {
@@ -1422,7 +1439,7 @@ export class W2GClient extends EventEmitter {
     // they get the Join card. A follower already watching moves on to the new title.
     if (!this.#appliesLobbyState(sender.key)) return
     this.#launched = { media: shared.media, episode: shared.episode, key }
-    this.emit('media', this.media)
+    this.#play(this.media)
   }
 
   /**
@@ -1437,12 +1454,41 @@ export class W2GClient extends EventEmitter {
     if (!sameEpisode(payload.mediaKey, this.local.mediaKey)) return
     if (this.index?.index === payload.index) return
     this.index = { index: payload.index }
-    if (this.#appliesLobbyState(sender.key) && this.local.mediaKey === this.media?.key) this.emit('index', payload.index)
+    if (this.#appliesLobbyState(sender.key) && !!this.media && sameMediaKey(this.local.mediaKey, this.media.key)) this.emit('index', payload.index)
   }
 
   /** v2.3: a lobby `media` / `index` starts our player only when following, watching, and not the newcomer state. */
   #appliesLobbyState (senderKey) {
-    return autoStartsMedia({ following: this.isFollowing, localState: this.local.state, senderJoinedAt: this.signals.value[senderKey]?.joinedAt, now: Date.now() })
+    return autoStartsMedia({ following: this.isFollowing, localState: this.local.state, senderJoinedAt: this.#joinedAt(senderKey), now: Date.now() })
+  }
+
+  /** When a member's `init` was received (start of its INITIAL_STATE_MS window). */
+  #joinedAt (key) {
+    const signals = this.signals.value
+    return Object.hasOwn(signals, key) ? signals[key].joinedAt : undefined
+  }
+
+  /** Our player is on that media key (canonical comparison: "21::5" of an older app is "21:5"). */
+  #onLocalKey (key) {
+    return sameMediaKey(key ?? '', this.local.mediaKey ?? '')
+  }
+
+  /**
+   * Starts a shared media in our player ('media', then w2g-play in the app). v2.6: not when our player already plays
+   * or loads that episode (it would load it again); with `pending` (Join, invite, Rejoin, Play now waiting for the
+   * episode to load), the pending step runs at once if it is loaded, else when the player reports it ready.
+   * @param {SharedMedia & { localKey?: string }} shared
+   * @param {{ pending?: boolean }} [options]
+   */
+  #play (shared, { pending = false } = {}) {
+    const local = this.local
+    const playing = local.state !== 'idle' && !!local.mediaKey && (this.#onLocalKey(shared.key) || (!!shared.localKey && this.#onLocalKey(shared.localKey)))
+    if (!playing) {
+      this.emit('media', shared)
+      return
+    }
+    debug(`#play: already on ${local.mediaKey}`)
+    if (pending && local.state !== 'loading') this.playerReady()
   }
 
   /**
@@ -1473,8 +1519,11 @@ export class W2GClient extends EventEmitter {
     // the lobby's (e.g. the sync sent to a newcomer).
     const otherMedia = payload.mediaKey
       ? !sameEpisode(payload.mediaKey, this.local.mediaKey)
-      : !!this.local.mediaKey && !!this.media?.key && this.local.mediaKey !== this.media.key
-    const following = this.isFollowing && !otherMedia
+      : !!this.local.mediaKey && !!this.media?.key && !sameMediaKey(this.local.mediaKey, this.media.key)
+    // v2.6: nor the lobby state a member sends right after its `init` (the host's `player` sync to a newcomer), as for
+    // `media` and `index`: remembered, not applied (same rule as the iOS app).
+    const initial = isInitialState({ senderJoinedAt: this.#joinedAt(sender.key), now })
+    const following = this.isFollowing && !otherMedia && !initial
     if (following) {
       this.#cancelCountdown()
       this.emit('player', { time, paused, action, by, rate })
@@ -1690,7 +1739,7 @@ export class W2GClient extends EventEmitter {
 
   /** The lobby media changes: the host's last `player` event was about the previous one. */
   #setMedia (media) {
-    if (media?.key !== this.media?.key) this.#lastHostPlayer = null
+    if (!sameMediaKey(media?.key ?? '', this.media?.key ?? '')) this.#lastHostPlayer = null
     this.media = media
   }
 
@@ -1793,10 +1842,10 @@ export class W2GClient extends EventEmitter {
     return Object.values(this.peers.value).some(entry => entry.peer && entry.key === key)
   }
 
-  /** Every member we know, ourselves included: key and `init.id`. */
+  /** Every member we know, ourselves included: key and `init.id` (v2.6: not the channels that copied another's ids). */
   #identities () {
     const list = [{ key: this.selfKey, userId: this.selfId }]
-    for (const entry of Object.values(this.peers.value)) if (entry.peer && entry.key) list.push({ key: entry.key, userId: entry.userId })
+    for (const entry of Object.values(this.peers.value)) if (entry.peer && entry.key && !entry.shadow) list.push({ key: entry.key, userId: entry.userId })
     return list
   }
 
@@ -1806,20 +1855,20 @@ export class W2GClient extends EventEmitter {
     const seen = new Map()
     for (const entry of Object.values(this.peers.value)) {
       if (!entry.peer || !entry.key || this.#banned.has(entry.userId) || seen.has(entry.key)) continue
-      seen.set(entry.key, { key: entry.key, userId: entry.userId, sessionId: entry.sessionId, protocol: entry.protocol, following: signals[entry.key]?.status?.following })
+      seen.set(entry.key, { key: entry.key, userId: entry.userId, sessionId: entry.sessionId, protocol: entry.protocol, following: signals[entry.key]?.status?.following, shadow: !!entry.shadow })
     }
     return [...seen.values()]
   }
 
-  /** Candidates of a host election or hand-off, named by member key. */
+  /** Candidates of a host election or hand-off, named by member key. v2.6: never a channel that copied another's ids. */
   #electionPeers () {
-    return this.#peerSummaries().map(({ key, protocol, following }) => ({ userId: key, protocol, following }))
+    return this.#peerSummaries().filter(peer => !peer.shadow).map(({ key, protocol, following }) => ({ userId: key, protocol, following }))
   }
 
   /** Jump to the host's expected position now (resync after following again, "Rejoin"). */
   #syncToHost (now) {
     const target = this.#hostTarget(now)
-    if (!target || (target.mediaKey !== null && target.mediaKey !== this.local.mediaKey)) return false
+    if (!target || (target.mediaKey !== null && !this.#onLocalKey(target.mediaKey))) return false
     this.#applyLocally({ time: target.time, paused: target.paused, action: 'sync', by: this.hostKey })
     return true
   }
@@ -1875,7 +1924,7 @@ export class W2GClient extends EventEmitter {
 
   /** v2.3 media an invite offers, and the lobby reference. */
   #offered () {
-    const ownActive = this.local.state !== 'idle' && !!this.#launched && this.#launched.key === this.local.mediaKey
+    const ownActive = this.local.state !== 'idle' && !!this.#launched && !!this.local.mediaKey && this.#onLocalKey(this.#launched.key)
     const reference = this.#lobbyReferenceId()
     const offered = offeredMedia({ ownKey: this.#launched?.key, ownActive, lobbyKey: this.media?.key, lobbyWatching: reference !== null })
     return { offered, reference }
