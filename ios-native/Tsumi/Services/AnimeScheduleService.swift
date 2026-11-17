@@ -308,6 +308,11 @@ final class AnimeScheduleService: @unchecked Sendable {
 
   private init() {}
 
+  /// Another account is in use (ProfilesService): the episode pages built for the previous one carry its list entries.
+  func accountChanged() {
+    state.update { $0.pageCache.removeAll() }
+  }
+
   // MARK: - Feeds
 
   private func feedName(_ feed: ReleaseFeed, schedule: Bool) -> String {

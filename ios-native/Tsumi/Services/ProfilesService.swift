@@ -406,9 +406,11 @@ final class ProfilesService {
   private func accountChanged(previous: AccountProfile?) {
     if previous?.id != current?.id {
       // Per-account memory of the previous profile: list entries and hearts of the store, hearts toggled in this
-      // session, positions read from its notes (the AniList caches are kept per viewer, AniListService.viewerKey).
+      // session, episode feed pages built with its entries, positions read from its notes (the AniList caches are
+      // kept per viewer, AniListService.viewerKey).
       MediaStore.shared.clearListEntries()
       AniListService.shared.accountChanged()
+      AnimeScheduleService.shared.accountChanged()
       PlaybackSyncService.shared.accountChanged()
       BrowseFavouriteStore.shared.changed()
     }
