@@ -12,7 +12,9 @@ export function linksResults (config) {
 
 /**
  * Episodes of an `extractEpisodes` answer (a JSON text or an array): entries with a link, once per link, in the
- * module's order. An entry without a usable number gets its place in the list.
+ * module's order. The module's numbers are kept when they are all different whole numbers; otherwise (no number,
+ * seasons starting again at 1...) the episodes are numbered 1, 2, 3... in the list order, so a number (playback, saved
+ * position, next episode) always means one episode. Like iOS SoraResultSource.
  * @param {any} raw
  * @returns {{ href: string, number: number, title: string }[]}
  */
@@ -32,11 +34,13 @@ export function moduleEpisodes (raw) {
     const href = typeof entry?.href === 'string' ? entry.href.trim() : ''
     if (!href || seen.has(href)) continue
     seen.add(href)
-    const number = Number(entry.number)
     const title = typeof entry.title === 'string' ? entry.title.trim().slice(0, 200) : ''
-    episodes.push({ href, number: Number.isFinite(number) && number >= 0 ? number : episodes.length + 1, title })
+    const number = entry.number == null || entry.number === '' ? NaN : Number(entry.number)
+    episodes.push({ href, number, title })
   }
-  return episodes
+  const numbers = episodes.map(episode => episode.number)
+  const own = numbers.every(number => Number.isInteger(number) && number >= 0) && new Set(numbers).size === numbers.length
+  return episodes.map((episode, index) => ({ ...episode, number: own ? episode.number : index + 1 }))
 }
 
 /**

@@ -22,20 +22,31 @@ test('linksResults: on unless turned off', () => {
   assert.equal(linksResults({ linkResults: false }), false)
 })
 
-test('moduleEpisodes: links once, numbers kept or given by place', () => {
+test('moduleEpisodes: links once, the module numbers when all different whole numbers', () => {
   const raw = JSON.stringify([
     { href: 'https://v.example/1', number: 1 },
     { href: 'https://v.example/1', number: 1 },
     { href: ' https://v.example/2 ', number: '2', title: 'Second' },
     { href: '', number: 3 },
     { number: 4 },
-    { href: 'https://v.example/x', number: 'abc' }
+    { href: 'https://v.example/5', number: 5 }
   ])
   assert.deepEqual(moduleEpisodes(raw), [
     { href: 'https://v.example/1', number: 1, title: '' },
     { href: 'https://v.example/2', number: 2, title: 'Second' },
-    { href: 'https://v.example/x', number: 3, title: '' }
+    { href: 'https://v.example/5', number: 5, title: '' }
   ])
+})
+
+test('moduleEpisodes: numbered by place when a number is missing, repeated or not whole', () => {
+  const numbers = (list) => moduleEpisodes(list).map(episode => episode.number)
+  // Seasons starting again at 1.
+  assert.deepEqual(numbers([{ href: 'a', number: 1 }, { href: 'b', number: 2 }, { href: 'c', number: 1 }]), [1, 2, 3])
+  assert.deepEqual(numbers([{ href: 'a', number: 'abc' }, { href: 'b', number: 7 }]), [1, 2])
+  assert.deepEqual(numbers([{ href: 'a' }]), [1])
+  assert.deepEqual(numbers([{ href: 'a', number: 1.5 }, { href: 'b', number: 2 }]), [1, 2])
+  assert.deepEqual(numbers([{ href: 'a', number: 0 }, { href: 'b', number: 1 }]), [0, 1])
+  assert.deepEqual(numbers([{ href: 'a', number: null }, { href: 'b', number: 4 }]), [1, 2])
   assert.deepEqual(moduleEpisodes('not json'), [])
   assert.deepEqual(moduleEpisodes({ href: 'x' }), [])
   assert.deepEqual(moduleEpisodes(null), [])

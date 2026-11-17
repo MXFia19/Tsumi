@@ -1345,12 +1345,20 @@
     ELECTRON.onMinimize(handleVisibility)
   })
   /** End of the episode (or its credits): next episode with autoplay, the lobby's next queued item in Watch Together. True when something starts. */
+  /**
+   * Whether the next episode starts by itself (setting "Autoplay"). Not for a module result opened as it is
+   * (sora/resultpage.js): its next / previous buttons still play the module's other episodes. Like iOS.
+   */
+  function autoplayNext () {
+    return settings.value.playerAutoplay && !media?.media?.isSora
+  }
+
   function tryPlayNext () {
     currentSkippable = null
     clearUpNext()
     // Watch Together: the host plays the next queued item ("Up next"), else nothing as before.
     if (state.value) return !externalPlayback && !!state.value.episodeEnded()
-    if (!$settings.playerAutoplay || !hasNext) return false
+    if (!autoplayNext() || !hasNext) return false
     // One request at a time: the next episode of an extension is looked for while this one keeps playing (Up next
     // "Play now", Skip or auto-skip on the last chapter, then `ended`). Asking again would restart that search, or
     // re-open the extension results under the user's cursor. Once that menu was closed, a new request opens it again.
@@ -1441,7 +1449,7 @@
         // there: every member would start the next episode on their own).
         if (
           ((safeduration - endtime) | 0) === 0 &&
-          (state.value || (hasNext && settings.value.playerAutoplay)) &&
+          (state.value || (hasNext && autoplayNext())) &&
           tryPlayNext()
         ) return
         currentTime = endtime
@@ -2113,7 +2121,7 @@
   }
 
   function canAdvance () {
-    return !externalPlayback && !miniplayer && !pip && !state.value && $settings.playerAutoplay && hasNext
+    return !externalPlayback && !miniplayer && !pip && !state.value && $settings.playerAutoplay && !media?.media?.isSora && hasNext
   }
 
   // Runs on timeupdate.

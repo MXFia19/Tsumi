@@ -6,6 +6,7 @@
   import { playAnime } from '@/modals/extension/ExtensionModal.svelte'
   import { resultEpisodes, resultDetails, forgetEpisodes } from '@/modules/sora/resultpage.js'
   import { episodeLabel } from '@/modules/sora/moduleresult.js'
+  import { getAnimeProgress } from '@/modules/anime/animeprogress.js'
   import { X, Play, Loader, CircleAlert, RefreshCw, Puzzle } from 'lucide-svelte'
 
   // Page of a Sora module result opened as it is, without an AniList / TMDB title (sora/searchsource.js): what the
@@ -43,6 +44,12 @@
     } finally {
       if (loadedFor === target.id) loading = false
     }
+  }
+
+  /** Part of an episode already watched here (saved position), 0 to 1. */
+  function watched (number) {
+    const progress = media && getAnimeProgress({ mediaId: media.id, episode: number })
+    return progress?.safeduration ? Math.min(1, Math.max(0, progress.currentTime / progress.safeduration)) : 0
   }
 
   function retry () {
@@ -103,9 +110,13 @@
           {:else}
             <div class='episodes'>
               {#each episodes as episode (episode.href)}
-                <button type='button' class='btn bg-dark-light d-flex align-items-center rounded-2 px-15 py-10 h-auto text-left' use:click={() => playAnime(media, { number: episode.number })} title={episodeLabel(episode, episodes.length)}>
+                {@const progress = watched(episode.number)}
+                <button type='button' class='btn bg-dark-light d-flex align-items-center rounded-2 px-15 py-10 h-auto text-left position-relative overflow-hidden' use:click={() => playAnime(media, { number: episode.number })} title={episodeLabel(episode, episodes.length)}>
                   <Play size='1.6rem' class='mr-10 flex-shrink-0' fill='currentColor' />
                   <span class='text-truncate'>{episodeLabel(episode, episodes.length)}</span>
+                  {#if progress > 0}
+                    <span class='watched position-absolute bottom-0 left-0' style='width: {progress * 100}%'></span>
+                  {/if}
                 </button>
               {/each}
             </div>
@@ -136,6 +147,10 @@
     line-height: 1.5;
     max-height: 20rem;
     overflow-y: auto;
+  }
+  .watched {
+    height: .3rem;
+    background: var(--accent-color);
   }
   .episodes {
     display: grid;

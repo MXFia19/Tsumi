@@ -313,7 +313,9 @@ class ExtensionManager {
         [key]: {
           url: loaded.url,
           enabled: true,
-          manifest: loaded.manifest
+          manifest: loaded.manifest,
+          // An update of an installed module keeps "Link results to AniList / TMDB".
+          ...(typeof settings.value.extensions?.[key]?.linkResults === 'boolean' ? { linkResults: settings.value.extensions[key].linkResults } : {})
         }
       }
     })
