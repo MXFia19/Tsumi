@@ -568,8 +568,9 @@ final class MediaListService {
       do {
         if delete {
           if profile.isAniList {
-            let theirLists = try await AniListService.shared.userLists(userId: profile.viewer.id, token: profile.token)
-            if let listEntryId = theirLists.first(where: { $0.anilistId == media.anilistId })?.listEntryId {
+            // That profile's entry of this media only (not its whole list).
+            guard let mediaId = media.anilistId else { continue }
+            if let listEntryId = try await AniListService.shared.listEntry(mediaId: mediaId, token: profile.token)?.id {
               success = try await AniListService.shared.deleteEntry(listEntryId: listEntryId, token: profile.token)
             } else {
               continue

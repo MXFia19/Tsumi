@@ -254,7 +254,28 @@ final class ProfilesService {
     return false
   }
 
-  /// Handles tsumi://alauth / tsumi://malauth (and shiru://) callbacks, also usable from `onOpenURL`.
+  /// tsumi://alauth / tsumi://malauth (and shiru://) opened from outside the app (onOpenURL through Services.handle).
+  /// The AniList sign-in comes back through the login web view (pin page), so an AniList token link is only taken as
+  /// the result of an AniList sign-in started here and still waiting: any web page could otherwise open a link with
+  /// its own token, sign the app into that account and get the user's progress written there (login CSRF). A
+  /// MyAnimeList link is checked against the state of a login started here (`handleMALCode`). Returns true when the
+  /// link was handed to the running sign-in (which reports its own result) or signed in.
+  @discardableResult
+  func handleExternalCallback(_ url: URL) async -> Bool {
+    let isAniListLink = url.absoluteString.contains("access_token=")
+    if let pending = webLogin, isAniListLink == (pending.malState == nil) {
+      finishWebLogin(url, request: pending.id)
+      return true
+    }
+    if isAniListLink {
+      ServiceMessages.shared.post(.error, "Sign-in Link Ignored", "This AniList sign-in link does not come from a sign-in started in the app. Sign in from the profiles instead.")
+      return false
+    }
+    return await handleCallback(url)
+  }
+
+  /// Handles the tsumi://alauth / tsumi://malauth (and shiru://) result of a login started here (and the pasted
+  /// MyAnimeList redirect).
   @discardableResult
   func handleCallback(_ url: URL) async -> Bool {
     let text = url.absoluteString
@@ -320,7 +341,10 @@ final class ProfilesService {
 
   /// Sign Out of the current profile (swapProfiles(null)): the first other profile becomes current.
   func logout() {
+    let signedOut = current
     swapProfiles(nil, newProfile: false)
+    // Its offline progress can no longer be sent.
+    if let signedOut { DownloadProgressQueue.shared.dropAccount(signedOut.id) }
   }
 
   /// Switch to another profile; the current one moves to the other profiles.
@@ -335,6 +359,7 @@ final class ProfilesService {
       value.sync.removeAll { $0 == profile.viewer.id }
     }
     reload()
+    DownloadProgressQueue.shared.dropAccount(profile.id)
   }
 
   /// "Sync List Entries" switch of an other profile.
@@ -380,7 +405,14 @@ final class ProfilesService {
   /// location.reload() equivalent: user specific data is reset and reloaded.
   private func accountChanged(previous: AccountProfile?) {
     if previous?.id != current?.id {
+      // Per-account memory of the previous profile: list entries and hearts of the store, hearts toggled in this
+      // session, episode feed pages built with its entries, positions read from its notes (the AniList caches are
+      // kept per viewer, AniListService.viewerKey).
       MediaStore.shared.clearListEntries()
+      AniListService.shared.accountChanged()
+      AnimeScheduleService.shared.accountChanged()
+      PlaybackSyncService.shared.accountChanged()
+      BrowseFavouriteStore.shared.changed()
     }
     MediaListService.shared.accountChanged()
     HomeSectionsService.shared.rebuild()

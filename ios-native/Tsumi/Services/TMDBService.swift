@@ -674,12 +674,21 @@ final class TMDBService: @unchecked Sendable {
 
   /// Release dates of a movie (/movie/{id}/release_dates), kept 12 hours: digital dates are often added late.
   func releaseDates(movieId: Int) async -> [TMDBReleaseCountry] {
+    await releaseDatesLookup(movieId: movieId).countries
+  }
+
+  /// `releaseDates` and whether they are current: from TMDB or the 12 hour cache, not an expired copy kept for offline
+  /// use nor nothing because the request failed (movie release alerts: a failed check is tried again sooner).
+  func releaseDatesLookup(movieId: Int) async -> (countries: [TMDBReleaseCountry], current: Bool) {
     let cacheKey = "tmdb.releaseDates.\(movieId)"
-    if let cached = await DiskCache.shared.get(cacheKey, as: [TMDBReleaseCountry].self, allowExpired: !ServiceNetworkMonitor.shared.isOnline) {
-      return cached
+    if let cached = await DiskCache.shared.get(cacheKey, as: [TMDBReleaseCountry].self) {
+      return (cached, true)
+    }
+    if !ServiceNetworkMonitor.shared.isOnline, let stale = await DiskCache.shared.get(cacheKey, as: [TMDBReleaseCountry].self, allowExpired: true) {
+      return (stale, false)
     }
     guard let data = try? await get("/movie/\(movieId)/release_dates") else {
-      return await DiskCache.shared.get(cacheKey, as: [TMDBReleaseCountry].self, allowExpired: true) ?? []
+      return (await DiskCache.shared.get(cacheKey, as: [TMDBReleaseCountry].self, allowExpired: true) ?? [], false)
     }
     let countries: [TMDBReleaseCountry] = data.array("results").compactMap { entry in
       guard let country = entry.string("iso_3166_1") else { return nil }
@@ -690,7 +699,7 @@ final class TMDBService: @unchecked Sendable {
       return TMDBReleaseCountry(country: country, dates: dates)
     }
     await DiskCache.shared.set(cacheKey, countries, ttl: 12 * 3600)
-    return countries
+    return (countries, true)
   }
 
   /// Upcoming movies of the schedule (getMovieSchedule of tmdb.js, MovieReleases): theatrical releases in the

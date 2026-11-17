@@ -347,17 +347,18 @@ final class MediaStore: @unchecked Sendable {
     scheduleSave()
   }
 
-  /// Removes every list entry (account switch / logout: the entries belonged to the previous user).
+  /// Removes every list entry and favourite flag (account switch / logout: they belonged to the previous user).
   func clearListEntries() {
     state.update { current in
       for key in Array(current.media.keys) {
         current.media[key]?.listEntry = nil
-        if current.extras[key] != nil {
-          current.extras[key]?.listEntryId = nil
-          current.extras[key]?.startedAt = nil
-          current.extras[key]?.completedAt = nil
-          current.extras[key]?.customLists = []
-        }
+      }
+      for key in Array(current.extras.keys) {
+        current.extras[key]?.listEntryId = nil
+        current.extras[key]?.startedAt = nil
+        current.extras[key]?.completedAt = nil
+        current.extras[key]?.customLists = []
+        current.extras[key]?.isFavourite = false
       }
     }
     scheduleSave()

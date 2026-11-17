@@ -97,6 +97,8 @@ struct RemoteListEntry: Hashable {
   var repeatCount: Int
   var startedAt: FuzzyDate?
   var completedAt: FuzzyDate?
+  /// Id of the entry (DeleteMediaListEntry of a synced profile).
+  var id: Int? = nil
 }
 
 /// Result of SaveMediaListEntry.
@@ -198,6 +200,17 @@ final class AniListService: @unchecked Sendable {
   /// Cache key suffix, so results without the complex fields are not reused once Complex is back on.
   private static var complexityKeySuffix: String {
     usesComplexQueries ? "" : ".simple"
+  }
+
+  /// Cache key part of the viewer whose token the queries carry. Cached media pages hold that viewer's list entries
+  /// and favourites (mediaListEntry, isFavourite): a page cached for one AniList profile must never fill the store of
+  /// another one (its entry would then be written to the other list on Play or after an episode). PC keeps one cache
+  /// per viewer (cache.js cacheID). MyAnimeList accounts and no account send no AniList token: they share the
+  /// anonymous pages. Also captured when a request starts: a reply that comes back after a profile switch is not merged
+  /// into the store (`finalize`, `userLists`, MediaDetailsService.details).
+  static var viewerKey: String {
+    guard let current = AccountStore.shared.current, current.isAniList else { return "u0." }
+    return "u\(current.viewer.id)."
   }
 
   static var searchQuery: String { """
@@ -308,7 +321,7 @@ final class AniListService: @unchecked Sendable {
   query($id: Int) {
     Media(id: $id, type: ANIME) {
       id
-      mediaListEntry { status, progress, repeat, startedAt { year, month, day }, completedAt { year, month, day } }
+      mediaListEntry { id, status, progress, repeat, startedAt { year, month, day }, completedAt { year, month, day } }
     }
   }
   """
@@ -500,6 +513,7 @@ final class AniListService: @unchecked Sendable {
     var lastError: Error = ServiceError.invalidResponse
     for attempt in 1...3 {
       do {
+        let scope = Self.viewerKey
         let json = try await request(Self.userListsQuery, variables: ["id": userId, "sort": [sort]], token: token)
         let data = try dataObject(json)
         guard let collection = data.dict("MediaListCollection") else {
@@ -526,11 +540,16 @@ final class AniListService: @unchecked Sendable {
             }
           }
         }
-        if token == nil {
+        // The current viewer's list, unless the profile changed while it downloaded (its entries and notes then belong
+        // to the previous one; MediaListService.refresh drops the items too).
+        if token == nil && scope == Self.viewerKey {
           MediaStore.shared.ingest(parsedMedia, extras: parsedExtras)
           // Cross-device resume: positions written in the notes by the other devices.
           let listNotes = notes
-          Task { @MainActor in PlaybackSyncService.shared.ingestListNotes(listNotes) }
+          Task { @MainActor in
+            guard AniListService.viewerKey == scope else { return }
+            PlaybackSyncService.shared.ingestListNotes(listNotes)
+          }
         }
         return items
       } catch {
@@ -574,7 +593,7 @@ final class AniListService: @unchecked Sendable {
       throw ServiceError.api(ServiceJSON.errorMessage(json) ?? "Failed to read the list entry")
     }
     guard let entry = media.dict("mediaListEntry"), let status = ListStatus(rawValue: entry.string("status") ?? "") else { return nil }
-    return RemoteListEntry(status: status, progress: entry.int("progress") ?? 0, repeatCount: entry.int("repeat") ?? 0, startedAt: FuzzyDate.parse(entry.dict("startedAt")), completedAt: FuzzyDate.parse(entry.dict("completedAt")))
+    return RemoteListEntry(status: status, progress: entry.int("progress") ?? 0, repeatCount: entry.int("repeat") ?? 0, startedAt: FuzzyDate.parse(entry.dict("startedAt")), completedAt: FuzzyDate.parse(entry.dict("completedAt")), id: entry.int("id"))
   }
 
   func deleteEntry(listEntryId: Int, token: String? = nil) async throws -> Bool {
@@ -583,22 +602,43 @@ final class AniListService: @unchecked Sendable {
     return data.dict("DeleteMediaListEntry")?.bool("deleted") ?? false
   }
 
-  /// ToggleFavourite: flips the cached value immediately and sends the mutation in the background.
+  /// ToggleFavourite: flips the cached value immediately and sends the mutation in the background. When it is not
+  /// saved (offline, expired session, AniList error) the heart goes back to its previous state.
   @discardableResult
   func toggleFavourite(id: Int) -> Bool {
-    let key = Media.anilistKey(id)
-    let current = favourites.get()[id] ?? MediaStore.shared.extras(key)?.isFavourite ?? false
-    let next = !current
-    favourites.update { $0[id] = next }
-    MediaStore.shared.updateExtras(key) { $0.isFavourite = next }
+    let previous = isFavourite(id: id)
+    let next = !previous
+    setFavourite(id: id, next)
+    let account = AccountStore.shared.current?.id
     Task {
-      _ = try? await self.request(Self.favouriteMutation, variables: ["id": id])
+      do {
+        let json = try await self.request(Self.favouriteMutation, variables: ["id": id])
+        guard try self.dataObject(json).dict("ToggleFavourite") != nil else {
+          throw ServiceError.api(ServiceJSON.errorMessage(json) ?? "AniList did not save the favourite")
+        }
+      } catch {
+        // Nothing to undo after a profile switch (the flags were reset) or when the heart was tapped again meanwhile.
+        guard AccountStore.shared.current?.id == account, self.isFavourite(id: id) == next else { return }
+        self.setFavourite(id: id, previous)
+        await MainActor.run { BrowseFavouriteStore.shared.changed() }
+        ServiceMessages.send(.error, "Failed to Update Favourite", error.localizedDescription)
+      }
     }
     return next
   }
 
+  private func setFavourite(id: Int, _ value: Bool) {
+    favourites.update { $0[id] = value }
+    MediaStore.shared.updateExtras(Media.anilistKey(id)) { $0.isFavourite = value }
+  }
+
   func isFavourite(id: Int) -> Bool {
     favourites.get()[id] ?? MediaStore.shared.extras(Media.anilistKey(id))?.isFavourite ?? false
+  }
+
+  /// Another account is in use (ProfilesService): the hearts toggled in this session belonged to the previous one.
+  func accountChanged() {
+    favourites.set([:])
   }
 
   // MARK: - Searches
@@ -615,16 +655,33 @@ final class AniListService: @unchecked Sendable {
     return AniListCachedPage(media: media, extras: extras, hasNextPage: page.dict("pageInfo")?.bool("hasNextPage") ?? false)
   }
 
-  private func finalize(_ page: AniListCachedPage, fresh: Bool) -> MediaPage {
+  /// `scope`: the viewerKey when the request started. When the profile changed since, the page belongs to the previous
+  /// viewer: it is not merged into the store (its list entries and favourites would come back after the switch).
+  private func finalize(_ page: AniListCachedPage, fresh: Bool, scope: String) -> MediaPage {
+    guard scope == Self.viewerKey else {
+      return MediaPage(items: page.media.map { Self.withoutViewerData($0) }, hasNextPage: page.hasNextPage)
+    }
     let items = MediaStore.shared.ingest(page.media, extras: page.extras, overwrite: fresh)
     return MediaPage(items: items, hasNextPage: page.hasNextPage)
   }
 
+  /// Media of a reply meant for another viewer, for the caller only: the stored copy (the current viewer's state), else
+  /// the media without that viewer's list entry. The store is left untouched.
+  static func withoutViewerData(_ media: Media) -> Media {
+    if let stored = MediaStore.shared.media(media.id) { return stored }
+    var copy = media
+    copy.listEntry = nil
+    return copy
+  }
+
   /// Generic cached page query.
-  private func cachedPage(cacheKey: String, query: String, variables: [String: Any], ttl: TimeInterval, skipCache: Bool, fallback: AniListVariables) async throws -> MediaPage {
+  /// `prefix` + viewerKey + `key` is the cache key.
+  private func cachedPage(prefix: String, key: String, query: String, variables: [String: Any], ttl: TimeInterval, skipCache: Bool, fallback: AniListVariables) async throws -> MediaPage {
+    let scope = Self.viewerKey
+    let cacheKey = prefix + scope + key
     let online = ServiceNetworkMonitor.shared.isOnline
     if !skipCache, let cached = await DiskCache.shared.get(cacheKey, as: AniListCachedPage.self, allowExpired: !online) {
-      return finalize(cached, fresh: false)
+      return finalize(cached, fresh: false, scope: scope)
     }
     do {
       let page: AniListCachedPage = try await inflight.run(cacheKey) {
@@ -635,10 +692,10 @@ final class AniListService: @unchecked Sendable {
         return page
       }
       await DiskCache.shared.set(cacheKey, page, ttl: ttl)
-      return finalize(page, fresh: true)
+      return finalize(page, fresh: true, scope: scope)
     } catch {
       if let stale = await DiskCache.shared.get(cacheKey, as: AniListCachedPage.self, allowExpired: true) {
-        return finalize(stale, fresh: false)
+        return finalize(stale, fresh: false, scope: scope)
       }
       let fallbackPage = fallbackSearch(fallback)
       if fallbackPage.items.isEmpty { throw error }
@@ -649,14 +706,14 @@ final class AniListService: @unchecked Sendable {
   /// anilistClient.search: discover / text search (cached 75-100 minutes).
   func search(_ input: AniListVariables) async throws -> MediaPage {
     let variables = input.withAdultFilters()
-    return try await cachedPage(cacheKey: "al.search." + variables.cacheKey + Self.complexityKeySuffix, query: Self.searchQuery, variables: variables.graphQL(.search), ttl: Self.randomTTL(75...100), skipCache: false, fallback: variables)
+    return try await cachedPage(prefix: "al.search.", key: variables.cacheKey + Self.complexityKeySuffix, query: Self.searchQuery, variables: variables.graphQL(.search), ttl: Self.randomTTL(75...100), skipCache: false, fallback: variables)
   }
 
   /// anilistClient.searchIDS: one page of media by ids (cached 24-30 minutes). Sort defaults to OMIT.
   func searchIDs(_ input: AniListVariables, skipCache: Bool = false) async throws -> MediaPage {
     if let ids = input.id, ids.isEmpty, input.idMal == nil { return MediaPage.empty }
     let variables = input.withAdultFilters()
-    return try await cachedPage(cacheKey: "al.ids." + variables.cacheKey + Self.complexityKeySuffix, query: Self.idsQuery, variables: variables.graphQL(.ids), ttl: Self.randomTTL(24...30), skipCache: skipCache, fallback: variables)
+    return try await cachedPage(prefix: "al.ids.", key: variables.cacheKey + Self.complexityKeySuffix, query: Self.idsQuery, variables: variables.graphQL(.ids), ttl: Self.randomTTL(24...30), skipCache: skipCache, fallback: variables)
   }
 
   /// anilistClient.searchAllIDS: every page of an id search.
@@ -694,18 +751,21 @@ final class AniListService: @unchecked Sendable {
 
   /// anilistClient.searchIDSingle by AniList id (cached 80-100 minutes).
   func media(id: Int) async throws -> Media? {
-    try await single(variables: ["id": id], cacheKey: "al.single.id.\(id)" + Self.complexityKeySuffix, fallback: MediaStore.shared.anilist(id))
+    try await single(variables: ["id": id], key: "id.\(id)" + Self.complexityKeySuffix, fallback: MediaStore.shared.anilist(id))
   }
 
   /// anilistClient.searchIDSingle by MyAnimeList id (tsumi://malanime/<id>).
   func media(malId: Int) async throws -> Media? {
-    try await single(variables: ["idMal": malId], cacheKey: "al.single.mal.\(malId)" + Self.complexityKeySuffix, fallback: MediaStore.shared.anilist(malId: malId))
+    try await single(variables: ["idMal": malId], key: "mal.\(malId)" + Self.complexityKeySuffix, fallback: MediaStore.shared.anilist(malId: malId))
   }
 
-  private func single(variables: [String: Any], cacheKey: String, fallback: Media?) async throws -> Media? {
+  /// "al.single." + viewerKey + `key` is the cache key.
+  private func single(variables: [String: Any], key: String, fallback: Media?) async throws -> Media? {
+    let scope = Self.viewerKey
+    let cacheKey = "al.single." + scope + key
     let online = ServiceNetworkMonitor.shared.isOnline
     if let cached = await DiskCache.shared.get(cacheKey, as: AniListCachedPage.self, allowExpired: !online) {
-      return finalize(cached, fresh: false).items.first
+      return finalize(cached, fresh: false, scope: scope).items.first
     }
     do {
       let page: AniListCachedPage = try await inflight.run(cacheKey) {
@@ -719,10 +779,10 @@ final class AniListService: @unchecked Sendable {
       if !page.media.isEmpty {
         await DiskCache.shared.set(cacheKey, page, ttl: Self.randomTTL(80...100))
       }
-      return finalize(page, fresh: true).items.first
+      return finalize(page, fresh: true, scope: scope).items.first
     } catch {
       if let stale = await DiskCache.shared.get(cacheKey, as: AniListCachedPage.self, allowExpired: true) {
-        return finalize(stale, fresh: false).items.first
+        return finalize(stale, fresh: false, scope: scope).items.first
       }
       if let fallback { return fallback }
       throw error
@@ -750,9 +810,15 @@ final class AniListService: @unchecked Sendable {
 
   func searchCompound(_ titles: [AniListCompoundTitle]) async throws -> [String: Media] {
     if titles.isEmpty { return [:] }
-    let cacheKey = "al.compound." + ServiceJSON.cacheKey(titles)
+    // The resolved media carry the viewer's list entries too.
+    let scope = Self.viewerKey
+    let cacheKey = "al.compound." + scope + ServiceJSON.cacheKey(titles)
+    // After a profile switch during the search, the media are given without the previous viewer's entries.
+    func forCurrentViewer(_ result: [String: Media]) -> [String: Media] {
+      scope == AniListService.viewerKey ? result : result.mapValues { AniListService.withoutViewerData($0) }
+    }
     if let cached = await DiskCache.shared.get(cacheKey, as: [String: Media].self, allowExpired: !ServiceNetworkMonitor.shared.isOnline) {
-      return cached
+      return forCurrentViewer(cached)
     }
     var variables: [String: Any] = [:]
     var declarations: [String] = []
@@ -800,10 +866,13 @@ final class AniListService: @unchecked Sendable {
       for (key, id) in best {
         if let media = found.first(where: { $0.anilistId == id }) { result[key] = media }
       }
-      await DiskCache.shared.set(cacheKey, result, ttl: Self.randomTTL(60...90))
-      return result
+      // Mixed viewers when the profile changed meanwhile (the ids search ran for the new one): not cached.
+      if scope == Self.viewerKey {
+        await DiskCache.shared.set(cacheKey, result, ttl: Self.randomTTL(60...90))
+      }
+      return forCurrentViewer(result)
     } catch {
-      if let stale = await DiskCache.shared.get(cacheKey, as: [String: Media].self, allowExpired: true) { return stale }
+      if let stale = await DiskCache.shared.get(cacheKey, as: [String: Media].self, allowExpired: true) { return forCurrentViewer(stale) }
       throw error
     }
   }

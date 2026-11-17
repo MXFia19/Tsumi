@@ -10,7 +10,7 @@ enum TsumiDeepLink: Hashable {
   case anime(Int)
   /// tsumi://malanime/<malId>
   case malAnime(Int)
-  /// tsumi://movie/<tmdbId>: details of a TMDB movie (movie release alerts).
+  /// tsumi://movie/<tmdbId> (PC: tsumi://anime/tmdb-<tmdbId>): details of a TMDB movie (movie release alerts).
   case movie(Int)
   /// tsumi://search/<anilistId>: play the anime.
   case play(Int)
@@ -136,10 +136,16 @@ final class Services {
     }
     switch key.lowercased() {
     case "alauth", "malauth":
-      let success = await auth.handleCallback(url)
+      // Only as the result of a sign-in started in the app (ProfilesService.handleExternalCallback).
+      let success = await auth.handleExternalCallback(url)
       return .loginCallback(success: success)
     case "anime":
-      return Int(Self.trimmed(value)).map { TsumiDeepLink.anime($0) }
+      let id = Self.trimmed(value)
+      // PC movie release alerts open tsumi://anime/tmdb-<id> (the movie's media id there).
+      if id.lowercased().hasPrefix("tmdb-") {
+        return Int(id.dropFirst(5)).map { TsumiDeepLink.movie($0) }
+      }
+      return Int(id).map { TsumiDeepLink.anime($0) }
     case "malanime":
       return Int(Self.trimmed(value)).map { TsumiDeepLink.malAnime($0) }
     case "movie":

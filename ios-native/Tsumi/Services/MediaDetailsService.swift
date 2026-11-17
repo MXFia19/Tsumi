@@ -73,6 +73,7 @@ final class MediaDetailsService: @unchecked Sendable {
       return await tmdbDetails(media)
     }
     guard let anilistId = media.anilistId else { return media }
+    let scope = AniListService.viewerKey
     let fresh = (try? await AniListService.shared.media(id: anilistId)) ?? MediaStore.shared.media(media.id) ?? media
     let extras = MediaStore.shared.extras(for: fresh)
     let relationEdges = extras.relationEdges.filter { ($0.type ?? "ANIME") == "ANIME" }
@@ -98,6 +99,12 @@ final class MediaDetailsService: @unchecked Sendable {
       withArtwork.relations = result.relations
       withArtwork.recommendations = result.recommendations
       result = withArtwork
+    }
+    // The profile changed while the details loaded: `fresh` may carry the previous viewer's entry, so the store is not
+    // updated and the details show the current one's.
+    guard AniListService.viewerKey == scope else {
+      result.listEntry = MediaStore.shared.media(result.id)?.listEntry
+      return result
     }
     return MediaStore.shared.ingest([result]).first ?? result
   }
