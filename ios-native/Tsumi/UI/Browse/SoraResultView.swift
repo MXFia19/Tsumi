@@ -91,6 +91,10 @@ struct SoraResultView: View {
 
   private var result: SoraSearchResult { model.result }
 
+  private var descriptionHint: String {
+    descriptionExpanded ? "Shortens the description" : "Shows the whole description"
+  }
+
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 18) {
@@ -104,7 +108,7 @@ struct SoraResultView: View {
             .contentShape(Rectangle())
             .onTapGesture { descriptionExpanded.toggle() }
             .accessibilityAddTraits(.isButton)
-            .accessibilityHint(descriptionExpanded ? "Shortens the description" : "Shows the whole description")
+            .accessibilityHint(Text(descriptionHint))
         }
         episodes
       }
@@ -217,6 +221,8 @@ struct SoraResultView: View {
 
   private func row(_ episode: SoraResultEpisode, label: String, progress: [Int: Int]) -> some View {
     let percent = progress[episode.number] ?? 0
+    let spokenLabel: String = episode.title.map { "\(label), \($0)" } ?? label
+    let spokenValue: String = percent > 0 ? "\(percent)% watched" : ""
     return Button {
       model.play(episode)
     } label: {
@@ -259,8 +265,8 @@ struct SoraResultView: View {
     }
     .buttonStyle(BrowsePressableStyle())
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel(episode.title.map { "\(label), \($0)" } ?? label)
-    .accessibilityValue(percent > 0 ? "\(percent)% watched" : "")
+    .accessibilityLabel(Text(spokenLabel))
+    .accessibilityValue(Text(spokenValue))
     .accessibilityAddTraits(.isButton)
   }
 }
