@@ -136,7 +136,10 @@ final class MovieAlertsService {
   @ObservationIgnored private var loopTask: Task<Void, Never>?
   @ObservationIgnored private var runningCheck: Task<Void, Never>?
   @ObservationIgnored private var addCheck: Task<Void, Never>?
+  /// Start of the last check whose release date lookups all succeeded (TMDB or its 12 hour cache).
   @ObservationIgnored private var lastCheck: Date?
+  /// A check ran (or runs): until then the launch check is still to come.
+  @ObservationIgnored private var checkStarted = false
 
   private init() {
     if let data = UserDefaults.standard.data(forKey: Self.storageKey),
@@ -236,10 +239,12 @@ final class MovieAlertsService {
     }
   }
 
-  /// Back to the foreground: checks when the last check is older than the interval (the loop does not run while
-  /// the app is suspended).
+  /// Back to the foreground: checks when the last successful check is older than the interval (the loop does not run
+  /// while the app is suspended), or when the last ones could not look the dates up (offline, TMDB down): such a check
+  /// does not hold the next one off for 6 hours.
   func checkIfStale() {
-    guard let lastCheck, Date().timeIntervalSince(lastCheck) >= Self.checkInterval else { return }
+    guard checkStarted else { return }
+    if let lastCheck, Date().timeIntervalSince(lastCheck) < Self.checkInterval { return }
     Task { @MainActor in
       await MovieAlertsService.shared.check()
     }
@@ -261,17 +266,20 @@ final class MovieAlertsService {
   }
 
   private func runCheck() async {
-    lastCheck = Date()
-    guard !entries.isEmpty else { return }
+    checkStarted = true
+    let started = Date()
     let calendar = ServiceDates.gregorian
     let regions = MovieReleases.regions
+    var lookedUp = true
     // Every alert once, including the ones turned on while this check awaits its requests (a check started by `add`
     // only awaits this one, so the new alert must not be left for the next 6 hour check). An alert is the movie and
     // the time it was turned on, so an alert turned off and on again meanwhile is checked as a new one.
     var checked: [MovieAlertEntry] = []
     while let snapshot = entries.first(where: { entry in !checked.contains(where: { $0.isSameAlert(entry) }) }) {
       checked.append(snapshot)
-      let days = await releaseDays(movieId: snapshot.tmdbId, regions: regions)
+      let lookup = await TMDBService.shared.releaseDatesLookup(movieId: snapshot.tmdbId)
+      if !lookup.current { lookedUp = false }
+      let days = MovieReleases.days(lookup.countries, regions: regions)
       // The alert may have been turned off (or off and on again) during the request: only the same alert gets this
       // result, with its current state.
       guard let entry = entries.first(where: { $0.isSameAlert(snapshot) }) else { continue }
@@ -283,6 +291,8 @@ final class MovieAlertsService {
       }
       if apply(decision, to: entry) { save() }
     }
+    // Requests that failed (offline, TMDB down) keep the previous successful time, so a foreground soon checks again.
+    if lookedUp { lastCheck = started }
   }
 
   /// Returns true when the list changed.
