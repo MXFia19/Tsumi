@@ -30,6 +30,11 @@ test('movieReleaseDays: theatrical in the regions, digital anywhere', () => {
   assert.deepEqual(movieReleaseDays([], ['FR']), { theatrical: null, digital: null })
 })
 
+test('movieReleaseDays: the wide release, not a limited one before it', () => {
+  const limited = [{ iso_3166_1: 'US', release_dates: [{ type: 2, release_date: '2026-11-07T00:00:00.000Z' }, { type: 3, release_date: '2026-12-04T00:00:00.000Z' }] }]
+  assert.deepEqual(movieReleaseDays(limited, ['US']), { theatrical: '2026-12-04', digital: null })
+})
+
 test('canAlert until the digital release day', () => {
   assert.equal(canAlert(days, at(2026, 11, 16)), true)
   assert.equal(canAlert(days, at(2027, 1, 6, 23)), true)

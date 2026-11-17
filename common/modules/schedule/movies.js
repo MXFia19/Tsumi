@@ -11,7 +11,11 @@ export const RELEASE_FILTERS = { '': 'Any', episodes: 'Episodes', movies: 'Movie
 /** How far ahead movies are listed. */
 export const MOVIE_WINDOW_DAYS = 60
 
-export const THEATRICAL_TYPES = [2, 3]
+/**
+ * Theatrical: the wide release (3) of a country, else its limited one (2). A limited release before the wide one (US
+ * awards runs) would otherwise hide the wide date once it has passed (schedule and release alerts).
+ */
+export const THEATRICAL_TYPES = [[3], [2]]
 export const DIGITAL_TYPES = [4]
 
 /** Text of the schedule card: "In theaters in 2 days", "On digital in 3 weeks" ({suffix} is filled by getAiringInfo). */
@@ -62,25 +66,34 @@ export function releaseRegions (languages) {
 /**
  * First release day ("YYYY-MM-DD") of one of `types` in the first of `regions` that has one (a single region
  * falls back to the US), else (with `anywhere`) in any country. Digital releases are often only listed for the US.
+ * `types` can be groups tried in order within each country ([[3], [2]]: wide, else limited).
  * @param {any[]} results release_dates results
- * @param {number[]} types
+ * @param {number[] | number[][]} types
  * @param {string[] | string | null} regions
  * @param {boolean} [anywhere]
  * @returns {string | null}
  */
 export function releaseDate (results, types, regions, anywhere = false) {
-  const days = (country) => (Array.isArray(results) ? results : [])
+  const groups = Array.isArray(types?.[0]) ? types : [types]
+  const days = (country, group) => (Array.isArray(results) ? results : [])
     .filter(entry => !country || entry?.iso_3166_1 === country)
     .flatMap(entry => Array.isArray(entry?.release_dates) ? entry.release_dates : [])
-    .filter(date => types.includes(Number(date?.type)) && /^\d{4}-\d{2}-\d{2}/.test(String(date?.release_date || '')))
+    .filter(date => group.includes(Number(date?.type)) && /^\d{4}-\d{2}-\d{2}/.test(String(date?.release_date || '')))
     .map(date => date.release_date.slice(0, 10))
     .sort()
+  const first = (country) => {
+    for (const group of groups) {
+      const found = days(country, group)
+      if (found.length) return found[0]
+    }
+    return null
+  }
   for (const country of Array.isArray(regions) ? regions : [regions, 'US']) {
     if (!country) continue
-    const found = days(country)
-    if (found.length) return found[0]
+    const found = first(country)
+    if (found) return found
   }
-  return anywhere ? (days(null)[0] || null) : null
+  return anywhere ? first(null) : null
 }
 
 /** Local midnight of a "YYYY-MM-DD" day. */

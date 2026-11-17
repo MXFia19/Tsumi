@@ -67,6 +67,14 @@ test('releaseDate prefers the region, then the US, then anywhere when allowed', 
   assert.equal(releaseDate(sunrise, THEATRICAL_TYPES, ['BE', 'US']), '2026-11-20')
   assert.equal(releaseDate(sunrise, THEATRICAL_TYPES, ['BE']), null)
   assert.equal(releaseDate([{ iso_3166_1: 'US', release_dates: [{ type: 3, release_date: 'soon' }] }], THEATRICAL_TYPES, 'US'), null)
+  // A limited release before the wide one: the wide date counts; a country with only a limited release keeps it.
+  const limited = [
+    { iso_3166_1: 'US', release_dates: [{ type: 2, release_date: '2026-11-07T00:00:00.000Z' }, { type: 3, release_date: '2026-12-04T00:00:00.000Z' }] },
+    { iso_3166_1: 'FR', release_dates: [{ type: 2, release_date: '2026-12-10T00:00:00.000Z' }] }
+  ]
+  assert.equal(releaseDate(limited, THEATRICAL_TYPES, 'US'), '2026-12-04')
+  assert.equal(releaseDate(limited, THEATRICAL_TYPES, ['FR', 'US']), '2026-12-10')
+  assert.equal(releaseDate(limited, [2, 3], 'US'), '2026-11-07')
 })
 
 test('releaseDay is local midnight', () => {
