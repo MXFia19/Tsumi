@@ -103,6 +103,38 @@ enum SoraSearchSource {
     return (anime: true, western: true)
   }
 
+  /// Version tags modules add at the end of titles: "Attack on Titan (Dub)", "Naruto Shippuden VF",
+  /// "One Piece [VOSTFR]", "Dune (2021)". AniList and TMDB titles have none, so they are removed before searching and
+  /// scoring. match.js VERSION_TAG (ICU needs the `[` of the first class escaped).
+  private static let versionTag = try? NSRegularExpression(
+    pattern: #"(?:\s*[(\[]\s*(?:(?:english|french|eng|fr)\s+)?(?:dub(?:bed)?|sub(?:bed)?|vf|vostfr|vost|vo|multi|uncensored|censored|(?:19|20)\d\d)\s*[)\]]|\s+(?:dub|sub|vf|vostfr|vost|multi)|\s*\[[^\]]*\])\s*$"#,
+    options: [.caseInsensitive]
+  )
+
+  /// Title of a module result without its version tags (several in a row: "X (English Dub) [HD]" -> "X"); the title
+  /// itself when that would leave nothing ("Sub" stays "Sub", "The Office (US)" is unchanged). match.js
+  /// cleanResultTitle.
+  static func cleanResultTitle(_ title: String) -> String {
+    var text = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let regex = versionTag else { return text }
+    for _ in 0..<5 {
+      let range = NSRange(text.startIndex..<text.endIndex, in: text)
+      let next = regex.stringByReplacingMatches(in: text, range: range, withTemplate: "").trimmingCharacters(in: .whitespacesAndNewlines)
+      if next == text || next.isEmpty { break }
+      text = next
+    }
+    return text
+  }
+
+  /// Cleaned titles, without empty ones and duplicates (first one kept).
+  static func cleanResultTitles(_ titles: [String]) -> [String] {
+    var result: [String] = []
+    for title in titles.map(cleanResultTitle) where !title.isEmpty && !result.contains(title) {
+      result.append(title)
+    }
+    return result
+  }
+
   /// Best media for a result title among the candidates: the highest title score (aliases included, scored by
   /// SearchRelevance like the search page), then the most popular. nil when nothing reaches `matchMinScore` (better no
   /// match than another show). match.js pickBestMatch.
@@ -205,16 +237,19 @@ enum SoraSearchSource {
   static func findMatch(_ result: SoraSearchResult) async throws -> Media? {
     let ext = ExtensionManager.shared.loadedExtension(result.extensionKey)
     let targets = matchTargets(ext?.manifest.type)
-    let found = await candidates([result.title], anime: targets.anime, western: targets.western)
+    // "Attack on Titan (Dub)" is searched and scored as "Attack on Titan" (the original title is still scored).
+    let titles = cleanResultTitles([result.title])
+    let found = await candidates(titles, anime: targets.anime, western: targets.western)
     try Task.checkCancellation()
-    if let match = pickBestMatch([result.title], found) { return match }
+    if let match = pickBestMatch(titles + [result.title], found) { return match }
     guard let ext else { return nil }
-    let names = await Self.aliases(ext, href: result.href)
+    let moduleAliases = await Self.aliases(ext, href: result.href)
+    let names = cleanResultTitles(moduleAliases)
     try Task.checkCancellation()
     guard !names.isEmpty else { return nil }
     let more = await candidates(names, anime: targets.anime, western: targets.western)
     try Task.checkCancellation()
-    return pickBestMatch([result.title] + names, more)
+    return pickBestMatch(titles + [result.title] + names, more)
   }
 }
 
