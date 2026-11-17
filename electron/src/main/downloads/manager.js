@@ -226,9 +226,15 @@ export default class DownloadManager {
     return JSON.stringify([...this.items.values()].map(item => this.serialize(item)))
   }
 
+  /**
+   * Saves downloads.json at most once a second (throttle). A save already planned is left alone: it writes the list
+   * as it is when it runs. Restarting the timer on each change (debounce) would never save while downloads run, since
+   * each one reports its progress about once a second.
+   */
   save () {
-    clearTimeout(this.saveTimer)
+    if (this.saveTimer || this.indexClosed) return
     this.saveTimer = setTimeout(() => {
+      this.saveTimer = null
       this.saveChain = this.saveChain.then(() => this.writeIndex()).catch(error => log.warn(`[downloads] Could not save the list: ${error?.code || error?.message || error}`))
     }, 1000)
     this.saveTimer.unref?.()
@@ -257,6 +263,7 @@ export default class DownloadManager {
   /** Last save when the app quits (synchronous, same temporary file + rename as writeIndex). */
   saveSync () {
     clearTimeout(this.saveTimer)
+    this.saveTimer = null
     this.indexClosed = true
     const temp = `${this.indexPath}.quit.tmp`
     try {
