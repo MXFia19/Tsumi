@@ -32,9 +32,14 @@ export function isTypingTarget (target) {
   return !NON_TEXT_INPUTS.has(String(target.type || 'text').toLowerCase())
 }
 
+/** Controls whose ↑/↓ change something (value, line): kept by a field the user clicked or tabbed into. */
+const VERTICAL_CONTROLS = new Set(['number', 'range'])
+
 /**
  * An arrow key pressed on this control is left to it (caret, value) instead of the D-pad navigation (click.js).
- * A field the user clicked or tabbed into keeps every arrow key: text fields and selects, and ranges.
+ * A field the user clicked or tabbed into keeps ←/→ (caret, value), and ↑/↓ when they change something: selects,
+ * ranges, number fields, textareas. In a one-line text field ↑/↓ still navigate (from the Genres field down to its
+ * options, to the next settings row).
  * A field the D-pad itself moved to keeps navigating, since a remote has no Tab key to leave it (↓ on a select of a
  * settings list must reach the next row, not change the value): only ←/→ stay in the control there, to change a
  * range, or to move the caret of a text field until its start / end, where the next press leaves the field.
@@ -45,10 +50,11 @@ export function isTypingTarget (target) {
 export function arrowKeyStaysInControl (target, key, dpadFocused = false) {
   if (!target || typeof target !== 'object') return false
   const tag = String(target.tagName || '').toUpperCase()
+  const type = String(target.type || 'text').toLowerCase()
   const horizontal = key === 'ArrowLeft' || key === 'ArrowRight'
-  if (tag === 'INPUT' && String(target.type || '').toLowerCase() === 'range') return !dpadFocused || horizontal
+  if (tag === 'INPUT' && type === 'range') return !dpadFocused || horizontal
   if (!isTypingTarget(target)) return false
-  if (!dpadFocused) return true
+  if (!dpadFocused) return horizontal || tag !== 'INPUT' || VERTICAL_CONTROLS.has(type)
   if (!horizontal || tag === 'SELECT') return false
   let start = null
   let end = null

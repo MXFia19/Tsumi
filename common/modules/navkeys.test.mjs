@@ -48,16 +48,25 @@ test('text fields keep their keys, buttons and checkboxes do not', () => {
   assert.equal(isTypingTarget(null), false)
 })
 
-test('a field clicked or tabbed into keeps every arrow key', () => {
+test('a field clicked or tabbed into keeps ←/→, and ↑/↓ when they change its value', () => {
   for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
-    assert.equal(arrowKeyStaysInControl({ tagName: 'INPUT', type: 'search', value: 'abc', selectionStart: 3, selectionEnd: 3 }, key), true)
     assert.equal(arrowKeyStaysInControl({ tagName: 'SELECT' }, key), true)
     assert.equal(arrowKeyStaysInControl({ tagName: 'INPUT', type: 'range' }, key), true)
+    assert.equal(arrowKeyStaysInControl({ tagName: 'INPUT', type: 'number' }, key), true)
     assert.equal(arrowKeyStaysInControl({ tagName: 'TEXTAREA', value: '', selectionStart: 0, selectionEnd: 0 }, key, false), true)
+    assert.equal(arrowKeyStaysInControl({ tagName: 'DIV', isContentEditable: true }, key), true)
     assert.equal(arrowKeyStaysInControl({ tagName: 'BUTTON' }, key), false)
     assert.equal(arrowKeyStaysInControl({ tagName: 'INPUT', type: 'checkbox' }, key), false)
     assert.equal(arrowKeyStaysInControl({ tagName: 'DIV' }, key), false)
   }
+  // One-line text fields: ←/→ move the caret (even at the end), ↑/↓ navigate.
+  const search = { tagName: 'INPUT', type: 'search', value: 'abc', selectionStart: 3, selectionEnd: 3 }
+  assert.equal(arrowKeyStaysInControl(search, 'ArrowLeft'), true)
+  assert.equal(arrowKeyStaysInControl(search, 'ArrowRight'), true)
+  assert.equal(arrowKeyStaysInControl(search, 'ArrowUp'), false)
+  assert.equal(arrowKeyStaysInControl(search, 'ArrowDown'), false)
+  assert.equal(arrowKeyStaysInControl({ tagName: 'INPUT' }, 'ArrowDown'), false)
+  assert.equal(arrowKeyStaysInControl({ tagName: 'INPUT', type: 'password' }, 'ArrowLeft'), true)
   assert.equal(arrowKeyStaysInControl(null, 'ArrowLeft'), false)
 })
 
