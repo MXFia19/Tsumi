@@ -242,6 +242,9 @@ export default class Subtitles {
   selectCaptions (trackNumber) {
     if (trackNumber != null) {
       this.current = Number(trackNumber)
+      // A track picked while there is no renderer yet: OFF (the show's remembered choice) was applied before any file
+      // loaded, so addSingleSubtitleFile never created it, and nothing would ever show in this episode.
+      if (this.current !== -1 && this.headers?.[this.current]) this.initSubtitleRenderer()
       this.onHeader()
       if (this.headers) {
         this.renderer?.setTrack(this.current !== -1 ? this.headers[this.current].header.slice(0, -1) : defaultHeader)

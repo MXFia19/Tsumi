@@ -1,6 +1,6 @@
 // Player pure helpers. Run with: node common/modules/playerstate.test.mjs
 import assert from 'node:assert/strict'
-import { chapterKind, rememberOffset, resumePosition, parseSubtitleOffset, subtitleUrlOf, inEndChapters, hlsLevelOptions, episodeRangeOf, isTmdbMedia } from './playerstate.js'
+import { chapterKind, rememberOffset, resumePosition, parseSubtitleOffset, subtitleUrlOf, inEndChapters, upNextRemaining, hlsLevelOptions, pickQualityLevel, rememberShowValue, subtitleChoiceOf, MAX_REMEMBERED_SHOWS, episodeRangeOf, isTmdbMedia } from './playerstate.js'
 
 let passed = 0
 let failed = 0
@@ -130,6 +130,21 @@ test('inEndChapters is false when content follows the credits', () => {
   assert.equal(inEndChapters(early, 100, 1440), false)
 })
 
+test('upNextRemaining counts the video time left before the next episode', () => {
+  // Card shown at 1300 s: the next episode starts at 1310 s.
+  assert.equal(upNextRemaining(1310, 1300, 1440), 10)
+  assert.equal(upNextRemaining(1310, 1300.2, 1440), 10)
+  assert.equal(upNextRemaining(1310, 1301, 1440), 9)
+  assert.equal(upNextRemaining(1310, 1309.9, 1440), 1)
+  assert.equal(upNextRemaining(1310, 1310, 1440), 0)
+  // Seeked past it: never negative.
+  assert.equal(upNextRemaining(1310, 1320, 1440), 0)
+  // Never more than what is left of the episode.
+  assert.equal(upNextRemaining(1445, 1435, 1440), 5)
+  assert.equal(upNextRemaining(1310, 1300), 10)
+  assert.equal(upNextRemaining(1310, NaN, 1440), 0)
+})
+
 test('hlsLevelOptions lists the best quality first', () => {
   const options = hlsLevelOptions([{ height: 360, bitrate: 800000 }, { height: 1080, bitrate: 5000000 }, { height: 720, bitrate: 2500000 }])
   assert.deepEqual(options, [{ index: 1, label: '1080p' }, { index: 2, label: '720p' }, { index: 0, label: '360p' }])
@@ -152,6 +167,55 @@ test('isTmdbMedia', () => {
   assert.equal(isTmdbMedia({ id: 21, isTmdb: true }), true)
   assert.equal(isTmdbMedia({ id: 21 }), false)
   assert.equal(isTmdbMedia(null), false)
+})
+
+test('pickQualityLevel starts a stream at the quality remembered for the show', () => {
+  const levels = [{ height: 360, bitrate: 800_000 }, { height: 720, bitrate: 2_500_000 }, { height: 1080, bitrate: 5_000_000 }, { height: 1080, bitrate: 8_000_000 }]
+  assert.equal(pickQualityLevel(levels, { height: 720, bitrate: 2_400_000 }), 1)
+  // Same height: the closest bitrate, the highest when unknown.
+  assert.equal(pickQualityLevel(levels, { height: 1080, bitrate: 5_200_000 }), 2)
+  assert.equal(pickQualityLevel(levels, { height: 1080, bitrate: 7_000_000 }), 3)
+  assert.equal(pickQualityLevel(levels, { height: 1080 }), 3)
+  // Not offered by this server: the best one below it, else automatic.
+  assert.equal(pickQualityLevel(levels, { height: 480, bitrate: 1_200_000 }), 0)
+  assert.equal(pickQualityLevel(levels, { height: 2160 }), 3)
+  assert.equal(pickQualityLevel(levels, { height: 240 }), -1)
+  // Auto picked, nothing remembered, a single level, levels without a height.
+  assert.equal(pickQualityLevel(levels, { height: 0 }), -1)
+  assert.equal(pickQualityLevel(levels, null), -1)
+  assert.equal(pickQualityLevel([{ height: 720 }], { height: 720 }), -1)
+  assert.equal(pickQualityLevel([{ bitrate: 1 }, { bitrate: 2 }], { height: 720 }), -1)
+  assert.equal(pickQualityLevel(undefined, { height: 720 }), -1)
+})
+
+test('rememberShowValue keeps the most recently set shows', () => {
+  let entries = rememberShowValue(undefined, '21', { name: 'Japanese', lang: 'ja' }, 1)
+  assert.deepEqual(entries, { 21: { name: 'Japanese', lang: 'ja', at: 1 } })
+  // Saved before the limit: no `at`, forgotten first. AniList ids sort as numbers: the order of the object does not count.
+  entries = { 5: 'OFF', 900: { boosted: true, gain: 2 }, 30: { boosted: false, gain: 1, at: 10 } }
+  entries = rememberShowValue(entries, '1', { boosted: true, gain: 1.5 }, 20, 3)
+  assert.deepEqual(Object.keys(entries).sort(), ['1', '30', '900'].sort())
+  entries = rememberShowValue(entries, '7', { boosted: true, gain: 3 }, 30, 3)
+  assert.deepEqual(Object.keys(entries).sort(), ['1', '30', '7'].sort())
+  // Setting a show again makes it the most recent one.
+  entries = rememberShowValue(entries, '30', { boosted: true, gain: 2 }, 40, 3)
+  entries = rememberShowValue(entries, '8', { boosted: false, gain: 1 }, 50, 3)
+  assert.deepEqual(Object.keys(entries).sort(), ['30', '7', '8'].sort())
+  assert.equal(entries[30].gain, 2)
+  const many = Array.from({ length: MAX_REMEMBERED_SHOWS + 5 }, (_, i) => i).reduce((all, i) => rememberShowValue(all, `show ${i}`, { choice: 'OFF' }, i), {})
+  assert.equal(Object.keys(many).length, MAX_REMEMBERED_SHOWS)
+  assert.equal(many['show 4'], undefined)
+  assert.ok(many['show 5'])
+  assert.deepEqual(rememberShowValue([], 'a', { x: 1 }, 2), { a: { x: 1, at: 2 } })
+})
+
+test('subtitleChoiceOf reads both saved forms of lastSubtitle', () => {
+  assert.equal(subtitleChoiceOf('OFF'), 'OFF')
+  assert.equal(subtitleChoiceOf({ choice: 'eng - Full', at: 5 }), 'eng - Full')
+  assert.equal(subtitleChoiceOf({ choice: '' }), null)
+  assert.equal(subtitleChoiceOf(''), null)
+  assert.equal(subtitleChoiceOf(undefined), null)
+  assert.equal(subtitleChoiceOf({ choice: 3 }), null)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

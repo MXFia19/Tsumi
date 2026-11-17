@@ -127,6 +127,20 @@ export function inEndChapters (chapters, time, duration) {
 }
 
 /**
+ * Whole seconds the "Up next" card shows before the next episode starts. The countdown follows the video (as on the
+ * iPhone): it waits while paused or buffering and runs faster at a higher speed. It never shows more than what is left
+ * of the episode (autoplay takes over at its end).
+ * @param {number} startsAt video time (s) the next episode starts at
+ * @param {number} time video time (s)
+ * @param {number} [duration] length of the episode (s)
+ */
+export function upNextRemaining (startsAt, time, duration) {
+  const end = Number(duration) > 0 ? Math.min(startsAt, Number(duration)) : startsAt
+  const left = end - time
+  return Number.isFinite(left) ? Math.max(0, Math.ceil(left)) : 0
+}
+
+/**
  * Quality menu entries of hls.js levels, best first: "1080p", "720p"... (bitrate when two levels share a height or
  * when the height is unknown).
  * @param {{ height?: number, bitrate?: number }[]} levels
@@ -143,6 +157,69 @@ export function hlsLevelOptions (levels) {
     index,
     label: !height ? kbps(level) : counts[height] > 1 ? `${height}p (${kbps(level)})` : `${height}p`
   }))
+}
+
+/**
+ * Level to start a stream with for the quality remembered for the show ({ height, bitrate } of the level picked in
+ * the menu): the best height that is not above it, and among those the bitrate closest to the remembered one (the
+ * highest when unknown). -1 (automatic) when nothing is remembered, Auto was picked (height 0), or no level fits.
+ * @param {{ height?: number, bitrate?: number }[]} levels hls.js levels
+ * @param {{ height?: number, bitrate?: number } | null | undefined} remembered
+ * @returns {number} index in `levels`
+ */
+export function pickQualityLevel (levels, remembered) {
+  const height = Number(remembered?.height) || 0
+  if (!Array.isArray(levels) || levels.length < 2 || !(height > 0)) return -1
+  const wanted = Number(remembered?.bitrate) || 0
+  let best = -1
+  let bestHeight = 0
+  let bestScore = -Infinity
+  levels.forEach((level, index) => {
+    const levelHeight = Number(level?.height) || 0
+    if (!levelHeight || levelHeight > height || levelHeight < bestHeight) return
+    const bitrate = Number(level?.bitrate) || 0
+    const score = wanted ? -Math.abs(bitrate - wanted) : bitrate
+    if (levelHeight > bestHeight || score > bestScore) {
+      best = index
+      bestHeight = levelHeight
+      bestScore = score
+    }
+  })
+  return best
+}
+
+/** Shows whose audio track, subtitle choice, volume boost and quality are remembered (the oldest are forgotten). */
+export const MAX_REMEMBERED_SHOWS = 200
+
+/**
+ * A per-show memory of the player ({ [show]: { ...value, at } }: lastAudio, lastSubtitle, lastBoosted, lastQuality)
+ * after setting `value` for `key`: only the MAX_REMEMBERED_SHOWS most recently set shows are kept, entries saved
+ * before this limit (without `at`) going first.
+ * @param {Record<string, any> | null | undefined} entries
+ * @param {string} key
+ * @param {Record<string, any>} value
+ * @param {number} [now]
+ */
+export function rememberShowValue (entries, key, value, now = Date.now(), max = MAX_REMEMBERED_SHOWS) {
+  const next = { ...(entries && typeof entries === 'object' && !Array.isArray(entries) ? entries : {}) }
+  next[key] = { ...value, at: now }
+  const keys = Object.keys(next)
+  if (keys.length > max) {
+    keys.sort((a, b) => (Number(next[a]?.at) || 0) - (Number(next[b]?.at) || 0))
+    for (const old of keys.slice(0, keys.length - max)) delete next[old]
+  }
+  return next
+}
+
+/**
+ * Remembered subtitle choice of a show (lastSubtitle): 'OFF', a track name, or null. Saved as { choice, at }, or as
+ * the bare string by older versions.
+ * @param {unknown} entry
+ * @returns {string | null}
+ */
+export function subtitleChoiceOf (entry) {
+  const choice = typeof entry === 'string' ? entry : /** @type {any} */ (entry)?.choice
+  return typeof choice === 'string' && choice ? choice : null
 }
 
 /**

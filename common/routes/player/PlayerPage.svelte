@@ -24,7 +24,7 @@
   import { playbackSync } from '@/modules/sync/session.js'
   import { downloadsSupported, downloadFromPlayer, updateEntryOrQueue } from '@/modules/downloads/downloads.js'
   import { HoldSpeed, holdSpeedOf, holdSpeedLabel } from '@/modules/holdspeed.js'
-  import { resumePosition, parseSubtitleOffset, rememberOffset, subtitleUrlOf, inEndChapters, hlsLevelOptions, CHAPTER_KINDS } from '@/modules/playerstate.js'
+  import { resumePosition, parseSubtitleOffset, rememberOffset, subtitleUrlOf, inEndChapters, upNextRemaining, hlsLevelOptions, pickQualityLevel, rememberShowValue, subtitleChoiceOf, CHAPTER_KINDS } from '@/modules/playerstate.js'
   import { audioTrackOptions, pickAudioTrack } from '@/modules/audiotracks.js'
   import { ArrowDownToLine, Gauge } from 'lucide-svelte'
 
@@ -299,7 +299,7 @@
   }
 
   function checkAudio () {
-    const boost = cache.getEntry(caches.HISTORY, 'lastBoosted')?.[showKey()]
+    const boost = rememberedForShow('lastBoosted')
     volumeBoosted = boost?.boosted || false
     if (volumeBoosted) {
       setupAudio()
@@ -342,11 +342,9 @@
         : track?.type)) + (track?.name ? ' - ' + track.name : '')
   }
 
+  /** @param {string} choice 'OFF' or the track name (trackLabel) */
   function rememberSubtitle (choice) {
-    cache.setEntry(caches.HISTORY, 'lastSubtitle', {
-      ...(cache.getEntry(caches.HISTORY, 'lastSubtitle') || {}),
-      [showKey()]: choice
-    })
+    rememberForShow('lastSubtitle', { choice })
   }
 
   /** The remembered subtitle choice of the show was applied (once per episode). */
@@ -359,7 +357,7 @@
    */
   function applySubtitlePreference () {
     if (subtitlePreferenceDone || !subs?.headers) return
-    const wanted = cache.getEntry(caches.HISTORY, 'lastSubtitle')?.[showKey()]
+    const wanted = subtitleChoiceOf(rememberedForShow('lastSubtitle'))
     if (!wanted) {
       subtitlePreferenceDone = true
       return
@@ -512,6 +510,10 @@
   let pendingRestore = null
   /** Last position the video really played at (kept when a load fails, for the next server / retry). */
   let lastGoodTime = 0
+  /** The episode had its first loadedmetadata (resume, autoplay, prompts done): a reload restores where it was. */
+  let episodeLoaded = false
+  /** loadToken of the episode that already asked for the next one (tryPlayNext, or playNext through the extensions). */
+  let advancedToken = -1
 
   /** Everything tied to the episode playing back to its initial state: new episode, or player closed. */
   function resetEpisodeState () {
@@ -527,6 +529,7 @@
     dismissStreamError()
     pendingRestore = null
     lastGoodTime = 0
+    episodeLoaded = false
     canPlay = false
     externalPlayback = false
     externalSession = null
@@ -540,6 +543,7 @@
     targetTime = 0
     chapters = []
     currentSkippable = null
+    autoSkipped = new Set()
     completed = false
     filler = null
     recap = null
@@ -564,7 +568,7 @@
     current = file
     subDelay = savedSubDelay()
     subDelayText = String(subDelay)
-    subtitlesOff = cache.getEntry(caches.HISTORY, 'lastSubtitle')?.[showKey()] === 'OFF'
+    subtitlesOff = subtitleChoiceOf(rememberedForShow('lastSubtitle')) === 'OFF'
     startW2GLoading()
     setCurrent(file, loadToken)
   }
@@ -595,11 +599,20 @@
       : { url: file?.url, headers: file?.streamHeaders || {} }
   }
 
+  /** "Watch Together plays here" was said once: the setting stays on for the episodes watched alone. */
+  let w2gExternalNoticeShown = false
+
   async function setCurrent (file, token) {
     streamServers = file.streamServers || []
     activeServerIndex = file.activeServerIndex || 0
     stopStream(video)
-    if (externalEnabled) {
+    // Watch Together: always the built-in player. An episode in the external player leaves this member idle ("Not in
+    // the player"), never ready (playerReady), so a host's queued item never starts.
+    if (externalEnabled && state.value && !w2gExternalNoticeShown) {
+      w2gExternalNoticeShown = true
+      toast('Watch Together', { description: 'Episodes play in Tsumi during Watch Together (not in your external player) to stay in sync.', duration: 8_000 })
+    }
+    if (externalEnabled && !state.value) {
       const startTime = resumePosition(getEpisodeProgress(file), { threshold: $settings.playerAutocompleteThreshold }) || 0
       const launched = await launchExternal(file, token, startTime)
       if (token !== loadToken) return
@@ -608,20 +621,28 @@
         return
       }
     }
+    // Before the stream is loaded: a load superseded by a server switch never settles (streaming.js), and nowPlaying
+    // (MediaHandler) does not depend on it.
+    emit('current', current) // #handleCurrent in MediaHandler
     await loadBuiltin(file, token)
-    if (token === loadToken) emit('current', current) // #handleCurrent in MediaHandler
   }
 
   /** Plays the episode in the built-in player: stream, subtitles of the stream response. */
   async function loadBuiltin (file, token, restore = null) {
     const stream = activeStream(file)
-    const started = await startStream(stream, restore)
+    const loading = startStream(stream, restore)
+    // The subtitles do not wait for the stream either: when the user picks another server while the first one loads,
+    // the first load never settles, and the episode would have no subtitles at all (stream file, Add Subtitles, online
+    // subtitles: "The video is not ready yet").
+    await waitForVideo()
     // Back from the external player the episode may already have its subtitles (and the tracks the user added).
-    if (!started || token !== loadToken || !video || subs) return
-    subs = new Subtitles(video, files, current, handleHeaders)
-    // Subtitle file of the extension stream response
-    const subtitleUrl = subtitleUrlOf(file.subtitle)
-    if (subtitleUrl) loadExternalSubtitleUrl(subs, subtitleUrl, stream.headers)
+    if (token === loadToken && video && !subs) {
+      subs = new Subtitles(video, files, current, handleHeaders)
+      // Subtitle file of the extension stream response
+      const subtitleUrl = subtitleUrlOf(file.subtitle)
+      if (subtitleUrl) loadExternalSubtitleUrl(subs, subtitleUrl, stream.headers)
+    }
+    await loading
   }
 
   /**
@@ -671,10 +692,22 @@
     if (video?.readyState >= 1 && !video.seeking && video.currentTime > 0 && !pendingRestore) lastGoodTime = video.currentTime
   }
 
+  /**
+   * What a reload of the episode (server switch, retry) restores: its position and play state. A previous reload
+   * still loading keeps its own (a failed server does not lose it). Null while the episode never had its metadata (the
+   * first server failed or is slow, the usual reason to switch): the new stream then loads like the first one would
+   * have (resume, autoplay, filler prompt), instead of starting paused at 0 and saving 0 over the resume position.
+   * @param {boolean} wasPaused
+   */
+  function reloadRestore (wasPaused) {
+    if (pendingRestore) return { time: pendingRestore.time, paused: pendingRestore.paused }
+    if (!episodeLoaded) return null
+    return { time: currentPosition(), paused: wasPaused }
+  }
+
   async function switchServer (index) {
     if (index === activeServerIndex || !streamServers[index] || !current || externalPlayback) return
-    // A previous switch still loading keeps its position: a failed server does not lose it.
-    const restore = { time: pendingRestore?.time ?? currentPosition(), paused: pendingRestore?.paused ?? paused }
+    const restore = reloadRestore(paused)
     activeServerIndex = index
     await startStream(activeStream(), restore)
   }
@@ -682,7 +715,8 @@
   /** Reloads the stream playing (same server) where it was: "Retry" of the playback error toasts. */
   function retryStream () {
     if (!current || externalPlayback) return
-    startStream(activeStream(), { time: pendingRestore?.time ?? currentPosition(), paused: false })
+    const restore = reloadRestore(false)
+    startStream(activeStream(), restore && { ...restore, paused: false })
   }
 
   // ---- HLS (hls.js instance streaming.js attaches to the video as video._hlsInstance): quality menu, fatal errors.
@@ -702,9 +736,17 @@
     const hls = video?._hlsInstance
     const Hls = window.Hls
     if (!hls || !Hls?.Events) return
-    const levels = hlsLevelOptions(hls.levels)
-    hlsLevels = levels.length > 1 ? levels : []
-    hlsActiveLevel = hls.currentLevel ?? -1
+    updateHlsLevels(hls)
+    // The quality picked for the show (like its audio track), on every episode and server.
+    const level = pickQualityLevel(hls.levels, rememberedForShow('lastQuality'))
+    if (level !== -1) {
+      hls.currentLevel = level
+      hlsLevel = level
+    }
+    // hls.js drops the levels that fail or that the browser cannot play.
+    hls.on(Hls.Events.LEVELS_UPDATED, () => {
+      if (stream === streamToken) updateHlsLevels(hls)
+    })
     hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
       if (stream === streamToken) hlsActiveLevel = data?.level ?? -1
     })
@@ -723,6 +765,14 @@
         if (stream === streamToken && video && !hls.media && (!video._hlsInstance || video._hlsInstance === hls)) showStreamError()
       }, 1_500)
     })
+  }
+
+  /** Quality menu entries of the stream, and which level is picked / plays (indexes move when a level is removed). */
+  function updateHlsLevels (hls) {
+    const levels = hlsLevelOptions(hls.levels)
+    hlsLevels = levels.length > 1 ? levels : []
+    hlsActiveLevel = hls.currentLevel ?? -1
+    hlsLevel = hls.autoLevelEnabled === false ? (hls.manualLevel ?? hls.currentLevel ?? -1) : -1
   }
 
   /** Lists the HLS audio renditions and starts with the one remembered for the show or the preferred language. */
@@ -746,15 +796,23 @@
     rememberAudio({ name: track.name, lang: track.lang })
   }
 
+  /**
+   * Choice remembered for the show playing (history cache: lastAudio, lastSubtitle, lastBoosted, lastQuality), used by
+   * its next episodes. 200 shows at most, the oldest forgotten (playerstate.js rememberShowValue).
+   */
+  function rememberedForShow (name) {
+    return cache.getEntry(caches.HISTORY, name)?.[showKey()] ?? null
+  }
+  function rememberForShow (name, value) {
+    cache.setEntry(caches.HISTORY, name, rememberShowValue(cache.getEntry(caches.HISTORY, name), showKey(), value))
+  }
+
   /** Audio track picked for the show ({ name, lang }), used by the next episodes (like lastSubtitle). */
   function rememberedAudio () {
-    return cache.getEntry(caches.HISTORY, 'lastAudio')?.[showKey()] || null
+    return rememberedForShow('lastAudio')
   }
   function rememberAudio ({ name, lang }) {
-    cache.setEntry(caches.HISTORY, 'lastAudio', {
-      ...(cache.getEntry(caches.HISTORY, 'lastAudio') || {}),
-      [showKey()]: { name: name || '', lang: lang || '' }
-    })
+    rememberForShow('lastAudio', { name: name || '', lang: lang || '' })
   }
 
   function selectQuality (index) {
@@ -762,13 +820,17 @@
     if (!hls) return
     hls.currentLevel = index // -1: automatic
     hlsLevel = index
+    // Remembered for the show: Auto (height 0), or the height and bitrate of the level (pickQualityLevel).
+    const level = index === -1 ? null : hls.levels?.[index]
+    rememberForShow('lastQuality', { height: Number(level?.height) || 0, bitrate: Number(level?.bitrate) || 0 })
   }
 
   /** id of the "Playback Error" toast shown for the stream playing */
   let streamErrorToast = null
   /** The stream stopped for good: streaming.js onError, hls.js gave up, or a 'streamerror' event on the video. */
   function showStreamError () {
-    if (streamErrorToast != null || !current || externalPlayback) return
+    // One error toast at a time: the video element's own (checkError) also offers Retry.
+    if (streamErrorToast != null || mediaErrorToast != null || !current || externalPlayback) return
     buffering = false
     clearTimeout(bufferTimeout)
     streamErrorToast = toast.error('Playback Error', {
@@ -787,9 +849,41 @@
     })
   }
 
+  /** id of the media error toast of the video element (checkError), one at a time */
+  let mediaErrorToast = null
+  /**
+   * Error toast of the video element with "Retry". It goes with the stream it is about: a reload (server switch,
+   * retry), the next episode, the player closed, or the video playing again (hls.js recovered).
+   */
+  function showMediaError (title, description, duration) {
+    dismissStreamError()
+    const token = loadToken
+    const stream = streamToken
+    const id = toast.error(title, {
+      description,
+      duration,
+      action: {
+        label: 'Retry',
+        onClick: () => {
+          if (mediaErrorToast === id) mediaErrorToast = null
+          if (token === loadToken && stream === streamToken) retryStream()
+        }
+      },
+      onDismiss: () => {
+        if (mediaErrorToast === id) mediaErrorToast = null
+      },
+      onAutoClose: () => {
+        if (mediaErrorToast === id) mediaErrorToast = null
+      }
+    })
+    mediaErrorToast = id
+  }
+
   function dismissStreamError () {
     if (streamErrorToast != null) toast.dismiss(streamErrorToast)
     streamErrorToast = null
+    if (mediaErrorToast != null) toast.dismiss(mediaErrorToast)
+    mediaErrorToast = null
   }
 
   // ---- External player (electron main process: external-player:launch / external-player:closed)
@@ -820,8 +914,8 @@
     hideBuffering()
     let result
     try {
+      // The main process starts the program picked in its own dialog (syncPlayerPath), never a path sent from here.
       result = await IPC.invoke('external-player:launch', {
-        path: settings.value.playerPath,
         url,
         headers,
         title: externalTitle(file),
@@ -871,7 +965,7 @@
     externalSession = null
     const time = position > 0 ? position : session?.startTime || 0
     if (session?.builtin && video?.readyState >= 1) {
-      if (position > 0) seekTo(position)
+      if (position > 0) seekTo(beforeEnd(position))
       if (play) paused = false
       return
     }
@@ -882,19 +976,22 @@
     if (externalPlayback && externalSession && current) leaveExternal(0, true)
   }
 
-  // external-player:closed ({ code }; position / duration / id are used if the main process ever sends them): the
-  // episode comes back here, where it was (or where the external player started) when no position is given.
+  // external-player:closed ({ id, code, position?, duration?, estimated? }, electron/src/main/externalPlayerArgs.js
+  // closedPosition: mpv's own position, or an estimate from the time another player stayed open): the episode comes
+  // back here, where it was (or where the external player started) when no position is given.
   IPC?.on?.('external-player:closed', (detail) => {
     if (!externalPlayback || !externalSession || !current) return
     if (detail?.id != null && externalSession.id != null && detail.id !== externalSession.id) return
-    const position = Number(detail?.position ?? detail?.time)
     const length = Number(detail?.duration) > 0 ? Number(detail.duration) : mediaDuration()
+    // An estimate runs past the end when the player was left paused: at most the whole episode.
+    const position = Math.min(Number(detail?.position ?? detail?.time), length)
     const watched = Number.isFinite(position) && position > 0
     if (watched) {
       saveProgressAt(position, length)
       if (!completed && $settings.playerAutocomplete) checkCompletionByTime(position, length, true)
     }
     leaveExternal(watched ? position : 0)
+    // (An episode watched to the end comes back just before its end, paused: Play next is offered, never forced.)
     if (watched && completed && hasNext) {
       toast('Episode watched', {
         description: 'The external player reached the end of the episode.',
@@ -903,6 +1000,31 @@
       })
     }
   })
+
+  /**
+   * The main process keeps the program picked in its own dialog (Settings > Player, electron/src/main/dialog.js) and
+   * starts only that one: Settings shows it. A path saved by an older version is unknown there and must be picked
+   * again (an empty setting, from "Reset Location", stays empty).
+   */
+  async function syncPlayerPath () {
+    if (!SUPPORTS.externalPlayer || SUPPORTS.isAndroid || !IPC?.invoke) return
+    let path
+    try {
+      path = await IPC.invoke('external-player:path')
+    } catch (error) {
+      return // older main process
+    }
+    const shown = settings.value.playerPath
+    if (typeof path !== 'string' || !shown || shown === path) return
+    $settings.playerPath = path
+    if (!path) {
+      toast('External Player', {
+        description: 'Select your external player again in Settings > Player: Tsumi now only starts a program picked there.',
+        duration: 15_000
+      })
+    }
+  }
+  syncPlayerPath()
 
   export let media
 
@@ -1178,14 +1300,24 @@
     const restore = pendingRestore
     pendingRestore = null
     if (restore && restore.stream === streamToken) {
-      if (restore.time > 0) seekTo(restore.time)
+      if (restore.time > 0) seekTo(beforeEnd(restore.time))
       if (!restore.paused && !hidden) video.play()?.catch?.(() => {})
       else video.pause()
     } else {
       applyResume(token)
       w2gLoadSteps.push(autoPlay(token))
     }
+    episodeLoaded = true
     w2gLoadedMetadata()
+  }
+
+  /**
+   * A position restored at the very end (back from an external player that reached it, a reload during the last
+   * second) would fire `ended` and start the next episode on its own: a little before it instead.
+   */
+  function beforeEnd (time) {
+    const length = videoLength()
+    return length > 10 ? Math.min(time, length - 3) : time
   }
 
   function playPause () {
@@ -1219,8 +1351,15 @@
     // Watch Together: the host plays the next queued item ("Up next"), else nothing as before.
     if (state.value) return !externalPlayback && !!state.value.episodeEnded()
     if (!$settings.playerAutoplay || !hasNext) return false
-    playNext()
+    // One request at a time: the next episode of an extension is looked for while this one keeps playing (Up next
+    // "Play now", Skip or auto-skip on the last chapter, then `ended`). Asking again would restart that search, or
+    // re-open the extension results under the user's cursor. Once that menu was closed, a new request opens it again.
+    if (!nextRequestPending()) playNext()
     return true
+  }
+  /** This episode asked for the next one, which the extensions are still looking for (results or default extension). */
+  function nextRequestPending () {
+    return advancedToken === loadToken && (modal.exists(modal.EXTENSION_MENU) || modal.exists(modal.DEFAULT_LOADING))
   }
   function playNext () {
     if (hasNext) {
@@ -1233,6 +1372,7 @@
         media?.media?.nextAiringEpisode?.episode - 1 ||
         (media?.media?.episodes || getMediaMaxEp(media?.media)) > media?.episode
       ) {
+        advancedToken = loadToken
         playAnime(media.media, media.episode + 1)
       }
     }
@@ -1252,10 +1392,7 @@
     }
   }
   function rememberBoost () {
-    cache.setEntry(caches.HISTORY, 'lastBoosted', {
-      ...(cache.getEntry(caches.HISTORY, 'lastBoosted') || {}),
-      [showKey()]: { boosted: volumeBoosted, gain }
-    })
+    rememberForShow('lastBoosted', { boosted: volumeBoosted, gain })
   }
   function setGain (event) {
     const value = parseFloat(event.target.value)
@@ -1936,23 +2073,35 @@
   }
 
   let currentSkippable = null
-  $: currentSkippable && $settings.playerSkip && skip() // "Auto-Skip Intro/Outro" (PlayerTab.svelte)
+  /** Start (ms) of the chapters auto-skip already skipped in this episode. */
+  let autoSkipped = new Set()
+  // "Auto-Skip Intro/Outro" (PlayerTab.svelte) skips each chapter once, as on iPhone (autoSkippedChapterStart): seeking
+  // back into a skipped intro plays it, and the last chapter (which plays on while the next episode is looked for)
+  // does not ask for the next episode again on every timeupdate.
   function checkSkippableChapters () {
-    const current = findChapter(currentTime)
-    if (current) {
-      currentSkippable = isChapterSkippable(current)
+    const chapter = findChapter(currentTime)
+    if (!chapter) return
+    currentSkippable = isChapterSkippable(chapter)
+    if (currentSkippable && $settings.playerSkip && !externalPlayback && !autoSkipped.has(chapter.start)) {
+      autoSkipped.add(chapter.start)
+      skip()
     }
+  }
+
+  /** Auto-skip is about to jump over the chapter playing at `time` (Up next waits for it). */
+  function autoSkipPending (time) {
+    const chapter = $settings.playerSkip && findChapter(time)
+    return !!chapter && !!isChapterSkippable(chapter) && !autoSkipped.has(chapter.start)
   }
 
   // ---- "Up next": while the credits / preview close the episode (AniSkip, TheIntroDB or file chapters) and autoplay
   // is on, a card counts down 10 s of playback to the next episode. Full player only (not the miniplayer or PiP), and
   // not in Watch Together, where the lobby queue handles the end (same as the iPhone player).
   const UP_NEXT_S = 10
-  /** { label, remaining } while the card shows */
+  /** { label, startsAt, remaining } while the card shows: startsAt is the video time the next episode starts at */
   let upNext = null
   /** "Cancel" was clicked: no card again for this episode */
   let upNextDismissed = false
-  let upNextTimer = null
 
   /** Never an episode title or a file name (spoilers): "Episode 5". */
   function nextLabel () {
@@ -1966,32 +2115,26 @@
     return !externalPlayback && !miniplayer && !pip && !state.value && $settings.playerAutoplay && hasNext
   }
 
+  // Runs on timeupdate.
   function checkUpNext () {
     if (!video) return
     const time = video.currentTime
-    // Auto-skip already jumps over a skippable chapter (and to the next episode from the last one).
-    const show = !upNextDismissed && !($settings.playerSkip && currentSkippable) && canAdvance() &&
+    // Not while auto-skip is about to jump over this chapter (to the next episode from the last one), nor once the next
+    // episode was asked for (its extension search runs while this one plays on).
+    const show = !upNextDismissed && advancedToken !== loadToken && !autoSkipPending(time) && canAdvance() &&
       safeduration - time > 2 && inEndChapters(chapters, time, safeduration)
-    if (show && !upNext) startUpNext()
-    else if (!show && upNext) clearUpNext()
-  }
-
-  function startUpNext () {
-    clearInterval(upNextTimer)
-    const token = loadToken
-    upNext = { label: nextLabel(), remaining: UP_NEXT_S }
-    upNextTimer = setInterval(() => {
-      if (token !== loadToken || !upNext) return clearUpNext()
-      // Paused, buffering or hidden: the countdown waits.
-      if (paused || buffering || hidden) return
-      upNext = { ...upNext, remaining: upNext.remaining - 1 }
-      if (upNext.remaining <= 0) playUpNext()
-    }, 1_000)
+    if (!show) {
+      if (upNext) clearUpNext()
+      return
+    }
+    // Counted in playback time, as on iPhone: it waits while paused or buffering, and runs faster while held faster.
+    if (!upNext) upNext = { label: nextLabel(), startsAt: time + UP_NEXT_S, remaining: UP_NEXT_S }
+    const remaining = upNextRemaining(upNext.startsAt, time, safeduration)
+    if (remaining !== upNext.remaining) upNext = { ...upNext, remaining }
+    if (time >= upNext.startsAt && !video.paused && !hidden) playUpNext()
   }
 
   function clearUpNext () {
-    clearInterval(upNextTimer)
-    upNextTimer = null
     upNext = null
   }
 
@@ -2249,24 +2392,27 @@
   // }
 
   const showOptions = writable(false)
-  // One player menu at a time: opening a dropdown (servers, subtitles, audio...) or the More menu closes the others,
-  // which otherwise stay open and overlap.
+  /** CastButton.svelte instance (its device menu) */
+  let castButton = null
+  // One player menu at a time: opening a dropdown (servers, subtitles, audio...), the More menu or the Cast menu closes
+  // the others and the online subtitles panel, which otherwise stay open and overlap.
   function closePlayerMenus (except = null) {
     for (const open of document.querySelectorAll('.player .dropdown.show')) {
-      if (open === except) continue
+      // The Cast menu is CastButton's own state: only its close() really closes it (and stops looking for devices).
+      if (open === except || open.classList.contains('cast-button')) continue
       open.classList.remove('show')
       for (const active of open.querySelectorAll('.active')) {
         if (!active.closest('.dropdown-menu')) active.classList.remove('active')
       }
     }
+    castButton?.close?.()
+    showOptions.set(false)
+    onlineSubsOpen = false
   }
   function toggleDropdown ({ target }) {
     const dropdown = target.closest('.dropdown')
     if (!dropdown) return
-    if (!dropdown.classList.contains('show')) {
-      closePlayerMenus(dropdown)
-      showOptions.set(false)
-    }
+    if (!dropdown.classList.contains('show')) closePlayerMenus(dropdown)
     target.classList.toggle('active')
     dropdown.classList.toggle('show')
   }
@@ -2316,24 +2462,14 @@
           'A network error caused the video download to fail part-way.',
           target.error
         )
-        toast.error('Video Network Error', {
-          description:
-            'A network error caused the video download to fail part-way.',
-          duration: Infinity,
-          action: { label: 'Retry', onClick: retryStream }
-        })
+        showMediaError('Video Network Error', 'A network error caused the video download to fail part-way.', Infinity)
         break
       case target.error.MEDIA_ERR_DECODE:
         debug(
           'The video playback was aborted due to a corruption problem or because the video used features your browser did not support.',
           target.error
         )
-        toast.error('Video Decode Error', {
-          description:
-            'The video playback was aborted due to a corruption problem.',
-          duration: Infinity,
-          action: { label: 'Retry', onClick: retryStream }
-        })
+        showMediaError('Video Decode Error', 'The video playback was aborted due to a corruption problem.', Infinity)
         break
       case target.error.MEDIA_ERR_SRC_NOT_SUPPORTED:
         if (
@@ -2343,12 +2479,11 @@
             'The video could not be loaded, either because the server or network failed or because the format is not supported.',
             target.error
           )
-          toast.error('Video Codec Unsupported', {
-            description:
-              'The video could not be loaded, either because the server or network failed or because the format is not supported. Try another server, or a different source from another extension.',
-            duration: 30_000,
-            action: { label: 'Retry', onClick: retryStream }
-          })
+          showMediaError(
+            'Video Codec Unsupported',
+            'The video could not be loaded, either because the server or network failed or because the format is not supported. Try another server, or a different source from another extension.',
+            30_000
+          )
         }
         break
       default:
@@ -2624,6 +2759,7 @@
       }}
       on:canplay={hideBuffering}
       on:playing={hideBuffering}
+      on:playing={dismissStreamError}
       on:ended={tryPlayNext}
       on:loadedmetadata={handleLoadedMetadata}
       on:enterpictureinpicture={() => (pip = true)}
@@ -3429,7 +3565,7 @@
         <!--    {/if} -->
         <!--  </span> -->
         <!-- {/if} -->
-        <CastButton {video} {current} {media} {streamServers} {activeServerIndex} {subs} {subHeaders} delay={subDelay} disabled={externalPlayback} />
+        <CastButton bind:this={castButton} {video} {current} {media} {streamServers} {activeServerIndex} {subs} {subHeaders} delay={subDelay} disabled={externalPlayback} onOpen={() => closePlayerMenus()} />
         {#if 'pictureInPictureEnabled' in document}
           <span
             class='icon text-white ctrl mr-5 d-none align-items-center'
