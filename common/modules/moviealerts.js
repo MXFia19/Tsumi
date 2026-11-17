@@ -1,11 +1,15 @@
 import { writable } from 'simple-store-svelte'
 import Debug from 'debug'
 import { cache, caches, mediaCache } from '@/modules/cache.js'
-import { tmdbClient } from '@/modules/tmdb.js'
 import { releaseRegions } from '@/modules/schedule/movies.js'
 import { movieReleaseDays, dueRelease, releaseMessage } from '@/modules/schedule/moviealerts.js'
 
 const debug = Debug('ui:movie-alerts')
+
+// tmdb.js is loaded on first use, not imported: App.svelte loads this module before anilist.js, and tmdb.js loaded
+// first runs sections.js (tmdb.js > anilist.js > anime.js > sections.js) while tmdbClient does not exist yet, so the
+// app stayed on a blank window.
+const tmdb = () => import('@/modules/tmdb.js').then(module => module.tmdbClient)
 
 // Release alerts of TMDB movies (details "Release alert" button, MovieAlertButton.svelte): checked a little after
 // start and every 6 hours, each due release becomes a notification of the NotificationsModal ('notification-app').
@@ -47,7 +51,7 @@ export function movieDays (media) {
   const id = media.idTmdb
   const pending = dayRequests.get(id)
   if (pending && Date.now() - pending.at < 60_000) return pending.promise
-  const promise = tmdbClient.getReleaseDates(id).then(results => movieReleaseDays(results, alertRegions()))
+  const promise = tmdb().then(client => client.getReleaseDates(id)).then(results => movieReleaseDays(results, alertRegions()))
   dayRequests.set(id, { promise, at: Date.now() })
   promise.catch(() => dayRequests.delete(id))
   return promise
@@ -88,8 +92,9 @@ export async function movieMedia (id) {
   if (alert?.media) return alert.media
   const idTmdb = Number(String(id).replace(/^tmdb-/, ''))
   if (!idTmdb) return null
-  const data = await tmdbClient.handleRequest(`/movie/${idTmdb}`).catch(() => null)
-  return data?.id ? tmdbClient.normalizeMedia({ ...data, media_type: 'movie' }) : null
+  const client = await tmdb()
+  const data = await client.handleRequest(`/movie/${idTmdb}`).catch(() => null)
+  return data?.id ? client.normalizeMedia({ ...data, media_type: 'movie' }) : null
 }
 
 function notify (alert, kind, day, now) {
@@ -125,7 +130,7 @@ async function runChecks () {
     for (const alert of movieAlerts.value) {
       let days
       try {
-        days = movieReleaseDays(await tmdbClient.getReleaseDates(alert.idTmdb), regions)
+        days = movieReleaseDays(await (await tmdb()).getReleaseDates(alert.idTmdb), regions)
       } catch (error) {
         debug('Release dates failed', alert.idTmdb, error)
         continue
