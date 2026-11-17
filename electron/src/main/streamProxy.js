@@ -5,13 +5,17 @@ import { pipeline } from 'node:stream/promises'
 import { app } from 'electron'
 import Debug from 'debug'
 import { registerDownloadRoutes } from './downloads/routes.js'
-import { rewritePlaylist } from './cast/hls.js'
+import { isPlaylistStart, rewritePlaylist } from './cast/hls.js'
 import { sanitizeHeaders } from './cast/proxy.js'
 import { isLoopbackHost, isWebUrl } from './security.js'
+import {
+  DEFAULT_USER_AGENT, MAX_RESPONSE_BYTES, moduleFetch, decodersFor, byteLimit, tooLargeError, readHead, readRest, bodyChunks
+} from './proxyUpstream.js'
 
 const debug = Debug('electron:streaming-proxy')
 
-const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+/** Largest playlist rewritten by /proxy (a long VOD playlist is a few MB at most). */
+const MAX_PLAYLIST_BYTES = 32 * 1024 * 1024
 
 let server = null
 let expressApp = null
@@ -72,47 +76,68 @@ export async function startStreamProxy () {
       const router = express.Router()
       router.use(express.json({ limit: '10mb' }))
 
-      // General-purpose fetch proxy — supports all HTTP methods and custom headers
-      // (including User-Agent, Cookie, Referer which are forbidden in browser fetch)
+      // Requests of the Sora modules (fetchv2, common/modules/extension.js): any method, and the headers a page cannot
+      // set (User-Agent, Cookie, Referer...). The network rules of the modules apply here, where the connection is made
+      // (proxyUpstream.js): no local address, also after a redirect or through a public name that resolves to one,
+      // unless the module itself is local (allowLocal, sent by the renderer from where the module was installed). The
+      // body is streamed with the same cap as in the renderer and the upstream request stops when the renderer's does.
+      // Headers of the answer: X-Final-Url (after redirects), X-Redirected, X-Location (the Location of a redirect
+      // left to the module, redirect: 'manual'; a real Location would make the renderer's fetch follow it),
+      // X-Set-Cookie. A request that could not be made answers 502 with X-Proxy-Error and { error }.
       router.post('/fetch', async (req, res) => {
+        const { url, headers: reqHeaders, method, body: reqBody, redirect, allowLocal } = req.body || {}
+        if (typeof url !== 'string' || !isWebUrl(url)) {
+          return res.status(400).json({ error: 'Missing or invalid url' })
+        }
+
+        const controller = upstreamController(res)
+        const fail = (error) => {
+          if (res.headersSent) return res.destroy()
+          res.status(502).setHeader('X-Proxy-Error', '1')
+          res.json({ error: error?.message || 'Request failed' })
+        }
+        const redirectMode = redirect === 'manual' || redirect === 'error' ? redirect : 'follow'
+        let upstream
         try {
-          const { url, headers: reqHeaders, method, body: reqBody } = req.body || {}
-
-          if (!url || !isWebUrl(url)) {
-            return res.status(400).json({ error: 'Missing or invalid url' })
-          }
-
-          const fetchOptions = {
-            method: (method || 'GET').toUpperCase(),
-            headers: {
-              'User-Agent': DEFAULT_USER_AGENT,
-              ...(reqHeaders || {})
-            }
-          }
-
-          if (reqBody != null && fetchOptions.method !== 'GET' && fetchOptions.method !== 'HEAD') {
-            fetchOptions.body = typeof reqBody === 'string' ? reqBody : JSON.stringify(reqBody)
-          }
-
-          const response = await fetch(url, fetchOptions)
-
-          const contentType = response.headers.get('content-type') || 'application/octet-stream'
-          res.setHeader('Content-Type', contentType)
-
-          // Forward Set-Cookie so extensions can read cookies from responses
-          const setCookie = response.headers.getSetCookie?.() || []
-          if (setCookie.length) {
-            res.setHeader('X-Set-Cookie', JSON.stringify(setCookie))
-          }
-
-          res.status(response.status)
-          const buffer = await response.arrayBuffer()
-          res.send(Buffer.from(buffer))
+          upstream = await moduleFetch({
+            url,
+            method,
+            headers: reqHeaders && typeof reqHeaders === 'object' ? reqHeaders : {},
+            body: reqBody == null ? null : typeof reqBody === 'string' ? reqBody : JSON.stringify(reqBody),
+            redirect: redirectMode,
+            allowLocal: allowLocal === true,
+            signal: controller.signal
+          })
         } catch (error) {
+          // The renderer gave up (module timeout, cancelled search): nothing to answer.
+          if (controller.signal.aborted) return
           debug('Fetch proxy error:', error?.message)
-          if (!res.headersSent) {
-            res.status(500).json({ error: error.message })
-          }
+          return fail(error)
+        }
+
+        const { response } = upstream
+        const declared = Number(response.headers['content-length'])
+        if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+          response.destroy()
+          return fail(tooLargeError())
+        }
+        res.status(response.statusCode)
+        res.setHeader('Content-Type', response.headers['content-type'] || 'application/octet-stream')
+        res.setHeader('X-Final-Url', upstream.url)
+        if (upstream.redirected) res.setHeader('X-Redirected', '1')
+        if (redirectMode === 'manual' && response.headers.location) res.setHeader('X-Location', response.headers.location)
+        // Set-Cookie of the answer, so extensions can read the cookies.
+        const setCookie = response.headers['set-cookie'] || []
+        if (setCookie.length) res.setHeader('X-Set-Cookie', JSON.stringify(setCookie))
+
+        try {
+          // Decoded here like fetch does (the renderer gets plain bytes), counted after decoding like readCapped.
+          const decoders = decodersFor(response.headers['content-encoding'], { method: response.req?.method, status: response.statusCode })
+          await pipeline(response, ...decoders, byteLimit(MAX_RESPONSE_BYTES), res)
+        } catch (error) {
+          // pipeline destroyed both ends: the renderer's request fails (body over the cap, broken connection), or the
+          // renderer had already given up.
+          if (error?.name !== 'AbortError') debug('Fetch proxy body error:', error?.message)
         }
       })
 
@@ -148,12 +173,18 @@ export async function startStreamProxy () {
 
           // The final URL after redirects: relative playlist entries resolve against it, not against the requested one.
           const finalUrl = response.url || url
-          const isM3U8 = /\.m3u8?($|[?#])/i.test(new URL(finalUrl).pathname) || url.toLowerCase().includes('.m3u8') || /mpegurl/i.test(contentType)
+          // A playlist is recognized by its first bytes (#EXTM3U, which every HLS playlist starts with and hls.js
+          // requires), like the Cast proxy does: not by its URL (a segment "seg-1.ts?pl=index.m3u8" would be decoded as
+          // text and broken) nor by its content type (playlists served as text/plain would not be rewritten, and their
+          // relative segments would then resolve against the proxy URL).
+          const reader = response.body?.getReader()
+          const start = reader ? await readHead(reader) : { head: Buffer.alloc(0), done: true }
 
-          if (isM3U8) {
+          if (isPlaylistStart(start.head)) {
             // Playlists are rewritten so their variants, segments, keys and maps come back through the proxy too.
-            const text = await response.text()
+            const text = (await readRest(reader, start, MAX_PLAYLIST_BYTES)).toString('utf-8')
             const body = Buffer.from(rewritePlaylist(text, finalUrl, absolute => getProxyUrl(absolute, streamHeaders)), 'utf-8')
+            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl')
             res.setHeader('Content-Length', body.length)
             res.send(body)
             return
@@ -168,11 +199,11 @@ export async function startStreamProxy () {
           if (contentRange) res.setHeader('Content-Range', contentRange)
           if (acceptRanges) res.setHeader('Accept-Ranges', acceptRanges)
 
-          if (!response.body || req.method === 'HEAD') {
+          if (!reader || req.method === 'HEAD') {
             controller.abort()
             return res.end()
           }
-          await pipeline(Readable.fromWeb(response.body), res)
+          await pipeline(Readable.from(bodyChunks(reader, start)), res)
         } catch (error) {
           // The player closed the connection (seek, stop, next episode): nothing to answer.
           if (controller.signal.aborted) return
