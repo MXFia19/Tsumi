@@ -4,8 +4,7 @@ import Observation
 // Movie release alerts ("Films à surveiller", same behaviour as the desktop app): the bell of the details of a TMDB
 // movie adds it to a persisted list; the list is checked a few seconds after launch, 5 seconds after an alert is
 // turned on, every 6 hours while the app runs and in the background refresh, and an in-app + system notification
-// is posted when the movie comes out in
-// theaters, then when it comes out on digital (the movie then leaves the list).
+// is posted when the movie comes out in theaters, then when it comes out on digital (the movie then leaves the list).
 
 /// A watched movie: enough to post the notification and reopen the details without a request.
 struct MovieAlertEntry: Codable, Hashable, Identifiable {
