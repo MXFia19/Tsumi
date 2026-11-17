@@ -255,7 +255,7 @@ struct ExtensionPickerView: View {
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 8) {
         if group.extensionIcon != nil {
-          ExtensionIconView(url: group.extensionIcon, size: 22, circle: true)
+          ExtensionIconView(url: group.extensionIcon, size: 22, circle: true, allowsLocalNetwork: ExtensionImageLoader.allowsLocalNetwork(extensionKey: group.extensionKey))
         }
         Text(group.extensionName)
           .font(.headline)
@@ -294,7 +294,7 @@ struct ExtensionPickerView: View {
       model.select(result)
     } label: {
       VStack(alignment: .leading, spacing: 5) {
-        ExtensionPosterImage(url: result.imageURL)
+        ExtensionPosterImage(url: result.imageURL, allowsLocalNetwork: ExtensionImageLoader.allowsLocalNetwork(extensionKey: result.extensionKey))
           .overlay {
             if isPlaying {
               ZStack {

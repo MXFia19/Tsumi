@@ -57,8 +57,9 @@ enum SoraSearchSource {
     let query = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !query.isEmpty else { return [] }
     let manager = ExtensionManager.shared
-    // A search right after launch or a refresh waits for the modules being loaded.
-    await manager.awaitPendingLoads()
+    // A search right after launch or a refresh waits for the module being loaded (its offline copy after a few
+    // seconds when the load hangs).
+    await manager.awaitPendingLoads([moduleKey])
     try Task.checkCancellation()
     guard let ext = manager.enabledExtensions().first(where: { $0.key == moduleKey && $0.kind == .sora }) else {
       throw ExtensionFailure("\(moduleName(moduleKey)) is disabled or could not be loaded")
@@ -281,9 +282,15 @@ final class SoraPreferredSources {
 
   private init() {}
 
-  /// Module result remembered for a media id (`Media.id`).
+  /// Module result remembered for a media id (`Media.id`). Forgotten once its module was removed or disabled, so a
+  /// later Play of the title goes straight to the usual flow instead of failing on it first.
   func source(for mediaID: String) -> PlaybackSource? {
-    sources[mediaID]
+    guard let source = sources[mediaID] else { return nil }
+    guard ExtensionManager.shared.isEnabled(source.extensionKey) else {
+      sources[mediaID] = nil
+      return nil
+    }
+    return source
   }
 
   func remember(_ source: PlaybackSource, for mediaID: String) {

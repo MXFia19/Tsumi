@@ -458,6 +458,7 @@ enum SoraNetwork {
     configuration.urlCache = nil
     configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
     configuration.timeoutIntervalForRequest = 30
+    configuration.timeoutIntervalForResource = ExtensionHTTP.resourceTimeout
     configuration.httpMaximumConnectionsPerHost = 8
     return ExtensionFetchSession(configuration: configuration, name: "org.tsumi.extensions.module-network")
   }()

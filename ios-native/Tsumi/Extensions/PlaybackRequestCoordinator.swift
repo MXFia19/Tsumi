@@ -82,7 +82,8 @@ final class ExtensionPickerModel {
     pendingNames = []
     failedNames = []
     let manager = ExtensionManager.shared
-    await manager.awaitPendingLoads()
+    // The enabled extensions only; those whose load hangs run from their offline copy after a few seconds.
+    await manager.awaitPendingLoads(manager.enabledKeys)
     let title = self.title
     let media = self.media
     let enabled = manager.enabledExtensionsStarredFirst()

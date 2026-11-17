@@ -11,19 +11,21 @@ enum ExtensionPalette {
   static let danger = Color(red: 0.92, green: 0.30, blue: 0.30)
 }
 
-/// Extension icon (manifest iconUrl), or the "unknown file" symbol (FileQuestion).
+/// Extension icon (manifest iconUrl), or the "unknown file" symbol (FileQuestion). Loaded with the extension image
+/// rules (ExtensionImageLoader: size cap, no local address unless `allowsLocalNetwork`, downsampled).
 struct ExtensionIconView: View {
   let url: URL?
   var size: CGFloat = 43
   var circle = false
+  var allowsLocalNetwork = false
 
   var body: some View {
     Group {
       if let url {
-        AsyncImage(url: url) { phase in
+        ExtensionAsyncImage(url: url, maxPixelSize: Int(size * 3), allowsLocalNetwork: allowsLocalNetwork) { phase in
           switch phase {
           case .success(let image):
-            image.resizable().scaledToFill()
+            Image(uiImage: image).resizable().scaledToFill()
           default:
             placeholder
           }
@@ -61,23 +63,25 @@ struct ExtensionBadge: View {
   }
 }
 
-/// Poster with a 2:3 ratio, placeholder symbol when missing or failing.
+/// Poster with a 2:3 ratio, placeholder symbol when missing or failing. Loaded with the extension image rules
+/// (ExtensionImageLoader: size cap, no local address unless `allowsLocalNetwork`, downsampled).
 struct ExtensionPosterImage: View {
   let url: URL?
   var placeholderSymbol = "play.fill"
+  var allowsLocalNetwork = false
 
   var body: some View {
     Color.white.opacity(0.06)
       .aspectRatio(2.0 / 3.0, contentMode: .fit)
       .overlay {
         if let url {
-          AsyncImage(url: url) { phase in
+          ExtensionAsyncImage(url: url, allowsLocalNetwork: allowsLocalNetwork) { phase in
             switch phase {
             case .success(let image):
-              image.resizable().scaledToFill()
+              Image(uiImage: image).resizable().scaledToFill()
             case .failure:
               symbol
-            default:
+            case .empty:
               ProgressView().tint(ExtensionPalette.muted)
             }
           }
