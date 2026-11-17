@@ -226,22 +226,34 @@ export default class App {
       const linkOf = activation => typeof activation === 'string' ? activation : activation?.launch
       if (opts.activation && !isNotificationLink(linkOf(opts.activation))) delete opts.activation
       if (Array.isArray(opts.button)) opts.button = opts.button.filter(button => isNotificationLink(linkOf(button?.activation)))
-      opts.icon = opts.icon ? ((await this.getImage(opts.id, opts.icon)) || this.icon) : this.icon
-      let notification
-      if (process.platform === 'win32') {
-        opts.heroImg &&= await this.getImage(opts.id, opts.heroImg, true)
-        opts.inlineImg &&= await this.getImage(opts.id, opts.inlineImg)
-        notification = new Notification({ toastXml: toXmlString(opts) })
-      } else {
-        const simpleOpts = { title: opts.title, body: opts.message, icon: opts.icon }
-        if (process.platform === 'darwin' && opts.button && opts.button.length) simpleOpts.actions = opts.button.map(button => ({ type: 'button', text: button.text }))
-        notification = new Notification(simpleOpts)
-        notification.on('click', () => this.activateNotification(opts.activation?.launch))
-        if (process.platform === 'darwin') {
-          notification.on('action', (event, index) => this.activateNotification(opts.button?.[index]?.activation))
+      // An image that can't be fetched or read (offline, 404, unknown format) leaves the toast without it.
+      const icon = opts.icon ? await this.getImageSafe(opts.id, opts.icon) : null
+      try {
+        let notification
+        if (process.platform === 'win32') {
+          // powertoast takes file paths only (not the NativeImage of the app icon): without an image of its own, the
+          // toast shows the app icon.
+          if (icon) opts.icon = icon
+          else delete opts.icon
+          for (const [key, wideScreen] of [['heroImg', true], ['inlineImg', false]]) {
+            const image = opts[key] ? await this.getImageSafe(opts.id, opts[key], wideScreen) : null
+            if (image) opts[key] = image
+            else delete opts[key]
+          }
+          notification = new Notification({ toastXml: toXmlString(opts) })
+        } else {
+          const simpleOpts = { title: opts.title, body: opts.message, icon: icon || this.icon }
+          if (process.platform === 'darwin' && opts.button && opts.button.length) simpleOpts.actions = opts.button.map(button => ({ type: 'button', text: button.text }))
+          notification = new Notification(simpleOpts)
+          notification.on('click', () => this.activateNotification(opts.activation?.launch))
+          if (process.platform === 'darwin') {
+            notification.on('action', (event, index) => this.activateNotification(opts.button?.[index]?.activation))
+          }
         }
+        notification.show()
+      } catch (error) {
+        console.warn('Could not show the notification:', error?.message || error)
       }
-      notification.show()
     })
 
     if (process.platform === 'win32') {
@@ -408,20 +420,43 @@ export default class App {
     if (!this.updater.install(forceRunAfter)) app.quit()
   }
 
+  /** getImage, or null when the image can't be fetched, read or written. */
+  async getImageSafe (id, url, wideScreen) {
+    try {
+      return await this.getImage(id, url, wideScreen)
+    } catch (error) {
+      let host = '?'
+      try {
+        host = new URL(url).host
+      } catch {}
+      console.warn(`Notification image unavailable (${host}): ${error?.message || error}`)
+      return null
+    }
+  }
+
   imageCache = new Map()
+  /**
+   * The image of a notification as a local file, cropped (square icon, or 16:9 hero image): Windows toasts read
+   * images from files.
+   * @param {unknown} id
+   * @param {string} url
+   * @param {boolean} [wideScreen]
+   */
   async getImage (id, url, wideScreen) {
     const cacheKey = `${id}_${url}_${wideScreen}`
     if (this.imageCache.has(cacheKey)) return this.imageCache.get(cacheKey)
-    const res = await fetch(url)
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const arrayBuffer = await res.arrayBuffer()
-    const urlParts = url.split('/')
-    const baseName = urlParts[urlParts.length - 1].replace(/\.[^/.]+$/, '')
-    const extension = urlParts[urlParts.length - 1].split('.').pop()
-    const uniqueName = `${baseName}_${id}.${extension}`
+    // File name from the last path segment (no query, safe characters only); Jimp writes PNG or JPEG by extension.
+    // The hero image has its own name: the same picture can also be the square icon.
+    const lastSegment = new URL(url).pathname.split('/').pop() || ''
+    const baseName = lastSegment.replace(/\.[^.]*$/, '').replace(/[^\w-]+/g, '_').slice(0, 60) || 'image'
+    const extension = /\.jpe?g$/i.test(lastSegment) ? 'jpg' : 'png'
+    const uniqueName = `${baseName}_${String(id).replace(/[^\w-]+/g, '_').slice(0, 40)}${wideScreen ? '_wide' : ''}.${extension}`
     const imagePath = join(this.imageDir, uniqueName)
     const image = await Jimp.read(Buffer.from(arrayBuffer))
     const { width, height } = image.bitmap
-    this.imageCache.set(cacheKey, imagePath)
     if (wideScreen) {
       let adjWidth, adjHeight
       if (width / height > (16 / 9)) {
@@ -436,6 +471,8 @@ export default class App {
       const squareRatio = Math.min(width, height)
       await image.crop((width - squareRatio) / 2, (height - squareRatio) / 2, squareRatio, squareRatio).resize(128, 128, Jimp.RESIZE_BEZIER).writeAsync(imagePath)
     }
+    // Cached once the file is written (a toast never points at a file that is not there yet).
+    this.imageCache.set(cacheKey, imagePath)
     const timeout = setTimeout(() => {
       this.timeouts.delete(timeout)
       fs.unlink(imagePath, (error) => {
