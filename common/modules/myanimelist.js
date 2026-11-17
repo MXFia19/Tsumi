@@ -1,7 +1,7 @@
 import { writable } from 'simple-store-svelte'
 import Bottleneck from 'bottleneck'
 
-import { malToken, refreshMalToken } from '@/modules/settings.js'
+import { malToken, refreshMalToken, profiles } from '@/modules/settings.js'
 import { mediaCache, mapStatus, malListEntry } from '@/modules/cache.js'
 import { sleep } from '@/modules/util.js'
 import { printError } from '@/modules/networking.js'
@@ -107,6 +107,7 @@ class MALClient {
    * @returns {Promise<{ ok: boolean, status: number, json: any }>} json: the answer (null when empty), {} when the request could not be sent
    */
   malSend (query, body = {}) {
+    query = this.withCurrentToken(query)
     /** @type {RequestInit} */
     const options = {
       method: `${query.type}`,
@@ -133,6 +134,27 @@ class MALClient {
   }
 
   failedRefresh = []
+
+  /**
+   * Tokens of synced profiles renewed in this session: old token -> { token, refresh_in }. A caller still holding the
+   * profile object it read before the renewal (Helper.syncProgress reads the list status, which renews an expired
+   * token, then saves with the same object) sends the new token. It sent the old one, whose renewal then failed (no
+   * profile has it any more) and blocked it (failedRefresh): "Failed to Update List" for that episode, every 14 days.
+   * @type {Map<string, { token: string, refresh_in: number }>}
+   */
+  renewedTokens = new Map()
+
+  /**
+   * `query` with the current token of a synced profile, see renewedTokens.
+   * @param {Record<string, any>} query
+   */
+  withCurrentToken (query) {
+    let renewed = query.token && this.renewedTokens.get(query.token)
+    if (!renewed) return query
+    // Renewed again since (a session left open for weeks): the newest token.
+    for (let hops = 0; hops < 10 && this.renewedTokens.has(renewed.token); hops++) renewed = this.renewedTokens.get(renewed.token)
+    return { ...query, token: renewed.token, refresh_in: renewed.refresh_in }
+  }
 
   /**
    * @param {Record<string, any>} query
@@ -178,7 +200,7 @@ class MALClient {
                   Authorization: `Bearer ${oauth.access_token}`,
                   'Content-Type': 'application/x-www-form-urlencoded'
                 }
-                return this.handleRequest(query, options)
+                return this.handleRequest(this.withCurrentToken(query), options)
               } else return notSent
             case 'invalid_content':
               code = 422
@@ -198,8 +220,12 @@ class MALClient {
   async refreshToken (query) {
     const oauth = await refreshMalToken(query.token ? query.token : this.userID.token) // refresh authorization token as it typically expires every 31 days. Refresh token also expires every 31 days, so we refresh every two weeks.
     if (oauth) {
-      if (!query.token) {
+      if (!query.token || malToken?.token === oauth.access_token) {
         this.userID = malToken
+      }
+      if (query.token) {
+        const renewed = malToken?.token === oauth.access_token ? malToken : profiles.value.find(profile => profile.token === oauth.access_token)
+        this.renewedTokens.set(query.token, { token: oauth.access_token, refresh_in: renewed?.refresh_in ?? Math.floor(Date.now() / 1000) + 14 * 24 * 60 * 60 })
       }
       return oauth
     }

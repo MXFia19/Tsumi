@@ -207,7 +207,11 @@ export async function refreshMalToken (token) {
   }
   const oauth = await response.json()
   const { malClient } = await import('./myanimelist.js')
-  const viewer = await malClient.viewer(oauth.access_token)
+  const previous = currentProfile ? malToken : profiles.value.find(profile => profile.token === token)
+  const fetched = await malClient.viewer(oauth.access_token).catch(() => null)
+  // A failed viewer request keeps the known viewer: its id identifies the profile (synced profiles, pending list
+  // updates of sync/listqueue.js).
+  const viewer = fetched?.data?.Viewer?.id ? fetched : (previous?.viewer || fetched)
   const refresh_in = Math.floor((Date.now() + 14 * 24 * 60 * 60 * 1000) / 1000)
   if (malToken?.token === token) {
     malToken = { viewer, token: oauth.access_token, refresh: oauth.refresh_token, refresh_in, reauth: false }
