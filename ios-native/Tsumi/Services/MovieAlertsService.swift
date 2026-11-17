@@ -20,6 +20,10 @@ struct MovieAlertEntry: Codable, Hashable, Identifiable {
   var addedAt: Date
   /// Release kinds already announced (MovieRelease.Kind raw values: "theatrical", "digital").
   var notified: [String] = []
+  /// The movie when the alert was turned on (without its relations, recommendations and cast): the details open
+  /// from it when the media store dropped the movie and TMDB does not answer (PC alert `media` snapshot). Optional so
+  /// that entries stored without it still decode.
+  var media: Media? = nil
 
   func wasNotified(_ kind: MovieRelease.Kind) -> Bool {
     notified.contains(kind.rawValue)
@@ -32,51 +36,50 @@ struct MovieAlertEntry: Codable, Hashable, Identifiable {
   }
 }
 
-/// Pure rules of the release alerts (no state, no network), kept apart so they are easy to reason about.
+/// Pure rules of the release alerts (no state, no network), kept apart so they are easy to reason about. Same rules
+/// as PC common/modules/schedule/moviealerts.js (dueRelease).
 enum MovieAlertRules {
-  /// Entries older than this are dropped, whatever their releases.
-  static let maxAgeMonths = 18
+  /// Alerts still waiting after this many days are dropped (a digital release that never got a date), like PC
+  /// ALERT_RETENTION_DAYS.
+  static let retentionDays = 548
 
   struct Decision: Equatable {
     /// Release to announce now, nil for none.
     var notify: MovieRelease.Kind?
     /// Release kinds to mark as announced.
     var markNotified: [MovieRelease.Kind] = []
-    /// The entry leaves the list (digital release announced, or entry too old).
+    /// The entry leaves the list (done: digital release announced, movie already on digital when the alert was
+    /// turned on, or alert too old).
     var remove = false
   }
 
-  /// Added more than `maxAgeMonths` months before `now`.
-  static func isExpired(_ entry: MovieAlertEntry, now: Date, calendar: Calendar) -> Bool {
-    guard let cutoff = calendar.date(byAdding: .month, value: -maxAgeMonths, to: now) else { return false }
-    return entry.addedAt < cutoff
-  }
-
-  /// What to do with one watched movie. A release is due when its day (local midnight) has come, it was not
-  /// announced yet and it is not before the day the alert was turned on (a release already out then never fires).
-  /// Both due at once: only the digital release is announced, both are marked. The digital announcement removes
-  /// the entry. An entry whose digital release was already out the day it was added is dropped silently (nothing
-  /// left to announce; the details bell is not offered for such a movie either).
+  /// What to do with one watched movie (PC dueRelease). A release is due when its day (local midnight) has come, it
+  /// was not announced yet and it is not before the day the alert was turned on (a release already out then never
+  /// fires). Both due at once: only the digital release is announced, both are marked. The release to announce is
+  /// decided first; the alert is then done when the digital release is announced, when the movie was already on
+  /// digital the day the alert was turned on (a theatrical release due at the same time is still announced), or
+  /// after `retentionDays`.
   static func decide(_ entry: MovieAlertEntry, theatrical: String?, digital: String?, now: Date, calendar: Calendar) -> Decision {
-    if isExpired(entry, now: now, calendar: calendar) {
-      return Decision(notify: nil, markNotified: [], remove: true)
-    }
     let addedDay = calendar.startOfDay(for: entry.addedAt)
-    if let digital, let digitalDay = MovieReleases.releaseDay(digital, calendar: calendar), digitalDay < addedDay {
-      return Decision(notify: nil, markNotified: [], remove: true)
-    }
-    func due(_ kind: MovieRelease.Kind, _ value: String?) -> Bool {
-      guard !entry.wasNotified(kind), let value, let day = MovieReleases.releaseDay(value, calendar: calendar) else { return false }
+    let theatricalDay = theatrical.flatMap { MovieReleases.releaseDay($0, calendar: calendar) }
+    let digitalDay = digital.flatMap { MovieReleases.releaseDay($0, calendar: calendar) }
+    func due(_ kind: MovieRelease.Kind, _ day: Date?) -> Bool {
+      guard !entry.wasNotified(kind), let day else { return false }
       return day <= now && day >= addedDay
     }
-    let theatricalDue = due(.theatrical, theatrical)
-    if due(.digital, digital) {
-      return Decision(notify: .digital, markNotified: theatricalDue ? [.theatrical, .digital] : [.digital], remove: true)
+    let notify: MovieRelease.Kind?
+    if due(.digital, digitalDay) {
+      notify = .digital
+    } else if due(.theatrical, theatricalDay) {
+      notify = .theatrical
+    } else {
+      notify = nil
     }
-    if theatricalDue {
-      return Decision(notify: .theatrical, markNotified: [.theatrical], remove: false)
-    }
-    return Decision(notify: nil, markNotified: [], remove: false)
+    let markNotified: [MovieRelease.Kind] = notify == .digital ? [.theatrical, .digital] : (notify.map { [$0] } ?? [])
+    let digitalAnnounced = notify == .digital || entry.wasNotified(.digital)
+    let digitalBeforeAdded = digitalDay.map { $0 < addedDay } ?? false
+    let expired = now.timeIntervalSince(addedDay) > Double(retentionDays) * 86_400
+    return Decision(notify: notify, markNotified: markNotified, remove: digitalAnnounced || digitalBeforeAdded || expired)
   }
 
   /// "Out in theaters today!" / "In theaters since Nov 18" / "Out on digital today!" / "On digital since Jan 5".
@@ -161,6 +164,12 @@ final class MovieAlertsService {
   /// at once instead of at the next 6 hour check.
   func add(_ media: Media) {
     guard Self.supports(media), let tmdbId = media.tmdbId, !isWatched(tmdbId) else { return }
+    // What the details need to open again (PC snapshot): the heavy detail lists are loaded again when they open.
+    var snapshot = media
+    snapshot.relations = []
+    snapshot.recommendations = []
+    snapshot.characters = []
+    snapshot.staff = []
     let entry = MovieAlertEntry(
       tmdbId: tmdbId,
       mediaKey: media.id,
@@ -168,7 +177,9 @@ final class MovieAlertsService {
       cover: media.images.cover,
       coverLarge: media.images.coverLarge,
       banner: media.images.banner,
-      addedAt: Date()
+      addedAt: Date(),
+      notified: [],
+      media: snapshot
     )
     entries.append(entry)
     save()
@@ -186,6 +197,23 @@ final class MovieAlertsService {
     let before = entries.count
     entries.removeAll { $0.tmdbId == tmdbId }
     if entries.count != before { save() }
+  }
+
+  /// Reset Notifications: the alerts live with the notification bookkeeping (PC 'notification-reset').
+  func removeAll() {
+    addCheck?.cancel()
+    addCheck = nil
+    guard !entries.isEmpty else { return }
+    entries = []
+    save()
+  }
+
+  /// Media of a TMDB movie for the details (PC movieMedia): the stored one, else the snapshot kept by its alert,
+  /// else TMDB. Nil when none answers.
+  func movieMedia(tmdbId: Int) async -> Media? {
+    if let stored = MediaStore.shared.media(Media.tmdbKey(tmdbId, .movie)) { return stored }
+    if let snapshot = entries.first(where: { $0.tmdbId == tmdbId })?.media { return snapshot }
+    return await TMDBService.shared.media(id: tmdbId, type: .movie)
   }
 
   /// Release days of a movie (cached /movie/{id}/release_dates request, 12 hours).
@@ -243,10 +271,6 @@ final class MovieAlertsService {
     var checked: [MovieAlertEntry] = []
     while let snapshot = entries.first(where: { entry in !checked.contains(where: { $0.isSameAlert(entry) }) }) {
       checked.append(snapshot)
-      if MovieAlertRules.isExpired(snapshot, now: Date(), calendar: calendar) {
-        if apply(MovieAlertRules.Decision(notify: nil, markNotified: [], remove: true), to: snapshot) { save() }
-        continue
-      }
       let days = await releaseDays(movieId: snapshot.tmdbId, regions: regions)
       // The alert may have been turned off (or off and on again) during the request: only the same alert gets this
       // result, with its current state.

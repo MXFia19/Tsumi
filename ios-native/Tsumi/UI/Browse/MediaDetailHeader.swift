@@ -173,7 +173,7 @@ struct BrowseDetailActions: View {
         }
         LiveCountdownDetailButton(media: media)
         if movieAlert {
-          BrowseMovieAlertButton(media: media)
+          BrowseMovieAlertButton(media: media, upcoming: BrowseMovieAlert.upcomingText(model.movieReleaseDays))
         }
         DownloadNextMenu(media: media)
         ForEach(BrowseMediaInfo.links(media)) { link in

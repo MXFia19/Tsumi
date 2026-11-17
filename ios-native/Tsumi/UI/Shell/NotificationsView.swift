@@ -181,6 +181,8 @@ struct NotificationsView: View {
     Task { @MainActor in
       if let media = await ShellNotificationMedia.resolve(notification, direct: true) {
         ShellNavigation.openDetails(media)
+      } else if MediaNotification.tmdbMovieId(notification.mediaKey) != nil {
+        ShellNotificationMedia.movieFailed()
       }
     }
   }

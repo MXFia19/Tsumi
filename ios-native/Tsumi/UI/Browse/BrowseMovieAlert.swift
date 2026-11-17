@@ -21,10 +21,12 @@ enum BrowseMovieAlert {
   }
 }
 
-/// Release alert toggle of the movie details (bell / bell.fill).
+/// Release alert toggle of the movie details (bell / bell.fill), with a toast like PC MovieAlertButton.svelte.
 @MainActor
 struct BrowseMovieAlertButton: View {
   let media: Media
+  /// "In theaters Nov 18 · Digital Jan 5", shown by the "Release alert on" toast when known.
+  var upcoming: String? = nil
 
   var body: some View {
     let service = MovieAlertsService.shared
@@ -32,8 +34,10 @@ struct BrowseMovieAlertButton: View {
     Button {
       if watched, let tmdbId = media.tmdbId {
         service.remove(tmdbId: tmdbId)
+        ServiceMessages.shared.post(.info, "Release alert off")
       } else {
         service.add(media)
+        ServiceMessages.shared.post(.success, "Release alert on", upcoming ?? "You will be notified when it comes out in theaters and on digital.")
         // System notifications on but not allowed yet: the permission prompt comes with the first alert.
         let notifications = AppNotificationsService.shared
         if AppSettings.shared.values.systemNotify && !notifications.authorizationGranted {

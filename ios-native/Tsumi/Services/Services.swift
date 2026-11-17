@@ -185,7 +185,8 @@ final class Services {
     case .malAnime(let id):
       return try? await anilist.media(malId: id)
     case .movie(let id):
-      return await tmdb.media(id: id, type: .movie)
+      // Stored media, else the snapshot of its release alert, else TMDB (PC movieMedia).
+      return await MovieAlertsService.shared.movieMedia(tmdbId: id)
     default:
       return nil
     }

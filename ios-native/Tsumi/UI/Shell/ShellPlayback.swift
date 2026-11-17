@@ -445,14 +445,19 @@ enum ShellNotificationMedia {
   static func resolve(_ notification: MediaNotification, direct: Bool) async -> Media? {
     if let stored = MediaStore.shared.media(notification.mediaKey) { return stored }
     if let movieId = MediaNotification.tmdbMovieId(notification.mediaKey) {
-      // TMDB movie (release alerts): built from its details when opened, nothing to load for the list row.
+      // TMDB movie (release alerts): the snapshot of its alert, else TMDB, when opened; nothing to load for the row.
       guard direct else { return nil }
-      return await TMDBService.shared.media(id: movieId, type: .movie)
+      return await MovieAlertsService.shared.movieMedia(tmdbId: movieId)
     }
     guard notification.mediaKey.hasPrefix("al-"), notification.mediaId > 0 else { return nil }
     if direct {
       return try? await AniListService.shared.media(id: notification.mediaId)
     }
     return await AniListService.shared.requestMedia(id: notification.mediaId)
+  }
+
+  /// A release notification whose movie could not be opened (PC handleAnime toast).
+  static func movieFailed() {
+    ServiceMessages.shared.post(.error, "Could not open this movie", "TMDB did not answer, try again later.")
   }
 }

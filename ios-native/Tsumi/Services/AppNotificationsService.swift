@@ -553,6 +553,8 @@ final class AppNotificationsService {
     items = []
     incoming.removeAll()
     ReleaseNotifyStore.shared.reset()
+    // The movie release alerts are part of the notification bookkeeping (PC clears them on 'notification-reset').
+    MovieAlertsService.shared.removeAll()
     save()
     updateBadge()
   }

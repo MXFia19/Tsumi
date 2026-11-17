@@ -289,6 +289,9 @@ enum ShellDeepLinks {
       // App.svelte handleAnime: searchIDSingle by id / idMal (TMDB details for a movie), then open the details.
       if let media = await Services.shared.media(for: link) {
         ShellNavigation.openDetails(media)
+      } else if case .movie = link {
+        // Nothing stored or kept for the movie and TMDB did not answer: what is open stays open.
+        ShellNotificationMedia.movieFailed()
       }
     case .play:
       // protocol `search`: play-anime(id) → DetailsModal handlePlay(id).
