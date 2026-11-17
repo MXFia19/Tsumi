@@ -1,6 +1,6 @@
-// External player command line. Run with: node electron/src/main/externalPlayer.test.mjs
+// External player command line and closing position. Run with: node electron/src/main/externalPlayer.test.mjs
 import assert from 'node:assert/strict'
-import { playerKind, playerArgs, cleanTitle, startSeconds } from './externalPlayerArgs.js'
+import { playerKind, playerArgs, cleanTitle, startSeconds, readMpvMessages, closedPosition, MIN_ESTIMATED_S } from './externalPlayerArgs.js'
 
 let passed = 0
 let failed = 0
@@ -34,6 +34,56 @@ test('playerArgs: mpv gets title, start, subtitles and the URL after --', () => 
     'http://localhost:1/t/proxy?url=x'
   ])
   assert.deepEqual(playerArgs('mpv', { url: 'https://v.example/a.mp4' }), ['--', 'https://v.example/a.mp4'])
+})
+
+test('playerArgs: mpv gets its JSON IPC server before the URL', () => {
+  assert.deepEqual(playerArgs('mpv', { url: 'https://v.example/a.mp4', ipcPath: '\\\\.\\pipe\\tsumi-mpv-1' }), [
+    '--input-ipc-server=\\\\.\\pipe\\tsumi-mpv-1', '--', 'https://v.example/a.mp4'
+  ])
+  // Only mpv speaks it.
+  assert.deepEqual(playerArgs('vlc', { url: 'https://v.example/a.mp4', ipcPath: 'x' }), ['--no-one-instance', 'https://v.example/a.mp4'])
+  assert.deepEqual(playerArgs('other', { url: 'https://v.example/a.mp4', ipcPath: 'x' }), ['https://v.example/a.mp4'])
+})
+
+test('readMpvMessages keeps the last position, the length and the end of the file', () => {
+  const state = { position: null, duration: null, ended: false }
+  let rest = readMpvMessages(state, '{"error":"success","request_id":0}\n{"event":"property-change","id":2,"name":"duration","data":1420.5}\n{"event":"property-change","id":1,"name":"time-pos","data":83.2}\n{"event":"property-')
+  assert.equal(state.duration, 1420.5)
+  assert.equal(state.position, 83.2)
+  assert.equal(rest, '{"event":"property-')
+  // The rest of a message split across two reads.
+  rest = readMpvMessages(state, rest + 'change","id":1,"name":"time-pos","data":600}\n')
+  assert.equal(state.position, 600)
+  assert.equal(rest, '')
+  // Unavailable when the file closes: the last position stays.
+  readMpvMessages(state, '{"event":"property-change","id":1,"name":"time-pos"}\n{"event":"property-change","id":1,"name":"time-pos","data":null}\n')
+  assert.equal(state.position, 600)
+  assert.equal(state.ended, false)
+  readMpvMessages(state, '{"event":"end-file","reason":"quit"}\n')
+  assert.equal(state.ended, false)
+  readMpvMessages(state, 'not json\n{"event":"end-file","reason":"eof","playlist_entry_id":1}\n')
+  assert.equal(state.ended, true)
+  // Never a buffer that grows without a newline.
+  assert.equal(readMpvMessages(state, 'x'.repeat(70_000)), '')
+})
+
+test('closedPosition: what mpv reported over IPC', () => {
+  assert.deepEqual(closedPosition({ connected: true, position: 612.4, duration: 1420, ended: false }, { startTime: 100, elapsed: 900 }), { position: 612.4, duration: 1420 })
+  // The end of the file: the whole episode.
+  assert.deepEqual(closedPosition({ connected: true, position: 1415, duration: 1420, ended: true }, { elapsed: 5 }), { position: 1420, duration: 1420 })
+  // Connected but it never played (stream error): nothing, never an estimate.
+  assert.deepEqual(closedPosition({ connected: true, position: null, duration: null, ended: false }, { startTime: 100, elapsed: 60 }), {})
+  assert.deepEqual(closedPosition({ connected: true, position: 0, duration: 1420 }, { elapsed: 60 }), {})
+  assert.deepEqual(closedPosition({ connected: true, position: 30 }, {}), { position: 30 })
+})
+
+test('closedPosition: other players get an estimate from the time they stayed open', () => {
+  assert.deepEqual(closedPosition({ connected: false }, { startTime: 120, elapsed: 600.25 }), { position: 720.25, estimated: true })
+  assert.deepEqual(closedPosition({}, { elapsed: 300 }), { position: 300, estimated: true })
+  // Closed at once (failed, or handed over to a player already running): no position.
+  assert.deepEqual(closedPosition({}, { startTime: 120, elapsed: MIN_ESTIMATED_S - 1 }), {})
+  assert.deepEqual(closedPosition({}, { startTime: 120 }), {})
+  assert.deepEqual(closedPosition(undefined, { elapsed: NaN }), {})
 })
 
 test('playerArgs: VLC gets a new instance, title, start time and a local subtitle file', () => {

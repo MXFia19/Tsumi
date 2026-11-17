@@ -595,11 +595,20 @@
       : { url: file?.url, headers: file?.streamHeaders || {} }
   }
 
+  /** "Watch Together plays here" was said once: the setting stays on for the episodes watched alone. */
+  let w2gExternalNoticeShown = false
+
   async function setCurrent (file, token) {
     streamServers = file.streamServers || []
     activeServerIndex = file.activeServerIndex || 0
     stopStream(video)
-    if (externalEnabled) {
+    // Watch Together: always the built-in player. An episode in the external player leaves this member idle ("Not in
+    // the player"), never ready (playerReady), so a host's queued item never starts.
+    if (externalEnabled && state.value && !w2gExternalNoticeShown) {
+      w2gExternalNoticeShown = true
+      toast('Watch Together', { description: 'Episodes play in Tsumi during Watch Together (not in your external player) to stay in sync.', duration: 8_000 })
+    }
+    if (externalEnabled && !state.value) {
       const startTime = resumePosition(getEpisodeProgress(file), { threshold: $settings.playerAutocompleteThreshold }) || 0
       const launched = await launchExternal(file, token, startTime)
       if (token !== loadToken) return
@@ -820,8 +829,8 @@
     hideBuffering()
     let result
     try {
+      // The main process starts the program picked in its own dialog (syncPlayerPath), never a path sent from here.
       result = await IPC.invoke('external-player:launch', {
-        path: settings.value.playerPath,
         url,
         headers,
         title: externalTitle(file),
@@ -871,7 +880,7 @@
     externalSession = null
     const time = position > 0 ? position : session?.startTime || 0
     if (session?.builtin && video?.readyState >= 1) {
-      if (position > 0) seekTo(position)
+      if (position > 0) seekTo(beforeEnd(position))
       if (play) paused = false
       return
     }
@@ -882,19 +891,22 @@
     if (externalPlayback && externalSession && current) leaveExternal(0, true)
   }
 
-  // external-player:closed ({ code }; position / duration / id are used if the main process ever sends them): the
-  // episode comes back here, where it was (or where the external player started) when no position is given.
+  // external-player:closed ({ id, code, position?, duration?, estimated? }, electron/src/main/externalPlayerArgs.js
+  // closedPosition: mpv's own position, or an estimate from the time another player stayed open): the episode comes
+  // back here, where it was (or where the external player started) when no position is given.
   IPC?.on?.('external-player:closed', (detail) => {
     if (!externalPlayback || !externalSession || !current) return
     if (detail?.id != null && externalSession.id != null && detail.id !== externalSession.id) return
-    const position = Number(detail?.position ?? detail?.time)
     const length = Number(detail?.duration) > 0 ? Number(detail.duration) : mediaDuration()
+    // An estimate runs past the end when the player was left paused: at most the whole episode.
+    const position = Math.min(Number(detail?.position ?? detail?.time), length)
     const watched = Number.isFinite(position) && position > 0
     if (watched) {
       saveProgressAt(position, length)
       if (!completed && $settings.playerAutocomplete) checkCompletionByTime(position, length, true)
     }
     leaveExternal(watched ? position : 0)
+    // (An episode watched to the end comes back just before its end, paused: Play next is offered, never forced.)
     if (watched && completed && hasNext) {
       toast('Episode watched', {
         description: 'The external player reached the end of the episode.',
@@ -903,6 +915,31 @@
       })
     }
   })
+
+  /**
+   * The main process keeps the program picked in its own dialog (Settings > Player, electron/src/main/dialog.js) and
+   * starts only that one: Settings shows it. A path saved by an older version is unknown there and must be picked
+   * again (an empty setting, from "Reset Location", stays empty).
+   */
+  async function syncPlayerPath () {
+    if (!SUPPORTS.externalPlayer || SUPPORTS.isAndroid || !IPC?.invoke) return
+    let path
+    try {
+      path = await IPC.invoke('external-player:path')
+    } catch (error) {
+      return // older main process
+    }
+    const shown = settings.value.playerPath
+    if (typeof path !== 'string' || !shown || shown === path) return
+    $settings.playerPath = path
+    if (!path) {
+      toast('External Player', {
+        description: 'Select your external player again in Settings > Player: Tsumi now only starts a program picked there.',
+        duration: 15_000
+      })
+    }
+  }
+  syncPlayerPath()
 
   export let media
 
@@ -1178,7 +1215,7 @@
     const restore = pendingRestore
     pendingRestore = null
     if (restore && restore.stream === streamToken) {
-      if (restore.time > 0) seekTo(restore.time)
+      if (restore.time > 0) seekTo(beforeEnd(restore.time))
       if (!restore.paused && !hidden) video.play()?.catch?.(() => {})
       else video.pause()
     } else {
@@ -1186,6 +1223,15 @@
       w2gLoadSteps.push(autoPlay(token))
     }
     w2gLoadedMetadata()
+  }
+
+  /**
+   * A position restored at the very end (back from an external player that reached it, a reload during the last
+   * second) would fire `ended` and start the next episode on its own: a little before it instead.
+   */
+  function beforeEnd (time) {
+    const length = videoLength()
+    return length > 10 ? Math.min(time, length - 3) : time
   }
 
   function playPause () {
