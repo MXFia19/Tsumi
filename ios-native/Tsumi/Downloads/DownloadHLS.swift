@@ -168,10 +168,31 @@ enum DownloadHLS {
     return fitting.last ?? sorted.first(where: { $0.height > 0 }) ?? sorted.first
   }
 
-  static func pickAudio(_ master: HLSMaster, for variant: HLSVariant) -> HLSRendition? {
+  /// Audio rendition saved with the variant: the one the player would pick (the track remembered for the show,
+  /// then the preferred audio language, then Japanese: PlayerLanguage.preferredAudioTrack), else the DEFAULT one,
+  /// else the first.
+  static func pickAudio(_ master: HLSMaster, for variant: HLSVariant, remembered: PlayerAudioMemory?, preferred: String) -> HLSRendition? {
     guard !variant.audioGroup.isEmpty else { return nil }
     let group = master.renditions.filter { $0.type == "AUDIO" && $0.groupId == variant.audioGroup && $0.uri != nil }
+    // Same name and language tag as AVFoundation gives the player (NAME / LANGUAGE of the EXT-X-MEDIA line).
+    let tracks = group.enumerated().map { index, rendition in
+      PlayerTrackOption(
+        id: index,
+        name: rendition.name.trimmingCharacters(in: .whitespacesAndNewlines),
+        languageTag: PlayerLanguage.normalizedTag(rendition.language)
+      )
+    }
+    if let index = PlayerLanguage.preferredAudioTrack(tracks, remembered: remembered, preferred: preferred),
+       group.indices.contains(index) {
+      return group[index]
+    }
     return group.first(where: { $0.isDefault }) ?? group.first
+  }
+
+  /// The variant's audio group lists several renditions (only then is there an audio choice to make).
+  static func hasAudioChoice(_ master: HLSMaster, for variant: HLSVariant) -> Bool {
+    guard !variant.audioGroup.isEmpty else { return false }
+    return master.renditions.filter { $0.type == "AUDIO" && $0.groupId == variant.audioGroup }.count > 1
   }
 
   /// Why an EXT-X-KEY can't be saved (nil for none / AES-128 with a plain key).

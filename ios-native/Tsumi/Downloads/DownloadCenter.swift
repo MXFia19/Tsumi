@@ -694,7 +694,12 @@ final class DownloadCenter {
       }
       master = parsed
       variant = chosen
-      audio = DownloadHLS.pickAudio(parsed, for: chosen)
+      audio = DownloadHLS.pickAudio(
+        parsed,
+        for: chosen,
+        remembered: PlayerPreferences.lastAudio(for: item(id)?.media.id ?? ""),
+        preferred: AppSettings.shared.values.audioLanguage
+      )
       guard case .hls(let variantText, let variantURL) = try await playlist(chosen.uri, headers: stream.headers) else { return }
       if DownloadHLS.isMaster(variantText) { throw DownloadFailure("Nested HLS master playlists are not supported.", final: true) }
       mediaText = variantText
@@ -714,20 +719,20 @@ final class DownloadCenter {
 
     let needsFiles = videoPlan.hasAESKey || audioPlan?.hasAESKey == true || item(id)?.preferFiles == true
     if !needsFiles {
-      try startAsset(id, playlistURL: master != nil ? url : mediaURL, headers: stream.headers, variant: variant, duration: videoPlan.duration)
+      let asset = Self.downloadAsset(master != nil ? url : mediaURL, headers: stream.headers)
+      var selection: AVMediaSelection?
+      if let parsedMaster = master, let chosenVariant = variant, DownloadHLS.hasAudioChoice(parsedMaster, for: chosenVariant) {
+        selection = await Self.audioSelection(asset, mediaKey: item(id)?.media.id ?? "")
+        guard isCurrent() else { throw DownloadSuperseded() }
+      }
+      try startAsset(id, asset: asset, audioSelection: selection, variant: variant, duration: videoPlan.duration)
       return
     }
     try startSegments(id, video: videoPlan, audio: audioPlan, master: master, variant: variant, rendition: audio, headers: stream.headers)
   }
 
-  private func startAsset(_ id: String, playlistURL: URL, headers: [String: String], variant: HLSVariant?, duration: Double) throws {
-    guard let session = assetSession, let item = self.item(id) else { return }
-    // A previous task of this download (suspended, then queued again) is replaced: cancelled first, its partial
-    // package is deleted when the cancel completes.
-    if let previous = assetTasks.removeValue(forKey: id) {
-      ownAssetCancels.insert(previous.taskIdentifier)
-      previous.cancel()
-    }
+  /// HLS asset with the stream headers (and their User-Agent).
+  private static func downloadAsset(_ playlistURL: URL, headers: [String: String]) -> AVURLAsset {
     var assetOptions: [String: Any] = [:]
     if !headers.isEmpty {
       assetOptions["AVURLAssetHTTPHeaderFieldsKey"] = headers
@@ -735,10 +740,55 @@ final class DownloadCenter {
         assetOptions[AVURLAssetHTTPUserAgentKey] = agent
       }
     }
-    let asset = AVURLAsset(url: playlistURL, options: assetOptions)
+    return AVURLAsset(url: playlistURL, options: assetOptions)
+  }
+
+  /// AVAssetDownloadTask saves one audio rendition, the default one (picked by the system from the device
+  /// language) unless told otherwise: this asks for the one the player would pick (the track remembered for the
+  /// show, then the preferred audio language, then Japanese), so the offline episode has the audio the user wants.
+  /// nil keeps the default: one rendition, nothing matches, or the playlist could not be read within 15 s.
+  private static func audioSelection(_ asset: AVURLAsset, mediaKey: String) async -> AVMediaSelection? {
+    let remembered = PlayerPreferences.lastAudio(for: mediaKey)
+    let preferred = AppSettings.shared.values.audioLanguage
+    // The group is first read with a time limit (cancelling the load ends it), then again from the loaded asset.
+    let loading = Task { (try? await asset.loadMediaSelectionGroup(for: .audible)) != nil }
+    let limit = Task {
+      try? await Task.sleep(nanoseconds: 15_000_000_000)
+      loading.cancel()
+    }
+    let loaded = await loading.value
+    limit.cancel()
+    guard loaded, let group = try? await asset.loadMediaSelectionGroup(for: .audible), group.options.count > 1,
+          let base = try? await asset.load(.preferredMediaSelection) else { return nil }
+    // Same names and tags as the player's audio menu (PlayerController.loadMediaSelection).
+    let tracks = group.options.enumerated().map { index, option in
+      PlayerTrackOption(
+        id: index,
+        name: option.displayName.trimmingCharacters(in: .whitespacesAndNewlines),
+        languageTag: option.extendedLanguageTag ?? option.locale?.identifier
+      )
+    }
+    guard let index = PlayerLanguage.preferredAudioTrack(tracks, remembered: remembered, preferred: preferred),
+          group.options.indices.contains(index),
+          let selection = base.mutableCopy() as? AVMutableMediaSelection else { return nil }
+    selection.select(group.options[index], in: group)
+    return selection
+  }
+
+  private func startAsset(_ id: String, asset: AVURLAsset, audioSelection: AVMediaSelection?, variant: HLSVariant?, duration: Double) throws {
+    guard let session = assetSession, let item = self.item(id) else { return }
+    // A previous task of this download (suspended, then queued again) is replaced: cancelled first, its partial
+    // package is deleted when the cancel completes.
+    if let previous = assetTasks.removeValue(forKey: id) {
+      ownAssetCancels.insert(previous.taskIdentifier)
+      previous.cancel()
+    }
     var options: [String: Any] = [:]
     if let bandwidth = variant?.bandwidth, bandwidth > 0 {
       options[AVAssetDownloadTaskMinimumRequiredMediaBitrateKey] = bandwidth
+    }
+    if let audioSelection {
+      options[AVAssetDownloadTaskMediaSelectionKey] = audioSelection
     }
     let title = "\(AniListService.shared.title(item.media)) - \(item.displayEpisode)"
     let artwork = item.coverFile.flatMap { try? Data(contentsOf: DownloadStorage.folder(id).appendingPathComponent($0)) }
