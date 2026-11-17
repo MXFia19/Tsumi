@@ -1,6 +1,8 @@
-# Watch Together protocol (v2)
+# Watch Together protocol
 
-This is the contract shared by the Svelte app (`common/routes/w2g/`, desktop and Capacitor) and the native iOS app (`ios-native/Tsumi/WatchTogether/`). Both apps must implement the whole document, so any client can join any lobby.
+This is the contract shared by the desktop app (Svelte renderer of the Electron app, `common/routes/w2g/`) and the native iOS app (`ios-native/Tsumi/WatchTogether/`). Both apps must implement the whole document, so any client can join any lobby.
+
+The wire `protocol` is `2`. The document grew by revisions, each additive (v2.1 to v2.6, at the end); the latest is v2.6. Desktop: the pure rules are in `components/sync.js` (tests: `sync.test.mjs`, and `w2g.test.mjs` for whole clients over a fake transport), the client in `components/w2g.js`. iOS: `W2GSync*.swift` and `WatchTogetherClient.swift`.
 
 ## Transport (unchanged)
 
@@ -133,7 +135,7 @@ A local action shows "You paused" etc. only in the chat, not over the video. Joi
 3. `countdown.startAt` is on the sender's clock, so receivers count down from (local receive time − rtt/2). `seconds` is rounded and clamped to 1–10 (default 3).
 4. `rate` is shared but not applied to the local player.
 5. Host migration: if the elected client (smallest id) is someone else, the host is provisional, and a `host` claim from anyone is accepted until one arrives. If two clients claim host, the smaller `userId` keeps it.
-6. The media key compared by the sync check is the sender's `media.key`, used verbatim.
+6. The media key compared by the sync check is the sender's `media.key`, kept verbatim. v2.6: keys are written one canonical way and compared canonically (see "v2.6 additions: Media keys").
 7. The host role cannot be transferred to a v1 peer (no `protocol: 2` in its `init`).
 8. Outside the player, other members' badges show "Playing" / "Paused" instead of a drift.
 9. Seeks and autoplay while an episode is loading are not broadcast. Once loaded, the player snaps to the host if both are on the same episode.
@@ -327,9 +329,9 @@ The host owns the queue. Everyone else keeps a copy of the last `queue` it recei
   media,       // the shared media shape of the `media` event (session.js SHARED_MEDIA_FIELDS):
                //   AniList id, or "tmdb-<id>" with idTmdb / isTmdb, and format ("MOVIE" for a movie)
   episode,     // as in `media`: a number, or { number, season, localEpisode }
-  key,         // the adder's media key of media + episode, used verbatim like `media.key`
+  key,         // the adder's media key of media + episode, kept verbatim like `media.key` (compared canonically, v2.6)
   title,       // display title in the adder's language (max 120)
-  cover,       // cover image URL or "" (max 500)
+  cover,       // cover image URL or "": v2.6, an http(s) URL of at most 500 characters, anything else is ""
   addedBy,     // userId of the member who added it
   addedByName, // that member's display name, kept for when it leaves
   votes        // userIds that up-voted it, only in `queue`
@@ -396,7 +398,7 @@ Every incoming event goes through one validation layer before it is used (deskto
 - **Text:** names and display names at most 32 characters; chat messages at most 2048; media keys at most 200 (a longer `mediaKey` counts as none); SDPs at most 64 000; `queue.rev` a whole number (clamped).
 - **Media:** only the shared media shape is kept (session.js SHARED_MEDIA_FIELDS) with the right types; ids are numbers or short text ids (`[A-Za-z0-9:._-]`, e.g. `tmdb-123`); image URLs must be http(s).
 - **`init`** is reduced to `{ id, name?, displayName?, avatar?: { medium?, large? }, picture?, client?, protocol?, features, sessionId? }`, and v2.5 clients only send that (not the whole AniList or MyAnimeList viewer).
-- **Rate limit:** `message`, `reaction`, `request`, `invite`, `queueAdd`, `queueVote` and `queueRemove` from one member: a burst of 20, then 5 per second. The others are dropped.
+- **Rate limit:** `message`, `reaction`, `request`, `invite`, `queueAdd`, `queueVote` and `queueRemove` from one member: a burst of 20, then 5 per second. The others are dropped. (v2.6: per data channel, and `init`, `ping` and voice offers too.)
 - **Names:** another member whose name is "You" is shown as "You (abcd)" (the first characters of its id), so it can't pass for us in system lines.
 
 ### Devices of one account: `init.sessionId`
@@ -414,8 +416,8 @@ Every incoming event goes through one validation layer before it is used (deskto
 - **Authority comes from the sender's data channel**, not from a payload field. In `host` mode, a `player`, `media`, `index` or `countdown` is only applied when it comes from the host's own channel (`player.by` only says whose name to show). `kick`, `requestReply` and `queue` are only taken from the host's channel, as before.
 - **Two hosts:** a host that receives a rival claim and yields (the smaller member key keeps the role) broadcasts `host { hostId: winner }`, so the members who still follow it (they only take `host` from their current host) move to the winner.
 - **Migration:** a v1 client (no `protocol`) is never elected. If the elected client does not claim the role with `host` within 10 s, it is skipped and the election runs again among the others (ourselves included). A confirmed host resets the skipped list.
-- **A host that came back** as a new channel of an older app (same member key while its previous channel is not closed yet) does not know it is host: a member that sees it sends it `host { hostId: it }`.
-- **iOS:** a host that goes to the background while not playing hands the role over first (as "Watch on my own" does), since iOS suspends the app soon after.
+- ~~**A host that came back** as a new channel of an older app (same member key while its previous channel is not closed yet) does not know it is host: a member that sees it sends it `host { hostId: it }`.~~ Removed in v2.6: a second channel claiming a member key is a separate member without authority (see "v2.6 additions").
+- **iOS:** a host that goes to the background while not playing hands the role over first (as "Watch on my own" does), since iOS suspends the app soon after. (v2.6: decided once the player paused for the background.)
 
 ### Sync
 
@@ -437,3 +439,53 @@ A setting on both apps (`w2gTurnUrl`, `w2gTurnUsername`, `w2gTurnCredential`), e
 ### Lobby codes
 
 A code or link is read as its first run of exactly 16 hex characters, in lower case (`tsumi://w2g/CODE/`, `…/w2g/?c=CODE`, a code pasted in capitals). Opening the link of the lobby we are already in only shows it.
+
+## v2.6 additions: one media key, member keys bound to their channel, lobby state
+
+No event or field is added: these rules make both apps agree, and a v2.6 client keeps working with older ones.
+
+### Media keys
+
+- A **media key** names a title and an episode: `mediaId:episode`, or `mediaId:season:episode` when the episode has a season. `episode` is the episode object's `localEpisode` when it has one, else its `number`; a bare number is itself. An episode object without a season is keyed like the bare number: `{ number: 5 }` and `5` are both `21:5`.
+- Apps before v2.6 wrote an episode object without a season as `21::5` (empty season), so a streamed episode (`{ number: 5 }`) and a downloaded or iOS one (`5`) had two keys: players reloaded each other forever, and Join, invites, host mode and auto-sync saw "another episode". Every client now compares keys **canonically**: the last `::` that no other `:` follows reads as `:` (`21::5` is `21:5`). This holds for every comparison: a received `media` against the lobby media, `status.mediaKey` (badges, auto-sync, the reference member, invites, presence lines), the `mediaKey` of `player`, `countdown` and `index`, Join / invite / Rejoin / Play now waiting for their episode to load, and queue items.
+- Keys stay verbatim on the wire: a client keeps a received `media.key` (or invite / queue `key`) as it came and reports it in its `status`, so older clients compare the same string.
+- A `media`, Join, invite, Rejoin or Play now for the episode the player already plays or loads does not load it again; what waited for it to load (the seek of a Join or invite, the Rejoin sync, the Play now countdown) runs at once if it is loaded, else when its loading ends.
+
+### Host mode
+
+- While a non-host follows the lobby in `host` mode, its own launch is not the lobby media: it is neither kept as the lobby media nor sent as `media` (v2.5 peers dropped it anyway). The lobby media stays the host's, so the Join card and "Add next episode" still point at the host's episode.
+
+### Member keys belong to their data channel
+
+- A member key belongs to the **first open data channel** that claimed it with `init`. Another channel whose `init` names the same `id` and `sessionId` is a separate member, keyed `memberKey + "@" + its transport id`, with no authority: it is never the host, never elected, never given the role, and a `host` event never names it. Copying the host's ids (they are broadcast in `host` and `init`) gives nothing. When the first channel closes, the copy does not inherit the key: the host migrates as usual.
+- A channel keeps the identity of its first `init`: a later `init` with another `id` or `sessionId` on that channel is ignored (the name and avatar may change).
+- This replaces the v2.5 rule "A host that came back".
+
+### Rate limits
+
+Token buckets per data channel (not per member key: sending `init` again with other ids does not reset them). An event over its limit is dropped (a `ping` gets no `pong`).
+
+| bucket | events | burst | then |
+|---|---|---|---|
+| user | `message`, `reaction`, `request`, `invite`, `queueAdd`, `queueVote`, `queueRemove` | 20 | 5 per second |
+| init | `init` | 5 | 1 every 5 s |
+| ping | `ping` | 5 | 1 per second |
+| voice offer | `voiceSignal` with an offer (each builds a peer connection) | 6 | 1 every 2 s |
+
+### The lobby state sent to a newcomer
+
+What a member sends within 5 s of its `init` (`media`, `index` and `player`: the lobby state the host sends to each newcomer) is remembered but never applied: nothing starts, seeks, plays or pauses on its own, and no notice shows over the video. The newcomer gets the Join card; the sync comes from Join, auto-sync or Resync. (The iOS app already did so; the desktop app applied the host's first `player`.)
+
+### Validation
+
+- Queue item `cover`: an http(s) URL of at most 500 characters, anything else is `""` (a `file://` or UNC path made Windows contact that host).
+- `status.nowPlaying.mediaId`: a number, or a text of at most 64 characters (else none).
+- Ids that are names of JavaScript's `Object.prototype` (`__proto__`, `constructor`, `prototype`, `toString`, `toLocaleString`, `valueOf`, `hasOwnProperty`, `isPrototypeOf`, `propertyIsEnumerable`, `__defineGetter__`, `__defineSetter__`, `__lookupGetter__`, `__lookupSetter__`) are never media or member ids: such a `media` or `init` is dropped.
+
+### iOS: host hand-off in the background
+
+The decision is taken a moment after the app went to the background, with some background time to send `host`, once the player paused for it ("Pause On Lost Focus"): a host whose playback goes on (Picture in Picture, AirPlay, or that setting off) keeps the role, any other host hands it over. Coming back to the foreground before that cancels it.
+
+### Links
+
+`tsumi://w2g/` without a code (the desktop jump-list task "Create a New Watch Together Lobby") opens Watch Together. The desktop app creates a lobby when it is not in one; the iOS app shows the Watch Together screen.
