@@ -541,8 +541,7 @@ final class AnimeScheduleService: @unchecked Sendable {
       let lastNotified = ReleaseNotifyStore.shared.last(feed)
       var fresh: [Int] = []
       if lastNotified > 0 {
-        let threshold = Date(timeIntervalSince1970: lastNotified)
-        let recent = entries.filter { ($0.airedDate ?? .distantPast) >= threshold || ($0.addedDate ?? .distantPast) >= threshold }
+        let recent = entries.filter { Self.isAfterLastCheck($0, lastNotified) }
           .sorted { ($0.addedDate ?? .distantPast) > ($1.addedDate ?? .distantPast) }
         fresh = Array(NSOrderedSet(array: recent.compactMap { $0.id }).compactMap { $0 as? Int }.prefix(300))
         // Nothing new: the last check time stays (it only moves when something was notified).
@@ -633,10 +632,9 @@ final class AnimeScheduleService: @unchecked Sendable {
     let lastNotified = ReleaseNotifyStore.shared.last(feed)
     var missedIds: [Int] = []
     if lastNotified > 0 {
-      let threshold = Date(timeIntervalSince1970: lastNotified)
       missedIds = entries.filter { entry in
         guard let id = entry.id, !ids.contains(id) else { return false }
-        return (entry.airedDate ?? .distantPast) >= threshold || (entry.addedDate ?? .distantPast) >= threshold
+        return Self.isAfterLastCheck(entry, lastNotified)
       }
       .sorted { ($0.addedDate ?? .distantPast) > ($1.addedDate ?? .distantPast) }
       .prefix(300)
@@ -696,16 +694,17 @@ final class AnimeScheduleService: @unchecked Sendable {
     guard acquired else { return }
     defer { notifying.update { _ = $0.remove(feed) } }
     let lastNotified = max(passedLastNotified, ReleaseNotifyStore.shared.last(feed))
-    let threshold = Date(timeIntervalSince1970: lastNotified)
     var combined: [AiredFeedEntry] = slice
     for entry in entries {
       guard let id = entry.id, missedIds.contains(id) else { continue }
       if slice.contains(where: { $0.id == id && $0.episode?.aired == entry.episode?.aired }) { continue }
       combined.append(entry)
     }
-    let newReleases = combined.filter { entry in
-      guard let id = entry.id, byId[id] != nil else { return false }
-      return (entry.airedDate ?? .distantPast) >= threshold || (entry.addedDate ?? .distantPast) >= threshold
+    // The entries past the last check, found on AniList or not: each is handled once.
+    let handled = combined.filter { Self.isAfterLastCheck($0, lastNotified) }
+    let newReleases = handled.filter { entry in
+      guard let id = entry.id else { return false }
+      return byId[id] != nil
     }
     let notifyStatuses = settings.releasesNotify
     let notOnList = ServiceSettingsExtras.releasesNotifyNotOnList
@@ -736,9 +735,29 @@ final class AnimeScheduleService: @unchecked Sendable {
         AppNotificationsService.dispatch(notification)
       }
     }
-    if !newReleases.isEmpty || lastNotified <= 1 {
-      ReleaseNotifyStore.shared.setLast(feed, Date().timeIntervalSince1970)
+    if !handled.isEmpty || lastNotified <= 1 {
+      // The newest date handled (the whole feed on the first check), not the device time.
+      ReleaseNotifyStore.shared.setLast(feed, Self.lastCheck(after: lastNotified, handled: lastNotified <= 1 ? entries : handled))
     }
+  }
+
+  /// Aired or added after the last check of its feed. Strictly after: the stored check time is the date of an entry
+  /// already handled (`lastCheck`).
+  static func isAfterLastCheck(_ entry: AiredFeedEntry, _ lastNotified: Double) -> Bool {
+    let threshold = Date(timeIntervalSince1970: lastNotified)
+    return (entry.airedDate ?? .distantPast) > threshold || (entry.addedDate ?? .distantPast) > threshold
+  }
+
+  /// New last check time of a feed: the newest air / add date of the handled entries (like lastAni), never later than
+  /// now nor earlier than `previous`. With the device time instead, an episode added to the feed after a check but
+  /// dated before it (scrape-to-publish delay, CDN cache of the feed) was never notified. A date ahead of the device
+  /// clock is capped so that it never holds back the next episodes.
+  static func lastCheck(after previous: Double, handled: [AiredFeedEntry]) -> Double {
+    let now = Date().timeIntervalSince1970
+    let newest = handled.compactMap { entry -> Double? in
+      [entry.airedDate, entry.addedDate].compactMap { $0?.timeIntervalSince1970 }.max()
+    }.max()
+    return max(previous, min(newest ?? now, now))
   }
 
   // MARK: - Announcements (findNewNotifications)
