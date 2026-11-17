@@ -187,7 +187,9 @@ final class BrowseSearchModel {
     cancelSoraMatch()
     page = 0
     hasNextPage = false
-    if section == nil { filters.save(key: Self.storageKey) }
+    // Not while a Sora module is the source (SearchBar.svelte clearNext): picking it cleared the other filters, so
+    // its first search saved the bare title over the last AniList / TMDB search.
+    if section == nil && filters.soraModule == nil { filters.save(key: Self.storageKey) }
     do {
       if section == nil, let moduleKey = key.filters.soraModule {
         // Sora module source: its own search of the title, one page of cards (SoraSearchSource.swift).
