@@ -30,7 +30,7 @@ struct SettingsValues: Codable, Equatable {
   var w2gPushToTalk = false          // voice chat: the microphone sends only while the talk button is held
   var w2gTurnUrl = ""                // optional TURN relay (turn: / turns: URL) when links can't connect directly (PROTOCOL.md v2.5)
   var w2gTurnUsername = ""
-  var w2gTurnCredential = ""
+  var w2gTurnCredential = ""         // stored in the Keychain, not in the settings blob (W2GTurnCredentialStore)
 
   // Interface
   var titleLang: TitleLanguage = .english
@@ -151,7 +151,8 @@ extension SettingsValues {
     w2gPushToTalk = container.svcLossyBool(.w2gPushToTalk) ?? w2gPushToTalk
     w2gTurnUrl = container.settingsValue(String.self, .w2gTurnUrl) ?? w2gTurnUrl
     w2gTurnUsername = container.settingsValue(String.self, .w2gTurnUsername) ?? w2gTurnUsername
-    w2gTurnCredential = container.settingsValue(String.self, .w2gTurnCredential) ?? w2gTurnCredential
+    // Left out of the settings exports: importing one keeps the credential of this device.
+    w2gTurnCredential = container.settingsValue(String.self, .w2gTurnCredential) ?? W2GTurnCredentialStore.load() ?? w2gTurnCredential
 
     titleLang = container.settingsValue(TitleLanguage.self, .titleLang) ?? titleLang
     bannerProvider = container.settingsValue(String.self, .bannerProvider) ?? bannerProvider
@@ -422,6 +423,9 @@ final class AppSettings: @unchecked Sendable {
   /// `values` reports its reads and writes to Observation itself (SwiftUI and withObservationTracking still see them).
   @ObservationIgnored private let lock = NSLock()
   @ObservationIgnored private var stored: SettingsValues
+  /// The TURN credential is in the Keychain. False when it could not be written there: it then stays in the blob
+  /// rather than being lost.
+  @ObservationIgnored private var credentialInKeychain = true
 
   var values: SettingsValues {
     get {
@@ -431,8 +435,13 @@ final class AppSettings: @unchecked Sendable {
     set {
       withMutation(keyPath: \.values) {
         lock.withLock {
+          // Written only when it changed: a Keychain that could not be read at launch (locked device) is never
+          // overwritten by another setting's change.
+          if newValue.w2gTurnCredential != stored.w2gTurnCredential {
+            credentialInKeychain = W2GTurnCredentialStore.save(newValue.w2gTurnCredential)
+          }
           stored = newValue
-          Self.save(newValue)
+          Self.save(newValue, credentialInKeychain: credentialInKeychain)
         }
       }
     }
@@ -449,9 +458,18 @@ final class AppSettings: @unchecked Sendable {
         storedKeys = Set(object.keys)
       }
     }
-    let migrated = Self.migrateLegacyExtras(&initial, storedKeys: storedKeys)
+    var migrated = Self.migrateLegacyExtras(&initial, storedKeys: storedKeys)
+    var inKeychain = true
+    if !initial.w2gTurnCredential.isEmpty && storedKeys.contains(SettingsValues.CodingKeys.w2gTurnCredential.stringValue) {
+      // Credential of an older version, kept in the blob: moved to the Keychain.
+      inKeychain = W2GTurnCredentialStore.save(initial.w2gTurnCredential)
+      migrated = migrated || inKeychain
+    } else if initial.w2gTurnCredential.isEmpty, let saved = W2GTurnCredentialStore.load() {
+      initial.w2gTurnCredential = saved
+    }
+    credentialInKeychain = inKeychain
     stored = initial
-    if migrated { Self.save(initial) }
+    if migrated { Self.save(initial, credentialInKeychain: inKeychain) }
   }
 
   func reset() { values = SettingsValues() }
@@ -479,9 +497,34 @@ final class AppSettings: @unchecked Sendable {
     return changed
   }
 
-  private static func save(_ values: SettingsValues) {
-    if let data = try? JSONEncoder().encode(values) {
+  /// Writes the blob, without the TURN credential once it is in the Keychain.
+  private static func save(_ values: SettingsValues, credentialInKeychain: Bool) {
+    var persisted = values
+    if credentialInKeychain { persisted.w2gTurnCredential = "" }
+    if let data = try? JSONEncoder().encode(persisted) {
       UserDefaults.standard.set(data, forKey: Self.storageKey)
     }
+  }
+}
+
+/// The Watch Together TURN credential (`w2gTurnCredential`) lives in the Keychain instead of the settings blob of
+/// UserDefaults (a plain file of the app container, also copied by the settings exports).
+enum W2GTurnCredentialStore {
+  private static let account = "settings.w2gTurnCredential"
+
+  /// nil when none is stored (or the Keychain cannot be read yet: device locked since its restart).
+  static func load() -> String? {
+    guard let data = TsumiKeychain.data(for: account), let value = String(data: data, encoding: .utf8), !value.isEmpty else { return nil }
+    return value
+  }
+
+  /// Stores `value` (an empty one removes it). False when the Keychain refused it.
+  @discardableResult
+  static func save(_ value: String) -> Bool {
+    if value.isEmpty {
+      TsumiKeychain.remove(account)
+      return true
+    }
+    return TsumiKeychain.set(Data(value.utf8), for: account)
   }
 }
