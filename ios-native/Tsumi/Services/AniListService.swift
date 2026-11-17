@@ -97,6 +97,8 @@ struct RemoteListEntry: Hashable {
   var repeatCount: Int
   var startedAt: FuzzyDate?
   var completedAt: FuzzyDate?
+  /// Id of the entry (DeleteMediaListEntry of a synced profile).
+  var id: Int? = nil
 }
 
 /// Result of SaveMediaListEntry.
@@ -318,7 +320,7 @@ final class AniListService: @unchecked Sendable {
   query($id: Int) {
     Media(id: $id, type: ANIME) {
       id
-      mediaListEntry { status, progress, repeat, startedAt { year, month, day }, completedAt { year, month, day } }
+      mediaListEntry { id, status, progress, repeat, startedAt { year, month, day }, completedAt { year, month, day } }
     }
   }
   """
@@ -584,7 +586,7 @@ final class AniListService: @unchecked Sendable {
       throw ServiceError.api(ServiceJSON.errorMessage(json) ?? "Failed to read the list entry")
     }
     guard let entry = media.dict("mediaListEntry"), let status = ListStatus(rawValue: entry.string("status") ?? "") else { return nil }
-    return RemoteListEntry(status: status, progress: entry.int("progress") ?? 0, repeatCount: entry.int("repeat") ?? 0, startedAt: FuzzyDate.parse(entry.dict("startedAt")), completedAt: FuzzyDate.parse(entry.dict("completedAt")))
+    return RemoteListEntry(status: status, progress: entry.int("progress") ?? 0, repeatCount: entry.int("repeat") ?? 0, startedAt: FuzzyDate.parse(entry.dict("startedAt")), completedAt: FuzzyDate.parse(entry.dict("completedAt")), id: entry.int("id"))
   }
 
   func deleteEntry(listEntryId: Int, token: String? = nil) async throws -> Bool {
