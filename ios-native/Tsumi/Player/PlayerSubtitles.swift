@@ -251,6 +251,14 @@ struct PlayerExternalSubtitleTrack: Identifiable, Hashable {
 }
 
 enum PlayerSubtitleParser {
+  /// Int of a number read from a subtitle file without trapping: `Int(Double)` crashes the app on a value outside
+  /// the Int range (a hostile `\an99999999999999999999` or a 1e300 style field), so the value is clamped first to
+  /// ±1,000,000, far beyond any real alignment, border style or margin. NaN gives 0.
+  static func safeInt(_ value: Double) -> Int {
+    guard !value.isNaN else { return 0 }
+    return Int(min(max(value, -1_000_000), 1_000_000))
+  }
+
   /// Same extensions as the Svelte file input (.srt,.vtt,.ass,.ssa,.sub,.txt).
   static var importTypes: [UTType] {
     var types: [UTType] = []
@@ -657,11 +665,11 @@ enum PlayerSubtitleParser {
     if let value = double(map["scalex"]), value > 0 { style.scaleX = value }
     if let value = double(map["scaley"]), value > 0 { style.scaleY = value }
     if let value = double(map["angle"]) { style.angle = value }
-    if let value = double(map["borderstyle"]) { style.borderStyle = Int(value) }
+    if let value = double(map["borderstyle"]) { style.borderStyle = safeInt(value) }
     if let value = double(map["outline"]), value >= 0 { style.outline = value }
     if let value = double(map["shadow"]), value >= 0 { style.shadow = value }
     if let value = double(map["alignment"]) {
-      let raw = Int(value)
+      let raw = safeInt(value)
       style.alignment = legacy ? legacyAlignment(raw) : ((1...9).contains(raw) ? raw : 2)
     }
     if let value = double(map["marginl"]) { style.marginL = value }
@@ -847,12 +855,12 @@ enum PlayerSubtitleParser {
         line.backColor.opacity = style.backColor.opacity
       }
     } else if let value = argument("an") {
-      if line.alignment == nil, let number = leadingNumber(value), (1...9).contains(Int(number)) {
-        line.alignment = Int(number)
+      if line.alignment == nil, let number = leadingNumber(value), (1...9).contains(safeInt(number)) {
+        line.alignment = safeInt(number)
       }
     } else if let value = argument("a") {
       if line.alignment == nil, let number = leadingNumber(value) {
-        line.alignment = legacyAlignment(Int(number))
+        line.alignment = legacyAlignment(safeInt(number))
       }
     } else if argument("iclip") != nil || argument("clip") != nil {
       // Clipping: not supported (the whole text is drawn).

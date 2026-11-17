@@ -76,7 +76,8 @@ struct PlayerASSItem: Identifiable {
         items.append(PlayerASSItem(id: "p\(cue.id)", cues: [cue], layout: layout, positioned: true))
         continue
       }
-      let key = "g\(layout.alignment)-\(Int(layout.marginL))-\(Int(layout.marginR))-\(Int(layout.marginV))"
+      let key = "g\(layout.alignment)-\(PlayerSubtitleParser.safeInt(layout.marginL))-"
+        + "\(PlayerSubtitleParser.safeInt(layout.marginR))-\(PlayerSubtitleParser.safeInt(layout.marginV))"
       if let index = groups[key] {
         items[index].cues.append(cue)
       } else {
