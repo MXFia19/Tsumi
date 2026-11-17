@@ -25,6 +25,7 @@
   import { downloadsSupported, downloadFromPlayer, updateEntryOrQueue } from '@/modules/downloads/downloads.js'
   import { HoldSpeed, holdSpeedOf, holdSpeedLabel } from '@/modules/holdspeed.js'
   import { resumePosition, parseSubtitleOffset, rememberOffset, subtitleUrlOf, inEndChapters, hlsLevelOptions, CHAPTER_KINDS } from '@/modules/playerstate.js'
+  import { audioTrackOptions, pickAudioTrack } from '@/modules/audiotracks.js'
   import { ArrowDownToLine, Gauge } from 'lucide-svelte'
 
   import { w2gEmitter, state } from '@/routes/w2g/WatchTogetherPage.svelte'
@@ -323,15 +324,10 @@
             "This file's audio codec is not supported. Try a different source from another extension."
         })
       } else if (video.audioTracks.length > 1) {
-        const preferredTrack = [...video.audioTracks].find(
-          ({ language }) => language === $settings.audioLanguage
-        )
-        if (preferredTrack) return selectAudio(preferredTrack.id)
-
-        const japaneseTrack = [...video.audioTracks].find(
-          ({ language }) => language === 'jpn'
-        )
-        if (japaneseTrack) return selectAudio(japaneseTrack.id)
+        // The track remembered for the show, then the preferred language, then Japanese (audiotracks.js).
+        const tracks = [...video.audioTracks]
+        const index = pickAudioTrack(tracks.map(track => ({ name: track.label, lang: track.language })), { remembered: rememberedAudio(), preferred: $settings.audioLanguage })
+        if (index !== -1 && !tracks[index].enabled) return selectAudio(tracks[index].id)
       }
     }
   }
@@ -537,6 +533,8 @@
     hlsLevels = []
     hlsLevel = -1
     hlsActiveLevel = -1
+    hlsAudio = []
+    hlsAudioTrack = -1
     buffer = 0
     currentTime = 0
     targetTime = 0
@@ -637,6 +635,8 @@
     hlsLevels = []
     hlsLevel = -1
     hlsActiveLevel = -1
+    hlsAudio = []
+    hlsAudioTrack = -1
     dismissStreamError()
     showBuffering()
     stopStream(video)
@@ -693,6 +693,10 @@
   /** level hls.js plays (shown next to "Auto") */
   let hlsActiveLevel = -1
   $: hlsActiveLabel = hlsLevels.find(level => level.index === hlsActiveLevel)?.label || ''
+  /** audio menu entries ({ index, label }) of the HLS audio renditions (VF / VO...), empty with a single one */
+  let hlsAudio = []
+  /** audio rendition playing (index in hls.audioTracks) */
+  let hlsAudioTrack = -1
 
   function watchHls (stream) {
     const hls = video?._hlsInstance
@@ -704,12 +708,52 @@
     hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
       if (stream === streamToken) hlsActiveLevel = data?.level ?? -1
     })
+    // The audio renditions can arrive after the manifest, and change with a quality of another audio group.
+    updateHlsAudio(hls)
+    hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+      if (stream === streamToken) updateHlsAudio(hls)
+    })
+    hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_event, data) => {
+      if (stream === streamToken) hlsAudioTrack = data?.id ?? hls.audioTrack ?? -1
+    })
     hls.on(Hls.Events.ERROR, (_event, data) => {
       if (!data?.fatal || stream !== streamToken) return
       // streaming.js may recover from it: only report an instance that gave up (destroyed, no replacement).
       setTimeout(() => {
         if (stream === streamToken && video && !hls.media && (!video._hlsInstance || video._hlsInstance === hls)) showStreamError()
       }, 1_500)
+    })
+  }
+
+  /** Lists the HLS audio renditions and starts with the one remembered for the show or the preferred language. */
+  function updateHlsAudio (hls) {
+    const tracks = Array.isArray(hls.audioTracks) ? hls.audioTracks : []
+    hlsAudio = tracks.length > 1 ? audioTrackOptions(tracks) : []
+    hlsAudioTrack = hls.audioTrack ?? -1
+    const index = pickAudioTrack(tracks, { remembered: rememberedAudio(), preferred: settings.value.audioLanguage })
+    if (index !== -1 && index !== hls.audioTrack) {
+      hls.audioTrack = index
+      hlsAudioTrack = index
+    }
+  }
+
+  function selectHlsAudio (index) {
+    const hls = video?._hlsInstance
+    const track = hls?.audioTracks?.[index]
+    if (!track) return
+    hls.audioTrack = index
+    hlsAudioTrack = index
+    rememberAudio({ name: track.name, lang: track.lang })
+  }
+
+  /** Audio track picked for the show ({ name, lang }), used by the next episodes (like lastSubtitle). */
+  function rememberedAudio () {
+    return cache.getEntry(caches.HISTORY, 'lastAudio')?.[showKey()] || null
+  }
+  function rememberAudio ({ name, lang }) {
+    cache.setEntry(caches.HISTORY, 'lastAudio', {
+      ...(cache.getEntry(caches.HISTORY, 'lastAudio') || {}),
+      [showKey()]: { name: name || '', lang: lang || '' }
     })
   }
 
@@ -3155,7 +3199,39 @@
             <Eye size='2.5rem' strokeWidth={2.5} />
           </span>
         {/if}
-        {#if 'audioTracks' in HTMLVideoElement.prototype && video?.audioTracks?.length > 1}
+        {#if hlsAudio.length > 1 && !externalPlayback}
+          <div class='dropdown dropup with-arrow' use:click={toggleDropdown}>
+            <span
+              class='icon text-white ctrl mr-5 d-flex align-items-center h-full'
+              title='Audio Tracks'
+            >
+              <ListMusic size='2.5rem' strokeWidth={2.5} />
+            </span>
+            <div
+              class='dropdown-menu dropdown-menu-right ctrl p-10 pb-0 mr-15 text-nowrap'
+            >
+              <div class='custom-radio overflow-y-auto overflow-x-hidden hm-400'>
+                {#each hlsAudio as track (track.index)}
+                  <input
+                    name='hls-audio-radio-set'
+                    type='radio'
+                    id='hls-audio-{track.index}-radio'
+                    value={track.index}
+                    checked={hlsAudioTrack === track.index}
+                  />
+                  <label
+                    for='hls-audio-{track.index}-radio'
+                    use:click={() => selectHlsAudio(track.index)}
+                    class='pb-5'
+                  >
+                    {track.label}
+                  </label>
+                {/each}
+                <div class='mb-5 invisible'></div>
+              </div>
+            </div>
+          </div>
+        {:else if 'audioTracks' in HTMLVideoElement.prototype && video?.audioTracks?.length > 1}
           <div class='dropdown dropup with-arrow' use:click={toggleDropdown}>
             <span
               class='icon text-white ctrl mr-5 d-flex align-items-center h-full'
@@ -3177,7 +3253,10 @@
                   />
                   <label
                     for='audio-{track.id}-radio'
-                    use:click={() => selectAudio(track.id)}
+                    use:click={() => {
+                      selectAudio(track.id)
+                      rememberAudio({ name: track.label, lang: track.language })
+                    }}
                     class='pb-5'
                   >
                     {(track.language ||

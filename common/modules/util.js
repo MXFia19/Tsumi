@@ -670,6 +670,7 @@ export const generalDefaults = {
 export const historyDefaults = {
   lastBoosted: undefined,
   lastSubtitle: undefined,
+  lastAudio: undefined,
   lastSearched: undefined,
   lastSchedule: undefined,
   animeEpisodeProgress: []
@@ -721,7 +722,8 @@ export const notifyDefaults = {
   announcedDubs: [],
   announcedSubs: [],
   announcedHentais: [],
-  notifications: []
+  notifications: [],
+  movieAlerts: []
 }
 
 export const subtitleExtensions = ['srt', 'vtt', 'ass', 'ssa', 'sub', 'txt']
