@@ -235,6 +235,14 @@ final class PlaybackRequestCoordinator {
 
   /// playAnime(media, episode, force): `force` skips the default extension and shows every result.
   func play(media: Media, episode: EpisodeRef, force: Bool = false) {
+    // A Sora module result played as it is has no AniList / TMDB title to search the extensions for (nor
+    // downloads): its own module plays the episode its module page listed, or nothing.
+    if media.isSoraResult {
+      if let found = SoraResultSessions.shared.episode(episode, for: media.id) {
+        playSoraResult(media, episode: found.episode, source: found.source)
+      }
+      return
+    }
     // A downloaded episode plays from disk (also offline); force (long press) still opens the extensions.
     if !force && DownloadCenter.shared.playIfDownloaded(media: media, episode: episode) { return }
     cancelRunningWork()
@@ -253,6 +261,16 @@ final class PlaybackRequestCoordinator {
     } else {
       openPicker(media: media, episode: episode, defaultFailed: false, failReason: nil)
     }
+  }
+
+  /// Episode of a Sora module result played as it is (module page, SoraResultView): the loading dialog, then
+  /// `extractStreamUrl` of that episode href in that module, the server choice and the player. No other extension
+  /// is searched: a failure is shown as a toast and the module page stays.
+  func playSoraResult(_ media: Media, episode: SoraResultEpisode, source: PlaybackSource) {
+    cancelRunningWork()
+    let model = DefaultLoadingModel(media: media, episode: episode.ref)
+    presentation = PlaybackRequestPresentation(kind: .loading(model))
+    task = Task { [weak self] in await self?.playSoraEpisode(model, episodeHref: episode.href, source: source) }
   }
 
   /// playAnime(media, number): absolute episode number (NaN in the Svelte app became 1; episode 0 is kept).
@@ -336,6 +354,29 @@ final class PlaybackRequestCoordinator {
         failReason: PlaybackResolver.failureReason(error),
         failTitle: "\(SoraSearchSource.moduleName(source.extensionKey)) failed"
       )
+    }
+  }
+
+  private func playSoraEpisode(_ model: DefaultLoadingModel, episodeHref: String, source: PlaybackSource) async {
+    do {
+      let stream = try await PlaybackResolver.resolveSoraResultEpisode(source, episodeHref: episodeHref) { [weak model] status in
+        model?.statusText = status
+      }
+      guard !Task.isCancelled, isShowing(model) else { return }
+      switch PlaybackResolver.nextStep(media: model.media, episode: model.episode, stream: stream, extensionKey: source.extensionKey) {
+      case .ready(let playback):
+        deliver(playback, source: source)
+      case .chooseServer(let choice):
+        serverChoiceSources = [choice.id: source]
+        presentation = PlaybackRequestPresentation(kind: .server(choice))
+      }
+    } catch {
+      guard isShowing(model), !PlaybackResolver.isCancellation(error) else { return }
+      #if DEBUG
+      print("[Extensions] Sora module episode failed: \(error.localizedDescription)")
+      #endif
+      presentation = nil
+      ServiceMessages.shared.post(.error, PlaybackResolver.manualFailureMessage(error), "\(model.title) (\(SoraSearchSource.moduleName(source.extensionKey)))")
     }
   }
 

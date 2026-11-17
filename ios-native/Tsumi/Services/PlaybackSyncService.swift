@@ -195,7 +195,8 @@ final class PlaybackSyncService {
 
   /// Where the note of this media lives: AniList, MyAnimeList, or nil (setting off, not logged in, TMDB title).
   func noteService(_ media: Media) -> NoteService? {
-    guard AppSettings.shared.values.syncPlaybackPosition, media.source == .anilist else { return nil }
+    // No list entry, so no note, for a Sora module result played as it is.
+    guard AppSettings.shared.values.syncPlaybackPosition, media.source == .anilist, !media.isSoraResult else { return nil }
     let accounts = AccountStore.shared
     if accounts.isAniList, media.anilistId != nil { return .anilist }
     if accounts.isMAL, accounts.current?.reauth == false, media.malId != nil { return .mal }
@@ -319,6 +320,7 @@ final class PlaybackSyncService {
   /// "Resume Episode 5 at 12:34 (from iPhone)": the note (anime) or Trakt (shows and movies), when newer than
   /// what this device played.
   func detailsOffer(for media: Media) async -> DetailsResumeOffer? {
+    guard !media.isSoraResult else { return nil }
     var candidate: DetailsResumeOffer?
     if media.source == .tmdb {
       candidate = await traktDetailsOffer(media)
@@ -453,6 +455,9 @@ final class PlaybackSyncSession {
     let key = Self.key(session.media, session.episode)
     if item?.key == key { return }
     leave()
+    // A Sora module result played as it is: no note, no Trakt, no "Resume (from PC)" offer (ShellPlayback does not
+    // attach one to its player anyway).
+    guard !session.media.isSoraResult else { return }
     let media = session.media
     let episode = session.episode
     let local = AnimeProgressService.shared.record(mediaKey: media.id, episode: episode.number)

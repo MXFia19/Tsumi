@@ -28,6 +28,13 @@ enum AppWiring {
     ShellSettingsDefaults.applySvelteLayoutOnce()
   }
 
+  /// The player the lobby sees and drives: none while it plays a Sora module result as it is (never shared with the
+  /// lobby), so the lobby sees this device as not playing and its play / pause / seek leave that video alone.
+  private static var lobbyController: PlayerController? {
+    guard let controller = PlayerPresentation.shared.controller, !controller.session.media.isSoraResult else { return nil }
+    return controller
+  }
+
   private static func configureWatchTogether() {
     let client = WatchTogetherClient.shared
     // Helper.getUser(): the signed-in AniList / MyAnimeList viewer, anonymous otherwise.
@@ -39,17 +46,17 @@ enum AppWiring {
     }
     // v1 fallback, only used when onApplyPlayer is not set.
     client.onRemotePlayer = { paused, time in
-      PlayerPresentation.shared.controller?.applyRemoteState(paused: paused, time: time)
+      lobbyController?.applyRemoteState(paused: paused, time: time)
     }
     // v2 lobby states (someone's action, host snap-back, auto-sync, resync, countdown): applied without being
     // reported back. Exact times (v2) seek past 0.25 s; v1 whole-second times past 1.5 s.
     client.onApplyPlayer = { command in
       let threshold = command.isPrecise ? PlayerController.syncSeekThreshold : PlayerController.remoteSeekThreshold
-      PlayerPresentation.shared.controller?.applyRemoteState(paused: command.paused, time: command.time, seekThreshold: threshold)
+      lobbyController?.applyRemoteState(paused: command.paused, time: command.time, seekThreshold: threshold)
     }
     // The host accepted a request: do it as a local action, which is then broadcast.
     client.onPerformRequest = { kind, time in
-      guard let controller = PlayerPresentation.shared.controller else { return }
+      guard let controller = lobbyController else { return }
       switch kind {
       case .pause:
         controller.pause()
@@ -61,7 +68,7 @@ enum AppWiring {
     }
     // `status` source: what the player is doing now (nil = not in the player, `idle`).
     client.localPlayback = {
-      guard let controller = PlayerPresentation.shared.controller else { return nil }
+      guard let controller = lobbyController else { return nil }
       let snapshot = controller.syncSnapshot
       let state: W2GPlaybackState
       switch snapshot.state {

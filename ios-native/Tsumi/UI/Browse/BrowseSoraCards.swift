@@ -2,7 +2,8 @@ import SwiftUI
 
 // Cards of a Sora module source on the Search page (SmallCard.svelte / FullCard.svelte with `isSora`): the module's
 // image and title, and the module name in place of the year / format line. A module result has no AniList / TMDB data,
-// so there is no preview or context menu: a tap looks for the matching title first (BrowseSearchModel.openSoraResult).
+// so there is no preview or context menu: a tap looks for the matching title first (BrowseSearchModel.openSoraResult),
+// or opens the module page (SoraResultView) when the module's "Link results to AniList / TMDB" is off.
 
 /// One module result (small or large card, like the other results).
 @MainActor
@@ -26,7 +27,8 @@ struct BrowseSoraResultCard: View {
   }
 
   private var hint: String {
-    isMatching ? "Looking for this title on AniList and TMDB" : "Opens the matching AniList or TMDB title"
+    if isMatching { return "Looking for this title on AniList and TMDB" }
+    return ExtensionManager.shared.linksResults(result.extensionKey) ? "Opens the matching AniList or TMDB title" : "Opens the module page"
   }
 
   private var small: some View {

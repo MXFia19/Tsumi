@@ -140,6 +140,8 @@ actor OnlineSubtitlesService {
   /// Requests to try: the TMDB id of TMDB titles (season / episode from the episode, else from the TMDB seasons),
   /// the TMDB id and TVDB numbering of ani.zip for anime (animap as a fallback), then absolute numbering.
   static func queries(media: Media, episode: EpisodeRef) async -> [Query] {
+    // Online subtitles are found by TMDB id: none for a Sora module result played as it is.
+    guard !media.isSoraResult else { return [] }
     let number = episode.number
     if media.source == .tmdb {
       guard let tmdb = media.tmdbId else { return [] }
@@ -333,7 +335,7 @@ extension PlayerController {
   func scheduleAutomaticOnlineSubtitles() {
     onlineSubtitlesTask?.cancel()
     onlineSubtitlesTask = nil
-    guard AppSettings.shared.values.onlineSubtitlesAuto,
+    guard AppSettings.shared.values.onlineSubtitlesAuto, !session.media.isSoraResult,
           PlayerPreferences.lastSubtitle(for: session.media.id) != "OFF" else { return }
     let media = session.media
     let episode = session.episode

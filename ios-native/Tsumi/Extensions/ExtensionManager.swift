@@ -344,8 +344,10 @@ final class ExtensionManager {
     interimKeys.remove(key)
     pendingUpdates[key] = nil
     updateNotes[key] = nil
-    let config = InstalledExtension(key: key, url: manifestURL, enabled: true, kind: result.kind, manifest: result.manifest)
+    var config = InstalledExtension(key: key, url: manifestURL, enabled: true, kind: result.kind, manifest: result.manifest)
     if let index = installed.firstIndex(where: { $0.key == key }) {
+      // An update in place keeps the choice made for its results.
+      config.linkResults = installed[index].linkResults
       installed[index] = config
     } else {
       installed.append(config)
@@ -479,6 +481,16 @@ final class ExtensionManager {
     installed[index].enabled = enabled
     persist()
   }
+
+  /// "Link results to AniList / TMDB" of a Sora module (Settings > Extensions).
+  func setLinkResults(_ key: String, _ value: Bool) {
+    guard let index = installed.firstIndex(where: { $0.key == key }), installed[index].linkResults != value else { return }
+    installed[index].linkResults = value
+    persist()
+  }
+
+  /// Results of the module are matched to an AniList / TMDB title when opened (true when the key is unknown).
+  func linksResults(_ key: String) -> Bool { installedExtension(key)?.linkResults ?? true }
 
   func setDefault(_ key: String) { AppSettings.shared.values.defaultExtension = key }
   func unsetDefault() { AppSettings.shared.values.defaultExtension = nil }

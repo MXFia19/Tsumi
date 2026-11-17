@@ -418,8 +418,15 @@ final class BrowseSearchModel {
   // MARK: Sora module results (searchsource.js openSoraResult)
 
   /// Card tap on a module result: finds the matching AniList / TMDB title, opens its details and remembers the
-  /// module result for Play (session only). A tap on another result replaces the running lookup.
+  /// module result for Play (session only). A tap on another result replaces the running lookup. A module whose
+  /// "Link results to AniList / TMDB" is off opens its module page instead (SoraResultView), and so does "Open as
+  /// is" of the toast when nothing matches.
   func openSoraResult(_ result: SoraSearchResult) {
+    guard ExtensionManager.shared.linksResults(result.extensionKey) else {
+      cancelSoraMatch()
+      ShellNavigation.openSoraResult(result)
+      return
+    }
     guard matchingResultID != result.id else { return }
     cancelSoraMatch()
     matchToken += 1
@@ -432,7 +439,9 @@ final class BrowseSearchModel {
         self.matchingResultID = nil
         self.matchTask = nil
         guard let match else {
-          ServiceMessages.shared.post(.error, "No AniList or TMDB title matches this result", "\(result.title) (\(result.extensionName))")
+          ServiceMessages.shared.post(.error, "No AniList or TMDB title matches this result", "\(result.title) (\(result.extensionName))", actionLabel: "Open as is") {
+            ShellNavigation.openSoraResult(result)
+          }
           return
         }
         SoraPreferredSources.shared.remember(PlaybackSource(extensionKey: result.extensionKey, href: result.href, title: result.title), for: match.id)

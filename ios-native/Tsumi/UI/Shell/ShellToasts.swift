@@ -126,6 +126,21 @@ struct ShellToastCard: View {
             .foregroundStyle(Color.white.opacity(0.75))
             .lineLimit(6)
         }
+        // sonner `action` button ("Open as is" of a Sora module result without AniList / TMDB match).
+        if let label = message.actionLabel {
+          Button {
+            ServiceMessages.shared.performAction(message.id)
+          } label: {
+            Text(label)
+              .font(.footnote.weight(.semibold))
+              .foregroundStyle(Color.black)
+              .padding(.horizontal, 10)
+              .padding(.vertical, 5)
+              .background(Color.white, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+          }
+          .buttonStyle(.plain)
+          .padding(.top, 4)
+        }
       }
       Spacer(minLength: 4)
       Button {

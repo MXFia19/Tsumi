@@ -244,7 +244,8 @@ enum ShellSettingsTransfer {
     return String(data: output, encoding: .utf8)
   }
 
-  /// settings.extensions shape `{ key: { url, enabled, manifest } }`, plus the iOS `key`, `kind` and `order`.
+  /// settings.extensions shape `{ key: { url, enabled, manifest, linkResults } }` (`linkResults` only when false, like
+  /// PC), plus the iOS `key`, `kind` and `order`.
   private static func exportedExtensions() -> [String: Any] {
     var result: [String: Any] = [:]
     let encoder = JSONEncoder()
@@ -299,7 +300,7 @@ enum ShellSettingsTransfer {
   /// iOS entries (with `kind`) replace the installed list; Svelte entries are installed from their manifest URL.
   private static func importExtensions(_ entries: [String: Any]) {
     var native: [(order: Int, config: InstalledExtension)] = []
-    var manifests: [(url: String, enabled: Bool)] = []
+    var manifests: [(url: String, enabled: Bool, linkResults: Bool)] = []
     let decoder = JSONDecoder()
     for (key, value) in entries {
       guard var entry = value as? [String: Any], let url = entry["url"] as? String, !url.isEmpty else { continue }
@@ -311,7 +312,8 @@ enum ShellSettingsTransfer {
           continue
         }
       }
-      manifests.append((url: url, enabled: (entry["enabled"] as? Bool) ?? true))
+      // PC stores `linkResults` only when false (absent = true).
+      manifests.append((url: url, enabled: (entry["enabled"] as? Bool) ?? true, linkResults: (entry["linkResults"] as? Bool) ?? true))
     }
     if !native.isEmpty {
       let ordered = native.sorted { $0.order < $1.order }.map { $0.config }
@@ -326,6 +328,8 @@ enum ShellSettingsTransfer {
           if !item.enabled {
             ExtensionManager.shared.toggleExtension(key, enabled: false)
           }
+          // Set after the install, which keeps the value of an entry it updates in place.
+          ExtensionManager.shared.setLinkResults(key, item.linkResults)
         } catch {
           failed += 1
         }

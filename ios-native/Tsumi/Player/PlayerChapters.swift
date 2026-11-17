@@ -268,7 +268,7 @@ enum PlayerChapterLoader {
 /// Jikan mirrors and caches of AnimeMappingsService.
 enum PlayerEpisodeFlagsLookup {
   static func jikan(media: Media, episode: EpisodeRef) async -> PlayerEpisodeFlags? {
-    guard media.isAnime, let malId = media.malId, episode.number > 0,
+    guard media.isAnime, !media.isSoraResult, let malId = media.malId, episode.number > 0,
           let data = await AnimeMappingsService.shared.jikanEpisode(malId: malId, episode: episode.number) else { return nil }
     return PlayerEpisodeFlags(isFiller: data.filler, isRecap: data.recap)
   }

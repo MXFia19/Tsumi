@@ -71,6 +71,8 @@ final class DownloadProgressQueue {
   /// checkCompletion → Helper.updateEntry, or queued while offline. An update that fails online is queued too
   /// (retried when the connection comes back, at the next launch, or with `retryPending()`).
   func updateOrQueue(_ media: Media, episode: Int) async {
+    // A Sora module result played as it is has no list entry: never sent, never queued.
+    guard !media.isSoraResult else { return }
     // The account the episode was watched with, even if another profile is chosen while the update runs.
     let account = AccountStore.shared.current?.id
     if ShellConnectionMonitor.shared.isOffline {
