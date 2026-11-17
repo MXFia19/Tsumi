@@ -24,6 +24,8 @@ final class BrowseDetailModel {
   private(set) var recommendationLikes: [String: Int] = [:]
   /// Extended profiles of the followed users (User.svelte popover), loaded when a popover is first opened.
   private(set) var followingProfiles: [Int: FollowingUserProfile] = [:]
+  /// TMDB movies: theatrical and digital release days (release alert bell), nil until loaded.
+  private(set) var movieReleaseDays: MovieReleaseDays? = nil
   /// episodeOrder (reverse button).
   var reversed = false
   /// TMDB season filter of the episode list (nil = every season).
@@ -172,6 +174,15 @@ final class BrowseDetailModel {
     episodes = adjusted
   }
 
+  /// Release days of a TMDB movie (cached release_dates request): they decide whether the release alert bell
+  /// is offered and fill the "In theaters ... · Digital ..." line.
+  func loadMovieReleaseDays() async {
+    guard MovieAlertsService.supports(media), let tmdbId = media.tmdbId else { return }
+    let days = await MovieAlertsService.shared.releaseDays(movieId: tmdbId)
+    if Task.isCancelled { return }
+    movieReleaseDays = days
+  }
+
   /// Following.svelte (AniList accounts only).
   func loadFollowing() async {
     guard ProfilesService.shared.isAniList, media.source == .anilist else { return }
@@ -264,6 +275,9 @@ struct BrowseDetailScreen: View {
     }
     .task {
       await model.loadRecommendationLikes()
+    }
+    .task {
+      await model.loadMovieReleaseDays()
     }
   }
 

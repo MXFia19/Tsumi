@@ -43,9 +43,19 @@ struct TMDBReleaseDate: Codable, Hashable, Sendable {
   var date: String
 }
 
+/// Theatrical and digital release days of a movie ("YYYY-MM-DD", nil when TMDB has none).
+struct MovieReleaseDays: Hashable, Sendable {
+  var theatrical: String?
+  var digital: String?
+
+  func day(_ kind: MovieRelease.Kind) -> String? {
+    kind == .theatrical ? theatrical : digital
+  }
+}
+
 /// A theatrical or digital release still to come.
 struct MovieRelease: Hashable, Sendable {
-  enum Kind: String, Sendable {
+  enum Kind: String, CaseIterable, Sendable {
     case theatrical
     case digital
   }
@@ -60,8 +70,10 @@ struct MovieRelease: Hashable, Sendable {
 enum MovieReleases {
   /// MOVIE_WINDOW_DAYS: how far ahead movies are listed.
   static let windowDays = 60
-  static let theatricalTypes = [2, 3]
-  static let digitalTypes = [4]
+  /// Theatrical: the wide release (3) of a country, else its limited one (2). A limited release before the wide one
+  /// (US awards runs) would otherwise hide the wide date once it has passed (schedule and release alerts).
+  static let theatricalTypes: [[Int]] = [[3], [2]]
+  static let digitalTypes: [[Int]] = [[4]]
 
   /// LANGUAGE_COUNTRIES: main country of a language ("fr" -> FR), TMDB often has no dates for smaller countries.
   static let languageCountries = [
@@ -85,28 +97,45 @@ enum MovieReleases {
   }
 
   /// releaseDate: first release day ("YYYY-MM-DD") of one of `types` in the first of `regions` that has one, else
-  /// (with `anywhere`) in any country. Digital releases are often only listed for the US.
-  static func releaseDate(_ countries: [TMDBReleaseCountry], types: [Int], regions: [String], anywhere: Bool = false) -> String? {
-    func days(_ country: String?) -> [String] {
+  /// (with `anywhere`) in any country. Digital releases are often only listed for the US. `types` are groups tried
+  /// in order within each country ([[3], [2]]: wide, else limited).
+  static func releaseDate(_ countries: [TMDBReleaseCountry], types: [[Int]], regions: [String], anywhere: Bool = false) -> String? {
+    func days(_ country: String?, _ group: [Int]) -> [String] {
       countries
         .filter { country == nil || $0.country == country }
         .flatMap { $0.dates }
-        .filter { types.contains($0.type) && $0.date.range(of: #"^\d{4}-\d{2}-\d{2}"#, options: .regularExpression) != nil }
+        .filter { group.contains($0.type) && $0.date.range(of: #"^\d{4}-\d{2}-\d{2}"#, options: .regularExpression) != nil }
         .map { String($0.date.prefix(10)) }
         .sorted()
     }
-    for country in regions {
-      if let first = days(country).first { return first }
+    func first(_ country: String?) -> String? {
+      for group in types {
+        if let day = days(country, group).first { return day }
+      }
+      return nil
     }
-    return anywhere ? days(nil).first : nil
+    for country in regions {
+      if let found = first(country) { return found }
+    }
+    return anywhere ? first(nil) : nil
   }
 
-  /// releaseDay: local midnight of a "YYYY-MM-DD" day.
-  static func releaseDay(_ day: String) -> Date? {
+  /// releaseDay: local midnight of a "YYYY-MM-DD" day (in the time zone of `calendar`).
+  static func releaseDay(_ day: String, calendar: Calendar = ServiceDates.gregorian) -> Date? {
     let parts = day.prefix(10).split(separator: "-").compactMap { Int($0) }
     guard parts.count == 3 else { return nil }
     // TMDB days are Gregorian, whatever the device calendar.
-    return ServiceDates.gregorian.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+    return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+  }
+
+  /// Theatrical and digital release days used by the release alerts (MovieAlertsService) and the details bell:
+  /// theatrical = wide release (type 3), else limited (type 2), of the first release region that has one (no
+  /// fallback), digital = first day of type 4 in the release regions, else anywhere (the same days as the schedule).
+  static func days(_ countries: [TMDBReleaseCountry], regions: [String]) -> MovieReleaseDays {
+    MovieReleaseDays(
+      theatrical: releaseDate(countries, types: theatricalTypes, regions: regions),
+      digital: releaseDate(countries, types: digitalTypes, regions: regions, anywhere: true)
+    )
   }
 
   /// movieReleaseNodes: the theatrical and digital releases still to come within `days`, earliest first.

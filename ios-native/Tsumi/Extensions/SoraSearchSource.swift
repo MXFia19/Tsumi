@@ -93,14 +93,47 @@ enum SoraSearchSource {
   // MARK: Matching (match.js)
 
   /// Catalogues to search for a module, from its manifest `type` ("anime", "movies", "shows"...): AniList for anime,
-  /// TMDB for movies and shows, both when unknown (most modules don't say). match.js matchTargets.
+  /// TMDB for movies and shows, both when unknown (most modules don't say) or when the type names both
+  /// ("anime/movies"). match.js matchTargets.
   static func matchTargets(_ type: String?) -> (anime: Bool, western: Bool) {
     let value = (type ?? "").lowercased()
-    if ["anime", "manga", "donghua"].contains(where: { value.contains($0) }) { return (anime: true, western: false) }
-    if ["movie", "show", "serie", "tv", "film", "drama", "cartoon"].contains(where: { value.contains($0) }) {
-      return (anime: false, western: true)
-    }
+    let anime = ["anime", "manga", "donghua"].contains(where: { value.contains($0) })
+    let western = ["movie", "show", "serie", "tv", "film", "drama", "cartoon"].contains(where: { value.contains($0) })
+    if anime && !western { return (anime: true, western: false) }
+    if western && !anime { return (anime: false, western: true) }
     return (anime: true, western: true)
+  }
+
+  /// Version tags modules add at the end of titles: "Attack on Titan (Dub)", "Naruto Shippuden VF",
+  /// "One Piece [VOSTFR]", "Dune (2021)". AniList and TMDB titles have none, so they are removed before searching and
+  /// scoring. match.js VERSION_TAG (ICU needs the `[` of the first class escaped).
+  private static let versionTag = try? NSRegularExpression(
+    pattern: #"(?:\s*[(\[]\s*(?:(?:english|french|eng|fr)\s+)?(?:dub(?:bed)?|sub(?:bed)?|vf|vostfr|vost|vo|multi|uncensored|censored|(?:19|20)\d\d)\s*[)\]]|\s+(?:dub|sub|vf|vostfr|vost|multi)|\s*\[[^\]]*\])\s*$"#,
+    options: [.caseInsensitive]
+  )
+
+  /// Title of a module result without its version tags (several in a row: "X (English Dub) [HD]" -> "X"); the title
+  /// itself when that would leave nothing ("Sub" stays "Sub", "The Office (US)" is unchanged). match.js
+  /// cleanResultTitle.
+  static func cleanResultTitle(_ title: String) -> String {
+    var text = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let regex = versionTag else { return text }
+    for _ in 0..<5 {
+      let range = NSRange(text.startIndex..<text.endIndex, in: text)
+      let next = regex.stringByReplacingMatches(in: text, range: range, withTemplate: "").trimmingCharacters(in: .whitespacesAndNewlines)
+      if next == text || next.isEmpty { break }
+      text = next
+    }
+    return text
+  }
+
+  /// Cleaned titles, without empty ones and duplicates (first one kept).
+  static func cleanResultTitles(_ titles: [String]) -> [String] {
+    var result: [String] = []
+    for title in titles.map(cleanResultTitle) where !title.isEmpty && !result.contains(title) {
+      result.append(title)
+    }
+    return result
   }
 
   /// Best media for a result title among the candidates: the highest title score (aliases included, scored by
@@ -185,8 +218,11 @@ enum SoraSearchSource {
         }
         if western {
           group.addTask {
-            let page = await TMDBService.shared.textSearch(title)
-            return (index: offset * 2 + 1, media: page.items)
+            // Every TMDB title, K-dramas, Asian and anime films included (the Search page's TMDB results leave them
+            // out); a title mapped to AniList is replaced by its AniList entry.
+            let page = await TMDBService.shared.textSearch(title, includeAnime: true)
+            let media = await SoraSearchSource.withAniList(page.items)
+            return (index: offset * 2 + 1, media: media)
           }
         }
       }
@@ -199,22 +235,39 @@ enum SoraSearchSource {
     return lists.sorted { $0.index < $1.index }.flatMap { $0.media }
   }
 
+  /// TMDB titles mapped to AniList open their AniList entry (searchsource.js withAniList): the unmapped ones, then the
+  /// AniList media of the mapped ones (left out when AniList fails).
+  static func withAniList(_ media: [Media]) async -> [Media] {
+    let mapped = media.compactMap { $0.anilistId }
+    let others = media.filter { $0.anilistId == nil }
+    guard !mapped.isEmpty else { return others }
+    var variables = AniListVariables()
+    variables.id = mapped
+    variables.page = 1
+    variables.perPage = 50
+    let page = try? await AniListService.shared.searchIDs(variables)
+    return others + (page?.items ?? [])
+  }
+
   /// AniList / TMDB media matching a module result (its title, then the aliases of the module details), nil when none
   /// is close enough. searchsource.js findMatch.
   @MainActor
   static func findMatch(_ result: SoraSearchResult) async throws -> Media? {
     let ext = ExtensionManager.shared.loadedExtension(result.extensionKey)
     let targets = matchTargets(ext?.manifest.type)
-    let found = await candidates([result.title], anime: targets.anime, western: targets.western)
+    // "Attack on Titan (Dub)" is searched and scored as "Attack on Titan" (the original title is still scored).
+    let titles = cleanResultTitles([result.title])
+    let found = await candidates(titles, anime: targets.anime, western: targets.western)
     try Task.checkCancellation()
-    if let match = pickBestMatch([result.title], found) { return match }
+    if let match = pickBestMatch(titles + [result.title], found) { return match }
     guard let ext else { return nil }
-    let names = await Self.aliases(ext, href: result.href)
+    let moduleAliases = await Self.aliases(ext, href: result.href)
+    let names = cleanResultTitles(moduleAliases)
     try Task.checkCancellation()
     guard !names.isEmpty else { return nil }
     let more = await candidates(names, anime: targets.anime, western: targets.western)
     try Task.checkCancellation()
-    return pickBestMatch([result.title] + names, more)
+    return pickBestMatch(titles + [result.title] + names, more)
   }
 }
 

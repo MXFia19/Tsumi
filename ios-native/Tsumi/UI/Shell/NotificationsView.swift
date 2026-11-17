@@ -147,8 +147,13 @@ struct NotificationsView: View {
     return indexed.map { $0.item }
   }
 
-  /// Click: the "behind" prompt first, then onclick(notification) (close + play).
+  /// Click: the "behind" prompt first, then onclick(notification) (close + play). A movie release alert opens
+  /// the movie details instead (nothing to play yet).
   private func tap(_ notification: MediaNotification, behind: Bool) {
+    if notification.release != nil {
+      viewDetails(notification)
+      return
+    }
     if !behind || promptId == notification.id {
       promptId = nil
       AppNotificationsService.shared.setRead(notification, read: true)
@@ -176,6 +181,8 @@ struct NotificationsView: View {
     Task { @MainActor in
       if let media = await ShellNotificationMedia.resolve(notification, direct: true) {
         ShellNavigation.openDetails(media)
+      } else if MediaNotification.tmdbMovieId(notification.mediaKey) != nil {
+        ShellNotificationMedia.movieFailed()
       }
     }
   }
@@ -408,23 +415,38 @@ struct ShellNotificationBadges: View {
 
   var body: some View {
     HStack(spacing: 5) {
-      if state.announcement {
-        badge("Announcement", ShellPalette.announcement, dark: true)
-      } else if notification.format == "MOVIE" {
+      if let kind = notification.releaseKind {
+        // Movie release alert: "Movie" + "In Theaters" / "Digital" instead of Announcement and Sub / Dub.
         badge("Movie", ShellPalette.badgeEpisode, dark: true)
-      } else if let season = notification.season {
-        badge("Season \(season)", ShellPalette.badgeEpisode, dark: true)
-      } else {
-        if state.delayed {
-          badge("Delayed", ShellPalette.badgeDelayed, dark: false)
+        if kind == .theatrical {
+          badge("In Theaters", ShellPalette.notify, dark: false)
+        } else {
+          badge("Digital", ShellPalette.current, dark: true)
         }
-        badge(notification.episode.map { "Episode \($0)" } ?? "Batch", ShellPalette.badgeEpisode, dark: true)
-      }
-      if notification.dub {
-        badge("Dub", ShellPalette.badgeDub, dark: true)
       } else {
-        badge("Sub", ShellPalette.badgeSub, dark: false)
+        standardBadges
       }
+    }
+  }
+
+  @ViewBuilder
+  private var standardBadges: some View {
+    if state.announcement {
+      badge("Announcement", ShellPalette.announcement, dark: true)
+    } else if notification.format == "MOVIE" {
+      badge("Movie", ShellPalette.badgeEpisode, dark: true)
+    } else if let season = notification.season {
+      badge("Season \(season)", ShellPalette.badgeEpisode, dark: true)
+    } else {
+      if state.delayed {
+        badge("Delayed", ShellPalette.badgeDelayed, dark: false)
+      }
+      badge(notification.episode.map { "Episode \($0)" } ?? "Batch", ShellPalette.badgeEpisode, dark: true)
+    }
+    if notification.dub {
+      badge("Dub", ShellPalette.badgeDub, dark: true)
+    } else {
+      badge("Sub", ShellPalette.badgeSub, dark: false)
     }
   }
 

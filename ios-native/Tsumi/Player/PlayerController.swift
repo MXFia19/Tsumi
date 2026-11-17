@@ -1354,9 +1354,11 @@ final class PlayerController {
     let legible = try? await asset.loadMediaSelectionGroup(for: .legible)
     guard generation == itemGeneration, !isClosed else { return }
     audioGroup = audible
-    audioOptions = audible?.options ?? []
+    audioOptions = PlayerController.playableAudioOptions(audible, asset: asset)
+    // Raw names (empty when the stream has none): the menu label and the per-show memory work like PC
+    // (audioTrackLabel / pickAudioTrack), "Track N" is only a label.
     audioTracks = audioOptions.enumerated().map { index, option in
-      PlayerTrackOption(id: index, name: PlayerController.trackName(option, index: index), languageTag: PlayerController.languageTag(option))
+      PlayerTrackOption(id: index, name: option.displayName.trimmingCharacters(in: .whitespacesAndNewlines), languageTag: PlayerController.languageTag(option))
     }
     legibleGroup = legible
     legibleOptions = (legible?.options ?? []).filter { !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles) }
@@ -1372,6 +1374,18 @@ final class PlayerController {
     }
   }
 
+  /// Audio options that can play. A downloaded HLS package (.movpkg) only holds the audio renditions that were
+  /// downloaded: the others are left out, so neither the menu nor the remembered track can pick one that is not there.
+  private static func playableAudioOptions(_ group: AVMediaSelectionGroup?, asset: AVURLAsset) -> [AVMediaSelectionOption] {
+    guard let group else { return [] }
+    let options = group.options
+    guard asset.url.isFileURL, asset.url.pathExtension.lowercased() == "movpkg", let cache = asset.assetCache else { return options }
+    let cached = cache.mediaSelectionOptions(in: group)
+    guard !cached.isEmpty else { return options }
+    let kept = options.filter { cached.contains($0) }
+    return kept.isEmpty ? cached : kept
+  }
+
   private static func trackName(_ option: AVMediaSelectionOption, index: Int) -> String {
     let name = option.displayName.trimmingCharacters(in: .whitespaces)
     return name.isEmpty ? "Track \(index + 1)" : name
@@ -1381,14 +1395,14 @@ final class PlayerController {
     option.extendedLanguageTag ?? option.locale?.identifier
   }
 
-  /// checkAudio: preferred audio language, else Japanese, when there are several audio tracks.
+  /// checkAudio, when there are several audio tracks: the track remembered for this show (audio menu), then the
+  /// preferred audio language, then Japanese; otherwise the stream's default track stays.
   private func selectPreferredAudio() {
     guard let group = audioGroup, audioOptions.count > 1, let item = player.currentItem else { return }
+    let remembered = PlayerPreferences.lastAudio(for: session.media.id)
     let wanted = AppSettings.shared.values.audioLanguage
-    let preferred = audioOptions.first { PlayerLanguage.matches(tag: PlayerController.languageTag($0), wanted: wanted) }
-    let japanese = audioOptions.first { PlayerLanguage.matches(tag: PlayerController.languageTag($0), wanted: "jpn") }
-    if let pick = preferred ?? japanese {
-      item.select(pick, in: group)
+    if let index = PlayerLanguage.preferredAudioTrack(audioTracks, remembered: remembered, preferred: wanted), audioOptions.indices.contains(index) {
+      item.select(audioOptions[index], in: group)
     }
   }
 
@@ -1401,10 +1415,14 @@ final class PlayerController {
     selectedAudioTrack = audioOptions.firstIndex(of: selected)
   }
 
+  /// User choice from the audio menu, remembered per show (name and language) like the subtitle choice.
   func selectAudio(_ id: Int) {
     guard let group = audioGroup, audioOptions.indices.contains(id), let item = player.currentItem else { return }
     item.select(audioOptions[id], in: group)
     selectedAudioTrack = id
+    if let track = audioTracks.first(where: { $0.id == id }) {
+      PlayerPreferences.setLastAudio(PlayerAudioMemory(name: track.name, language: track.languageTag), for: session.media.id)
+    }
   }
 
   /// User choice from the subtitle menu (remembered per media like 'lastSubtitle').

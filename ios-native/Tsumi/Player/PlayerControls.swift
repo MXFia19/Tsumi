@@ -190,7 +190,8 @@ struct PlayerControlsOverlay: View {
             onInteraction()
             controller.selectAudio(track.id)
           } label: {
-            menuLabel(track.name, selected: controller.selectedAudioTrack == track.id)
+            // "Main (French)": the language is added when the name does not already say it (PC audioTrackLabel).
+            menuLabel(PlayerLanguage.audioLabel(name: track.name, tag: track.languageTag, index: track.id), selected: controller.selectedAudioTrack == track.id)
           }
         }
       }

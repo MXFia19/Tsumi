@@ -386,6 +386,9 @@ struct BrowseSmallCard: View {
       .overlay(alignment: .bottomTrailing) {
         if airing == nil {
           BrowseAudioLabel(media: media).padding(4)
+        } else if airing?.releaseLabel != nil && MovieAlertsService.shared.isWatched(media) {
+          // Schedule movie with its release alert on.
+          BrowseMovieAlertBadge().padding(4)
         }
       }
   }
@@ -461,6 +464,9 @@ struct BrowseFullCard: View {
       .overlay(alignment: .bottomTrailing) {
         if airing == nil {
           BrowseAudioLabel(media: media).padding(4)
+        } else if airing?.releaseLabel != nil && MovieAlertsService.shared.isWatched(media) {
+          // Schedule movie with its release alert on.
+          BrowseMovieAlertBadge().padding(4)
         }
       }
   }
