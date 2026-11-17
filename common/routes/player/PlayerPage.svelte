@@ -2353,11 +2353,14 @@
   // }
 
   const showOptions = writable(false)
-  // One player menu at a time: opening a dropdown (servers, subtitles, audio...) or the More menu closes the others,
-  // which otherwise stay open and overlap.
+  /** CastButton.svelte instance (its device menu) */
+  let castButton = null
+  // One player menu at a time: opening a dropdown (servers, subtitles, audio...), the More menu or the Cast menu closes
+  // the others and the online subtitles panel, which otherwise stay open and overlap.
   function closePlayerMenus (except = null) {
     for (const open of document.querySelectorAll('.player .dropdown.show')) {
-      if (open === except) continue
+      // The Cast menu is CastButton's own state: only its close() really closes it (and stops looking for devices).
+      if (open === except || open.classList.contains('cast-button')) continue
       open.classList.remove('show')
       for (const active of open.querySelectorAll('.active')) {
         if (!active.closest('.dropdown-menu')) active.classList.remove('active')
@@ -2367,10 +2370,7 @@
   function toggleDropdown ({ target }) {
     const dropdown = target.closest('.dropdown')
     if (!dropdown) return
-    if (!dropdown.classList.contains('show')) {
-      closePlayerMenus(dropdown)
-      showOptions.set(false)
-    }
+    if (!dropdown.classList.contains('show')) closePlayerMenus(dropdown)
     target.classList.toggle('active')
     dropdown.classList.toggle('show')
   }
@@ -2403,6 +2403,9 @@
       if (media.episodeRange) _media.episode = media.episodeRange.last
       updateEntryOrQueue(_media) // Helper.updateEntry, queued while offline
     }
+    castButton?.close?.()
+    showOptions.set(false)
+    onlineSubsOpen = false
   }
 
   // Playback errors keep the saved progress (they used to reset it to 0, losing the resume position of an episode
@@ -3523,7 +3526,7 @@
         <!--    {/if} -->
         <!--  </span> -->
         <!-- {/if} -->
-        <CastButton {video} {current} {media} {streamServers} {activeServerIndex} {subs} {subHeaders} delay={subDelay} disabled={externalPlayback} />
+        <CastButton bind:this={castButton} {video} {current} {media} {streamServers} {activeServerIndex} {subs} {subHeaders} delay={subDelay} disabled={externalPlayback} onOpen={() => closePlayerMenus()} />
         {#if 'pictureInPictureEnabled' in document}
           <span
             class='icon text-white ctrl mr-5 d-none align-items-center'

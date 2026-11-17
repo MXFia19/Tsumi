@@ -19,6 +19,8 @@
   /** Subtitle offset (s) */
   export let delay = 0
   export let disabled = false
+  /** Called before the menu opens: the player closes its other menus (one menu at a time). */
+  export let onOpen = null
 
   let open = false
   let node
@@ -47,12 +49,14 @@
   }
 
   function toggle () {
+    if (!open) onOpen?.()
     open = !open
     if (open) cast.discover(true)
     else if (!$castState.active) cast.discover(false)
   }
 
-  function close () {
+  /** Closes the device menu (also used by the player when another of its menus opens). */
+  export function close () {
     if (!open) return
     open = false
     if (!$castState.active) cast.discover(false)
