@@ -24,7 +24,7 @@
   import { playbackSync } from '@/modules/sync/session.js'
   import { downloadsSupported, downloadFromPlayer, updateEntryOrQueue } from '@/modules/downloads/downloads.js'
   import { HoldSpeed, holdSpeedOf, holdSpeedLabel } from '@/modules/holdspeed.js'
-  import { resumePosition, parseSubtitleOffset, rememberOffset, subtitleUrlOf, inEndChapters, upNextRemaining, hlsLevelOptions, CHAPTER_KINDS } from '@/modules/playerstate.js'
+  import { resumePosition, parseSubtitleOffset, rememberOffset, subtitleUrlOf, inEndChapters, upNextRemaining, hlsLevelOptions, pickQualityLevel, rememberShowValue, subtitleChoiceOf, CHAPTER_KINDS } from '@/modules/playerstate.js'
   import { audioTrackOptions, pickAudioTrack } from '@/modules/audiotracks.js'
   import { ArrowDownToLine, Gauge } from 'lucide-svelte'
 
@@ -299,7 +299,7 @@
   }
 
   function checkAudio () {
-    const boost = cache.getEntry(caches.HISTORY, 'lastBoosted')?.[showKey()]
+    const boost = rememberedForShow('lastBoosted')
     volumeBoosted = boost?.boosted || false
     if (volumeBoosted) {
       setupAudio()
@@ -342,11 +342,9 @@
         : track?.type)) + (track?.name ? ' - ' + track.name : '')
   }
 
+  /** @param {string} choice 'OFF' or the track name (trackLabel) */
   function rememberSubtitle (choice) {
-    cache.setEntry(caches.HISTORY, 'lastSubtitle', {
-      ...(cache.getEntry(caches.HISTORY, 'lastSubtitle') || {}),
-      [showKey()]: choice
-    })
+    rememberForShow('lastSubtitle', { choice })
   }
 
   /** The remembered subtitle choice of the show was applied (once per episode). */
@@ -359,7 +357,7 @@
    */
   function applySubtitlePreference () {
     if (subtitlePreferenceDone || !subs?.headers) return
-    const wanted = cache.getEntry(caches.HISTORY, 'lastSubtitle')?.[showKey()]
+    const wanted = subtitleChoiceOf(rememberedForShow('lastSubtitle'))
     if (!wanted) {
       subtitlePreferenceDone = true
       return
@@ -570,7 +568,7 @@
     current = file
     subDelay = savedSubDelay()
     subDelayText = String(subDelay)
-    subtitlesOff = cache.getEntry(caches.HISTORY, 'lastSubtitle')?.[showKey()] === 'OFF'
+    subtitlesOff = subtitleChoiceOf(rememberedForShow('lastSubtitle')) === 'OFF'
     startW2GLoading()
     setCurrent(file, loadToken)
   }
@@ -738,9 +736,17 @@
     const hls = video?._hlsInstance
     const Hls = window.Hls
     if (!hls || !Hls?.Events) return
-    const levels = hlsLevelOptions(hls.levels)
-    hlsLevels = levels.length > 1 ? levels : []
-    hlsActiveLevel = hls.currentLevel ?? -1
+    updateHlsLevels(hls)
+    // The quality picked for the show (like its audio track), on every episode and server.
+    const level = pickQualityLevel(hls.levels, rememberedForShow('lastQuality'))
+    if (level !== -1) {
+      hls.currentLevel = level
+      hlsLevel = level
+    }
+    // hls.js drops the levels that fail or that the browser cannot play.
+    hls.on(Hls.Events.LEVELS_UPDATED, () => {
+      if (stream === streamToken) updateHlsLevels(hls)
+    })
     hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
       if (stream === streamToken) hlsActiveLevel = data?.level ?? -1
     })
@@ -759,6 +765,14 @@
         if (stream === streamToken && video && !hls.media && (!video._hlsInstance || video._hlsInstance === hls)) showStreamError()
       }, 1_500)
     })
+  }
+
+  /** Quality menu entries of the stream, and which level is picked / plays (indexes move when a level is removed). */
+  function updateHlsLevels (hls) {
+    const levels = hlsLevelOptions(hls.levels)
+    hlsLevels = levels.length > 1 ? levels : []
+    hlsActiveLevel = hls.currentLevel ?? -1
+    hlsLevel = hls.autoLevelEnabled === false ? (hls.manualLevel ?? hls.currentLevel ?? -1) : -1
   }
 
   /** Lists the HLS audio renditions and starts with the one remembered for the show or the preferred language. */
@@ -782,15 +796,23 @@
     rememberAudio({ name: track.name, lang: track.lang })
   }
 
+  /**
+   * Choice remembered for the show playing (history cache: lastAudio, lastSubtitle, lastBoosted, lastQuality), used by
+   * its next episodes. 200 shows at most, the oldest forgotten (playerstate.js rememberShowValue).
+   */
+  function rememberedForShow (name) {
+    return cache.getEntry(caches.HISTORY, name)?.[showKey()] ?? null
+  }
+  function rememberForShow (name, value) {
+    cache.setEntry(caches.HISTORY, name, rememberShowValue(cache.getEntry(caches.HISTORY, name), showKey(), value))
+  }
+
   /** Audio track picked for the show ({ name, lang }), used by the next episodes (like lastSubtitle). */
   function rememberedAudio () {
-    return cache.getEntry(caches.HISTORY, 'lastAudio')?.[showKey()] || null
+    return rememberedForShow('lastAudio')
   }
   function rememberAudio ({ name, lang }) {
-    cache.setEntry(caches.HISTORY, 'lastAudio', {
-      ...(cache.getEntry(caches.HISTORY, 'lastAudio') || {}),
-      [showKey()]: { name: name || '', lang: lang || '' }
-    })
+    rememberForShow('lastAudio', { name: name || '', lang: lang || '' })
   }
 
   function selectQuality (index) {
@@ -798,6 +820,9 @@
     if (!hls) return
     hls.currentLevel = index // -1: automatic
     hlsLevel = index
+    // Remembered for the show: Auto (height 0), or the height and bitrate of the level (pickQualityLevel).
+    const level = index === -1 ? null : hls.levels?.[index]
+    rememberForShow('lastQuality', { height: Number(level?.height) || 0, bitrate: Number(level?.bitrate) || 0 })
   }
 
   /** id of the "Playback Error" toast shown for the stream playing */
@@ -1367,10 +1392,7 @@
     }
   }
   function rememberBoost () {
-    cache.setEntry(caches.HISTORY, 'lastBoosted', {
-      ...(cache.getEntry(caches.HISTORY, 'lastBoosted') || {}),
-      [showKey()]: { boosted: volumeBoosted, gain }
-    })
+    rememberForShow('lastBoosted', { boosted: volumeBoosted, gain })
   }
   function setGain (event) {
     const value = parseFloat(event.target.value)
@@ -2383,6 +2405,9 @@
         if (!active.closest('.dropdown-menu')) active.classList.remove('active')
       }
     }
+    castButton?.close?.()
+    showOptions.set(false)
+    onlineSubsOpen = false
   }
   function toggleDropdown ({ target }) {
     const dropdown = target.closest('.dropdown')
@@ -2420,9 +2445,6 @@
       if (media.episodeRange) _media.episode = media.episodeRange.last
       updateEntryOrQueue(_media) // Helper.updateEntry, queued while offline
     }
-    castButton?.close?.()
-    showOptions.set(false)
-    onlineSubsOpen = false
   }
 
   // Playback errors keep the saved progress (they used to reset it to 0, losing the resume position of an episode
