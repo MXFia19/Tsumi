@@ -13,9 +13,81 @@ struct ShellInterfaceSettingsView: View {
       ShellInterfaceOptionsSection()
       ShellSpoilerSettingsSection()
       ShellNotificationSettingsSection()
+      ShellMovieAlertsSection()
       ShellHomeScreenSettingsSection()
     }
     .navigationTitle("Interface")
+  }
+}
+
+/// "Release Alerts": the movies whose release alert is on (MovieAlertsService), so they can be found and turned off
+/// without opening each movie. Tap opens the details, the bell button (or a swipe) turns the alert off.
+@MainActor
+struct ShellMovieAlertsSection: View {
+  var body: some View {
+    let service = MovieAlertsService.shared
+    let entries = service.entries.sorted { $0.addedAt > $1.addedAt }
+    return Section {
+      if entries.isEmpty {
+        Text("Turn on the bell in the details of a movie to be notified when it comes out in theaters and on digital.")
+          .font(.footnote)
+          .foregroundStyle(Color.secondary)
+      } else {
+        ForEach(entries) { entry in
+          row(entry)
+        }
+        .onDelete { offsets in
+          for index in offsets {
+            remove(entries[index])
+          }
+        }
+      }
+    } header: {
+      Text("Release Alerts")
+    }
+  }
+
+  private func row(_ entry: MovieAlertEntry) -> some View {
+    HStack(spacing: 12) {
+      Button {
+        open(entry)
+      } label: {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(entry.title)
+            .foregroundStyle(Color.primary)
+            .lineLimit(2)
+          Text(entry.wasNotified(.theatrical) ? "In theaters, waiting for the digital release" : "Waiting for the theatrical release")
+            .font(.footnote)
+            .foregroundStyle(Color.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.borderless)
+      .accessibilityHint("Opens the movie details")
+      Button {
+        remove(entry)
+      } label: {
+        Image(systemName: "bell.slash")
+      }
+      .buttonStyle(.borderless)
+      .accessibilityLabel("Turn off the release alert of \(entry.title)")
+    }
+  }
+
+  private func open(_ entry: MovieAlertEntry) {
+    Task { @MainActor in
+      if let media = await MovieAlertsService.shared.movieMedia(tmdbId: entry.tmdbId) {
+        ShellNavigation.openDetails(media)
+      } else {
+        ShellNotificationMedia.movieFailed()
+      }
+    }
+  }
+
+  private func remove(_ entry: MovieAlertEntry) {
+    MovieAlertsService.shared.remove(tmdbId: entry.tmdbId)
+    ServiceMessages.shared.post(.info, "Release alert off", entry.title)
   }
 }
 
