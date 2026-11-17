@@ -7,6 +7,7 @@
   import { anilistClient } from '@/modules/anilist.js'
   import { modal } from '@/modules/navigation.js'
   import Helper from '@/modules/helper.js'
+  import { checkForZero } from '@/components/MediaHandler.svelte'
   import Debug from 'debug'
   const debug = Debug('ui:file-editor')
   const { reactive, init } = createListener(['verify-btn', 'cnt-button', 'episode-input', 'f-safe-area'])
@@ -17,10 +18,19 @@
   export let playing = false
   export let playFile
 
+  // Shows with an episode 0 count it in the list progress (progress 3 = episodes 0 to 2), like the details episode list.
+  let zeroEpisode = false
+  $: loadZeroEpisode(file?.media?.media)
+  function loadZeroEpisode (media) {
+    zeroEpisode = false
+    if (!media?.id) return
+    checkForZero(media).then(zero => { if (file?.media?.media?.id === media.id) zeroEpisode = !!zero }).catch(() => {})
+  }
+  $: listEpisode = isValidNumber(file?.media?.episode) ? Number(file.media.episode) + (zeroEpisode ? 1 : 0) : file?.media?.episode
   $: repeating = $mediaCache[file?.media?.media?.id]?.mediaListEntry?.status === 'REPEATING'
   $: notWatching = ((!$mediaCache[file?.media?.media?.id]?.mediaListEntry?.progress) || ($mediaCache[file?.media?.media?.id]?.mediaListEntry?.progress === 0 && (($mediaCache[file?.media?.media?.id]?.mediaListEntry?.status !== 'CURRENT' || !repeating) && $mediaCache[file?.media?.media?.id]?.mediaListEntry?.status !== 'COMPLETED')))
-  $: behind = Helper.isAuthorized() && file?.media?.episode && !Array.isArray(file?.media?.episode) && (file?.media?.episode - 1) >= 1 && ($mediaCache[file?.media?.media?.id]?.mediaListEntry?.status !== 'COMPLETED' && (($mediaCache[file?.media?.media?.id]?.mediaListEntry?.progress || -1) < (file?.media?.episode - 1)))
-  $: completed = !notWatching && !behind && file?.media?.episode && ($mediaCache[file?.media?.media?.id]?.mediaListEntry?.status === 'COMPLETED' || ($mediaCache[file?.media?.media?.id]?.mediaListEntry?.progress >= file?.media?.episode))
+  $: behind = Helper.isAuthorized() && listEpisode && !Array.isArray(listEpisode) && (listEpisode - 1) >= 1 && ($mediaCache[file?.media?.media?.id]?.mediaListEntry?.status !== 'COMPLETED' && (($mediaCache[file?.media?.media?.id]?.mediaListEntry?.progress || -1) < (listEpisode - 1)))
+  $: completed = !notWatching && !behind && listEpisode && ($mediaCache[file?.media?.media?.id]?.mediaListEntry?.status === 'COMPLETED' || ($mediaCache[file?.media?.media?.id]?.mediaListEntry?.progress >= listEpisode))
   $: failed = file?.failed || file?.media?.failed
 
   let prompt = false
@@ -119,7 +129,7 @@
       {#if !$mediaCache[file?.media?.media?.id]?.mediaListEntry?.progress}
         You Haven't Watched Any Episodes Yet!
       {:else}
-        Your Current Progress Is At <b>Episode {$mediaCache[file?.media?.media?.id]?.mediaListEntry?.progress}</b>
+        Your Current Progress Is At <b>Episode {$mediaCache[file?.media?.media?.id]?.mediaListEntry?.progress - (zeroEpisode ? 1 : 0)}</b>
       {/if}
     </p>
     <button type='button' class='cnt-button btn btn-lg btn-secondary w-230 h-33 text-dark font-scale-16 font-weight-bold shadow-none border-0 d-flex align-items-center mt-10 mb-auto' use:click={() => { prompt = false; modal.close(modal.FILE_MANAGER); playFile(file) } }>
