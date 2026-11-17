@@ -183,6 +183,8 @@ export default class ExternalPlayer {
       }
     })
     ipcMain.handle('external-player:path', () => getPlayerPath())
+    // Settings > Player "Reset Location": the main process forgets the program too.
+    ipcMain.on('external-player:forget', () => setPlayerPath(''))
   }
 
   /**
