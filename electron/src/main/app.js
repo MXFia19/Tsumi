@@ -319,11 +319,12 @@ export default class App {
           session.fromPartition(partitionName).clearStorageData()
         })
         // The service sends the result to tsumi://alauth or tsumi://malauth (redirect, or a navigation of the page).
+        // The only place sign-in links are accepted from (protocol.js handleProtocol, fromSignIn).
         const finishAuth = (event, url) => {
           if (!/^tsumi:/i.test(url) || authWindow.isDestroyed()) return
           event.preventDefault()
           authWindow.destroy()
-          ipcMain.emit('handle-protocol', {}, url)
+          this.protocol.handleProtocol(url, { fromSignIn: true })
           session.fromPartition(partitionName).clearStorageData()
         }
         authWindow.webContents.on('will-redirect', finishAuth)

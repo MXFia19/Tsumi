@@ -1,6 +1,6 @@
 // Main process security helpers. Run with: node electron/src/main/security.test.mjs
 import assert from 'node:assert/strict'
-import { isExternalUrl, isWebUrl, isAppUrl, isLoopbackHost, protocolParams, isYouTubeId, redact } from './security.js'
+import { isExternalUrl, isWebUrl, isAppUrl, isLoopbackHost, protocolParams, isYouTubeId, redact, isSignInLinkKey } from './security.js'
 
 let passed = 0
 let failed = 0
@@ -119,6 +119,12 @@ test('redact removes the string values of JSON keys that name a secret', () => {
   assert.equal(redact('"{\\"debridKey\\":\\"abc\\",\\"name\\":\\"x\\"}"'), '"{\\"debridKey\\":\\"[redacted]\\",\\"name\\":\\"x\\"}"')
   // Objects, numbers and other keys stay.
   assert.equal(redact('{"keybinds":{"a":"b"},"tokenExpiry":123,"title":"Key Visual"}'), '{"keybinds":{"a":"b"},"tokenExpiry":123,"title":"Key Visual"}')
+})
+
+test('isSignInLinkKey: AniList and MyAnimeList sign-in links only', () => {
+  assert.equal(isSignInLinkKey('alauth'), true)
+  assert.equal(isSignInLinkKey('malauth'), true)
+  for (const key of ['anime', 'w2g', 'trakt', 'search', 'show', '']) assert.equal(isSignInLinkKey(key), false, key)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

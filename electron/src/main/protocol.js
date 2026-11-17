@@ -1,6 +1,6 @@
-import { app, protocol, ipcMain } from 'electron'
-import { development, openExternal } from './util.js'
-import { protocolParams } from './security.js'
+import { app, ipcMain } from 'electron'
+import { openExternal } from './util.js'
+import { isSignInLinkKey, protocolParams } from './security.js'
 import path from 'path'
 
 if (process.defaultApp) {
@@ -40,11 +40,6 @@ export default class Protocol {
   constructor (window, onTrakt) {
     this.window = window
     this.onTrakt = onTrakt
-
-    protocol.registerHttpProtocol('tsumi', (req, cb) => {
-      const token = req.url.slice(7)
-      this.window.loadURL(development ? 'http://localhost:5000/app.html' + token : `file://${path.join(__dirname, '/app.html')}${token}`)
-    })
 
     app.on('open-url', (event, url) => {
       event.preventDefault()
@@ -112,14 +107,25 @@ export default class Protocol {
 
   /**
    * @param {string} text
+   * @param {{ fromSignIn?: boolean }} [options] fromSignIn: the link ends a sign-in the user started in the app's own
+   *   sign-in window (app.js finishAuth). Links from anywhere else (command line, second instance, the renderer) never
+   *   set it.
    */
-  handleProtocol (text) {
+  handleProtocol (text, { fromSignIn = false } = {}) {
     if (typeof text !== 'string' || !text) return
 
     // Handle tsumi:// scheme
     const match = text.match(this.protocolRx)
     const key = match?.[1].toLowerCase()
-    if (key && Object.hasOwn(this.protocolMap, key)) this.protocolMap[key](match[2])
+    if (!key || !Object.hasOwn(this.protocolMap, key)) return match
+    // A sign-in link from a web page or another app (tsumi://alauth#access_token=<someone else's token>) would sign the
+    // app into that account, and the user's progress would then go to it (login CSRF). On PC the AniList and
+    // MyAnimeList sign-ins always come back through the sign-in window, so such links are only accepted from there.
+    if (isSignInLinkKey(key) && !fromSignIn) {
+      console.warn('Ignored a sign-in link that did not come from the sign-in window')
+      return match
+    }
+    this.protocolMap[key](match[2])
     return match
   }
 }

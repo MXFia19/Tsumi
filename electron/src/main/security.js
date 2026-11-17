@@ -66,6 +66,15 @@ export function protocolParams (rest) {
   return new URLSearchParams(text.replace(/\+/g, '%2B'))
 }
 
+/**
+ * tsumi:// links that carry sign-in credentials (AniList token, MyAnimeList authorization code): protocol.js accepts
+ * them only from the app's sign-in window.
+ * @param {string} key the part after tsumi://, lower case
+ */
+export function isSignInLinkKey (key) {
+  return key === 'alauth' || key === 'malauth'
+}
+
 /** YouTube video id (11 characters of [A-Za-z0-9_-]). */
 export function isYouTubeId (value) {
   return typeof value === 'string' && /^[\w-]{11}$/.test(value)
