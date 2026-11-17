@@ -297,10 +297,14 @@ export default class App {
 
         // The sign-in pages may move between sites (login, consent...), but only over http(s); tsumi:// ends the sign-in.
         guardNavigation(authWindow.webContents, url => isWebUrl(url) || /^tsumi:/i.test(url), { external: false })
+        // The sites it shows (and their frames) get no permission: no microphone, camera, location, notifications, and
+        // no external app opened through a link (ms-*, search-ms:...). Electron grants everything without a handler.
+        const authSession = session.fromPartition(partitionName)
+        authSession.setPermissionRequestHandler((webContents, permission, callback) => callback(false))
+        authSession.setPermissionCheckHandler(() => false)
         setupContextMenu(authWindow)
         authWindow.webContents.on('did-finish-load', () => authWindow.show())
-        authWindow.webContents.on('did-start-loading', () => authWindow.webContents.insertCSS
-        (`
+        authWindow.webContents.on('did-start-loading', () => authWindow.webContents.insertCSS(`
             ::-webkit-scrollbar {
               width: 6px;
               height: 6px;

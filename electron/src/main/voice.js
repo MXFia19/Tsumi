@@ -1,4 +1,5 @@
 import { ipcMain, session, systemPreferences } from 'electron'
+import { isExternalUrl } from './security.js'
 
 /**
  * Same origin as the app page: same scheme, and for http(s) the same host and port. The packaged app is a file:// page
@@ -21,8 +22,9 @@ function sameOrigin (url, appUrl) {
  * Watch Together voice chat (common/routes/w2g/PROTOCOL.md v2.4): the microphone is granted to the app page of the main
  * window only while the renderer is in voice ('w2g:voice' true from "Join voice", false when it leaves). Not to an
  * embedded frame (YouTube trailers...) nor another origin, and the grant ends when the page reloads, navigates or
- * crashes (the page that asked is gone). Cameras and screen capture are never granted. Every other permission keeps
- * Electron's default (granted), as before this handler.
+ * crashes (the page that asked is gone). Cameras and screen capture are never granted. Opening a link with another
+ * app ('openExternal': a frame such as a YouTube embed navigating to a non-web scheme) is allowed for http(s) and mailto
+ * only, like util.js openExternal. Every other permission keeps Electron's default (granted), as before this handler.
  * @param {import('electron').BrowserWindow} mainWindow
  */
 export function setupVoicePermission (mainWindow) {
@@ -50,6 +52,8 @@ export function setupVoicePermission (mainWindow) {
   contents.on('destroyed', reset)
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    // Never ms-* / search-ms: handlers, file: or UNC paths (guardNavigation only covers the main frame).
+    if (permission === 'openExternal') return callback(isExternalUrl(/** @type {{ externalURL?: string }} */ (details).externalURL))
     if (permission !== 'media') return callback(true)
     const media = /** @type {{ mediaTypes?: string[], isMainFrame?: boolean, requestingUrl?: string }} */ (details)
     const types = media.mediaTypes ?? []
