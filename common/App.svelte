@@ -3,11 +3,18 @@
   import { writable } from 'simple-store-svelte'
   import { anilistClient } from '@/modules/anilist.js'
   import { page, modal, destroyHistory, enableHistory } from '@/modules/navigation.js'
+  import { movieMedia, startMovieAlerts } from '@/modules/moviealerts.js'
   export const statusTransition = writable(false)
 
   export async function handleAnime (detail) {
     IPC.emit('window-show')
     modal.close(modal.ANIME_DETAILS)
+    // TMDB movies ("tmdb-123", release alert notifications): not on AniList.
+    if (typeof detail?.id === 'string' && detail.id.startsWith('tmdb-')) {
+      const movie = await movieMedia(detail.id)
+      if (movie) modal.open(modal.ANIME_DETAILS, movie)
+      return
+    }
     const foundMedia = (
       await anilistClient.searchIDSingle(
         !detail.mal ? { id: detail.id } : { idMal: detail.id }
@@ -18,6 +25,7 @@
   IPC.on('open-anime', handleAnime)
   window.addEventListener('open-anime', (event) => handleAnime(event.detail))
   IPC.on('schedule', () => page.navigateTo(page.SCHEDULE))
+  startMovieAlerts()
 </script>
 
 <script>

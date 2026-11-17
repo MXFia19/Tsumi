@@ -17,6 +17,7 @@
   import SmartImage from '@/components/visual/SmartImage.svelte'
   import AudioLabel from '@/components/AudioLabel.svelte'
   import Following from '@/modals/details/components/Following.svelte'
+  import MovieAlertButton from '@/modals/details/components/MovieAlertButton.svelte'
   import RemoteResume from '@/modals/details/components/RemoteResume.svelte'
   import DownloadNextButton from '@/components/DownloadNextButton.svelte'
   import { IPC } from '@/modules/bridge.js'
@@ -536,6 +537,7 @@
                       </button>
                     {/if}
                     <TrailerModal {staticMedia} />
+                    <MovieAlertButton media={staticMedia} />
                     <button
                       class='btn bg-dark-light btn-lg btn-square d-none align-items-center justify-content-center shadow-none border-0 mr-10'
                       class:d-flex={staticMedia.id && typeof staticMedia.id !== 'string'}

@@ -11,6 +11,7 @@
   import { SUPPORTS } from '@/modules/support.js'
   import { settings } from '@/modules/settings.js'
   import { modal } from '@/modules/navigation.js'
+  import { RELEASE_BADGES } from '@/modules/schedule/moviealerts.js'
 
   export const notifications = writable(cache.getEntry(caches.NOTIFICATIONS, 'notifications') || [])
   export const hasUnreadNotifications = derived(notifications, _notifications => _notifications?.filter?.(notification => notification.read !== true)?.length)
@@ -55,7 +56,8 @@
   function dedupeNotifications (notifications) {
     const map = new Map()
     for (const notification of notifications) {
-      const key = `${notification.detail.id}-${notification.detail.episode}-${notification.detail.dub}`
+      // release: theatrical / digital release of a movie alert (modules/moviealerts.js).
+      const key = `${notification.detail.id}-${notification.detail.episode}-${notification.detail.dub}-${notification.detail.release}`
       const existing = map.get(key)
       if (!existing) map.set(key, notification)
     }
@@ -164,7 +166,8 @@
 
   function onclick (notification, view) {
     close()
-    if (view) {
+    // A movie release opens its details (it may only be in theaters).
+    if (view || notification.release) {
       window.dispatchEvent(new CustomEvent('open-anime', { detail: { id: notification.id } }))
     } else {
       window.dispatchEvent(new CustomEvent('play-anime', { detail: { id: notification.id, episode: notification.episode, direct: true } }))
@@ -280,20 +283,25 @@
             <div class='d-flex justify-content-between align-items-center mt-5'>
               <p class='font-size-10 text-muted my-0'>{since(new Date(notification.timestamp * 1000))}</p>
               <div>
-                {#if announcement}
-                  <span class='badge text-dark bg-duodenary mr-5'>Announcement</span>
-                {:else if notification.format === 'MOVIE'}
+                {#if notification.release}
                   <span class='badge text-dark bg-undenary mr-5'>Movie</span>
-                {:else if !isValidNumber(notification.season)}
-                  {#if delayed}<span class='badge text-dark bg-denary mr-5'>Delayed</span>{/if}
-                  <span class='badge text-dark bg-undenary mr-5'>{notification.episode != null && (Array.isArray(notification.episode) || isValidNumber(notification.episode)) ? `Episode ${Array.isArray(notification.episode) ? `${Number(notification.episode[0])} ~ ${Number(notification.episode[1])}` : Number(notification.episode)}` : 'Batch'} </span>
-                {:else if isValidNumber(notification.season)}
-                  <span class='badge text-dark bg-undenary mr-5'>Season {notification.season}</span>
-                {/if}
-                {#if notification.dub}
-                  <span class='badge text-dark bg-senary'>Dub</span>
+                  <span class='badge text-dark bg-duodenary'>{RELEASE_BADGES[notification.release] || 'Release'}</span>
                 {:else}
-                  <span class='badge text-dark bg-septenary'>Sub</span>
+                  {#if announcement}
+                    <span class='badge text-dark bg-duodenary mr-5'>Announcement</span>
+                  {:else if notification.format === 'MOVIE'}
+                    <span class='badge text-dark bg-undenary mr-5'>Movie</span>
+                  {:else if !isValidNumber(notification.season)}
+                    {#if delayed}<span class='badge text-dark bg-denary mr-5'>Delayed</span>{/if}
+                    <span class='badge text-dark bg-undenary mr-5'>{notification.episode != null && (Array.isArray(notification.episode) || isValidNumber(notification.episode)) ? `Episode ${Array.isArray(notification.episode) ? `${Number(notification.episode[0])} ~ ${Number(notification.episode[1])}` : Number(notification.episode)}` : 'Batch'} </span>
+                  {:else if isValidNumber(notification.season)}
+                    <span class='badge text-dark bg-undenary mr-5'>Season {notification.season}</span>
+                  {/if}
+                  {#if notification.dub}
+                    <span class='badge text-dark bg-senary'>Dub</span>
+                  {:else}
+                    <span class='badge text-dark bg-septenary'>Sub</span>
+                  {/if}
                 {/if}
               </div>
             </div>

@@ -710,6 +710,7 @@ export const queryDefaults = {
  * @property {any[]} announcedSubs
  * @property {any[]} announcedHentais
  * @property {any[]} notifications
+ * @property {any[]} movieAlerts release alerts of TMDB movies (modules/moviealerts.js)
  */
 export const notifyDefaults = {
   lastAni: 0,
