@@ -208,6 +208,8 @@ final class PlayerController {
   private static let flagsLookupTimeout: UInt64 = 3_000_000_000
   /// "Up next" countdown, in seconds of playback (it waits while paused).
   static let upNextCountdown: Double = 10
+  /// Saved positions under this are not resumed (PC playerstate.js MIN_RESUME_S): the episode starts over.
+  static let minResumeTime: Double = 10
 
   init(session: PlaybackSession, episodeList: [EpisodeInfo] = []) {
     self.session = session
@@ -536,8 +538,9 @@ final class PlayerController {
     isFreshEpisodeLoad = true
     resumePlaybackAfterLoad = false
     pendingSeek = nil
+    // Less than 10 s watched: start from the beginning (no "Resumed at 0:02" card), like PC.
     if let resume = newSession.startTime ?? resumePosition?(newSession.media, newSession.episode),
-       resume.isFinite, resume > 0 {
+       resume.isFinite, resume >= PlayerController.minResumeTime {
       pendingSeek = .restore(resume)
     }
     startFlagsLookup(for: newSession)
@@ -1519,7 +1522,8 @@ final class PlayerController {
   /// "Subtitle Offset": applies to the episodes that follow too, and is remembered for this show.
   func setSubtitleDelay(_ value: Double) {
     guard value.isFinite else { return }
-    subtitleDelay = (min(max(value, -600), 600) * 10).rounded() / 10
+    let range = PlayerPreferences.subtitleOffsetRange
+    subtitleDelay = (min(max(value, -range), range) * 10).rounded() / 10
     PlayerPreferences.setSubtitleOffset(subtitleDelay, for: session.media.id)
     refreshSubtitleCues()
   }
@@ -1638,7 +1642,9 @@ final class PlayerController {
     guard total > 0 else { return }
     let generation = episodeGeneration
     var found: [PlayerChapter] = []
-    if media.isAnime, let malId = media.malId {
+    // No AniSkip for episode 0 (a prologue), like PC getChaptersAniSkip (`!file.media?.episode`): AniSkip numbers
+    // from 1.
+    if media.isAnime, let malId = media.malId, episode.number > 0 {
       found = await PlayerAniSkip.chapters(malId: malId, episode: episode.number, duration: total)
     }
     if found.isEmpty, generation == episodeGeneration, !isClosed {
@@ -1677,6 +1683,10 @@ final class PlayerController {
         if (total - chapter.end).rounded(.towardZero) == 0 && hasNext && AppSettings.shared.values.playerAutoplay
             && !(isWatchTogetherActive?() ?? false) {
           currentSkippable = nil
+          // Same as "Play Now": no Up next card for this episode any more (it would show in the same tick, then
+          // over the next episode's loading).
+          upNextDoneGeneration = episodeGeneration
+          upNext = nil
           Task { [weak self] in
             await self?.playNext()
           }
@@ -1721,16 +1731,31 @@ final class PlayerController {
     guard phase == .ready, !hasEnded, !isScrubbing, loadingEpisode == nil, fillerPrompt == nil,
           !isMinimized, !isPictureInPictureActive, !isExternalOverlayPresented,
           upNextDoneGeneration != episodeGeneration, AppSettings.shared.values.playerAutoplay,
-          !(isWatchTogetherActive?() ?? false),
-          PlayerChapterLogic.isInOutroTail(currentTime, chapters: chapters) else { return nil }
+          !(isWatchTogetherActive?() ?? false), !autoSkipOwnsChapter,
+          PlayerChapterLogic.isInOutroTail(currentTime, chapters: chapters, duration: safeDuration) else { return nil }
     return nextEpisodeRef
+  }
+
+  /// Auto-Skip jumps over the skippable chapter playing (or to the next episode from the last one), so no card
+  /// there, like PC (`!(playerSkip && currentSkippable)`): it would flash, then stay over the next episode's
+  /// loading. Read from the chapter at the current time (the auto-skip seek has already moved it, and `skip()`
+  /// cleared `currentSkippable` in the same tick). A chapter already auto-skipped once and sought back into is
+  /// not skipped again on iOS, so the card shows there.
+  private var autoSkipOwnsChapter: Bool {
+    guard AppSettings.shared.values.playerSkip,
+          let chapter = PlayerChapterLogic.chapter(at: currentTime, in: chapters),
+          PlayerChapterLogic.skippableName(chapter) != nil else { return false }
+    return autoSkippedChapterStart != chapter.start
   }
 
   /// Title of the next episode from the episode list, unless spoiler protection hides it.
   private func upNextTitle() -> String? {
     guard let index = currentEpisodeIndex, episodeList.indices.contains(index + 1) else { return nil }
     let info = episodeList[index + 1]
-    if EpisodeSpoilers(entry: BrowseMediaInfo.entry(session.media), episode: info.number).title { return nil }
+    // Spoiler protection counts like the list progress: +1 when the show has an episode 0.
+    if EpisodeSpoilers(entry: BrowseMediaInfo.entry(session.media), episode: info.number + (hasZeroEpisode ? 1 : 0)).title {
+      return nil
+    }
     return PlayerText.cleanedTitle(info.title)
   }
 
@@ -1816,6 +1841,9 @@ final class PlayerController {
     if everReady { saveProgress(force: true) }
     let wasPlaying = isPlaying
     player.pause()
+    // Another episode loads (next button, episode list...): the Up next card would otherwise stay over the loading
+    // spinner ("Paused") until begin().
+    upNext = nil
     loadingEpisode = ref
     do {
       let next = try await loadEpisode(ref)

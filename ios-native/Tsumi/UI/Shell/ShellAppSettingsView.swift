@@ -95,6 +95,7 @@ struct ShellAppSettingsView: View {
       AnimeProgressService.shared.reset()
       UserDefaults.standard.removeObject(forKey: "tsumi.player.lastSubtitle")
       UserDefaults.standard.removeObject(forKey: PlayerPreferences.lastAudioKey)
+      PlayerPreferences.resetSubtitleOffsets()
     case .caches:
       // cache.resetCaches (the services reload instead of restarting the app).
       clearingCaches = true

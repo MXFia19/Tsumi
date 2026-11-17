@@ -319,6 +319,8 @@ enum PlayerPreferences {
   private static let subtitleOffsetKey = "tsumi.player.subtitleOffset"
   /// Shows whose subtitle offset is kept (the oldest are forgotten past it).
   private static let subtitleOffsetLimit = 200
+  /// Largest subtitle offset either way, in seconds (PC parseSubtitleOffset: ±3600).
+  static let subtitleOffsetRange: Double = 3600
 
   /// Settings reset: removes the auto Picture in Picture, last subtitle and audio track per media, subtitle offset
   /// per show and playback rate keys, so every value falls back to its default (and the chapter source key of older
@@ -330,11 +332,16 @@ enum PlayerPreferences {
     }
   }
 
+  /// Reset History: forgets the subtitle offset of every show (PC resetHistory wipes them with the history cache).
+  static func resetSubtitleOffsets() {
+    UserDefaults.standard.removeObject(forKey: subtitleOffsetKey)
+  }
+
   /// "Subtitle Offset" remembered per show (seconds, 0 when none).
   static func subtitleOffset(for mediaKey: String) -> Double {
     let stored = UserDefaults.standard.dictionary(forKey: subtitleOffsetKey) as? [String: [Double]]
     guard let value = stored?[mediaKey]?.first, value.isFinite else { return 0 }
-    return min(max(value, -600), 600)
+    return min(max(value, -subtitleOffsetRange), subtitleOffsetRange)
   }
 
   /// Stores [offset, time saved]; 0 forgets the show.

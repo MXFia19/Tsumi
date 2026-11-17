@@ -64,9 +64,13 @@ enum PlayerChapterLogic {
   static let outroNames: Set<String> = ["Ending", "Outro", "Credits", "Preview"]
 
   /// `time` is in the last run of credits / preview chapters: only such chapters follow until the end, so a
-  /// scene after the credits never gets the "Up next" card. Long credits count too (movie credits).
-  static func isInOutroTail(_ time: Double, chapters: [PlayerChapter]) -> Bool {
-    guard let index = chapters.firstIndex(where: { time >= $0.start && time < $0.end }) else { return false }
+  /// scene after the credits never gets the "Up next" card. Long credits count too (movie credits). The chapter
+  /// playing must start in the second half of the video (PC inEndChapters): a short special whose "Ending" chapter
+  /// starts at 1:00 of 3:00 gets no card.
+  static func isInOutroTail(_ time: Double, chapters: [PlayerChapter], duration: Double) -> Bool {
+    guard duration > 0, duration.isFinite, time.isFinite,
+          let index = chapters.firstIndex(where: { time >= $0.start && time < $0.end }),
+          chapters[index].start >= duration / 2 else { return false }
     return chapters[index...].allSatisfy { chapter in
       matchName(chapter.text).map { outroNames.contains($0) } ?? false
     }
