@@ -1679,6 +1679,10 @@ final class PlayerController {
         if (total - chapter.end).rounded(.towardZero) == 0 && hasNext && AppSettings.shared.values.playerAutoplay
             && !(isWatchTogetherActive?() ?? false) {
           currentSkippable = nil
+          // Same as "Play Now": no Up next card for this episode any more (it would show in the same tick, then
+          // over the next episode's loading).
+          upNextDoneGeneration = episodeGeneration
+          upNext = nil
           Task { [weak self] in
             await self?.playNext()
           }
@@ -1723,16 +1727,31 @@ final class PlayerController {
     guard phase == .ready, !hasEnded, !isScrubbing, loadingEpisode == nil, fillerPrompt == nil,
           !isMinimized, !isPictureInPictureActive, !isExternalOverlayPresented,
           upNextDoneGeneration != episodeGeneration, AppSettings.shared.values.playerAutoplay,
-          !(isWatchTogetherActive?() ?? false),
-          PlayerChapterLogic.isInOutroTail(currentTime, chapters: chapters) else { return nil }
+          !(isWatchTogetherActive?() ?? false), !autoSkipOwnsChapter,
+          PlayerChapterLogic.isInOutroTail(currentTime, chapters: chapters, duration: safeDuration) else { return nil }
     return nextEpisodeRef
+  }
+
+  /// Auto-Skip jumps over the skippable chapter playing (or to the next episode from the last one), so no card
+  /// there, like PC (`!(playerSkip && currentSkippable)`): it would flash, then stay over the next episode's
+  /// loading. Read from the chapter at the current time (the auto-skip seek has already moved it, and `skip()`
+  /// cleared `currentSkippable` in the same tick). A chapter already auto-skipped once and sought back into is
+  /// not skipped again on iOS, so the card shows there.
+  private var autoSkipOwnsChapter: Bool {
+    guard AppSettings.shared.values.playerSkip,
+          let chapter = PlayerChapterLogic.chapter(at: currentTime, in: chapters),
+          PlayerChapterLogic.skippableName(chapter) != nil else { return false }
+    return autoSkippedChapterStart != chapter.start
   }
 
   /// Title of the next episode from the episode list, unless spoiler protection hides it.
   private func upNextTitle() -> String? {
     guard let index = currentEpisodeIndex, episodeList.indices.contains(index + 1) else { return nil }
     let info = episodeList[index + 1]
-    if EpisodeSpoilers(entry: BrowseMediaInfo.entry(session.media), episode: info.number).title { return nil }
+    // Spoiler protection counts like the list progress: +1 when the show has an episode 0.
+    if EpisodeSpoilers(entry: BrowseMediaInfo.entry(session.media), episode: info.number + (hasZeroEpisode ? 1 : 0)).title {
+      return nil
+    }
     return PlayerText.cleanedTitle(info.title)
   }
 
@@ -1818,6 +1837,9 @@ final class PlayerController {
     if everReady { saveProgress(force: true) }
     let wasPlaying = isPlaying
     player.pause()
+    // Another episode loads (next button, episode list...): the Up next card would otherwise stay over the loading
+    // spinner ("Paused") until begin().
+    upNext = nil
     loadingEpisode = ref
     do {
       let next = try await loadEpisode(ref)

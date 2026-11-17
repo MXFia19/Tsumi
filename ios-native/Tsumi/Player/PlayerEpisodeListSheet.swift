@@ -89,7 +89,11 @@ struct PlayerEpisodeListSheet: View {
   /// Spoiler protection (Core/SpoilerProtection.swift) of an episode after the list progress (not the one playing).
   private func spoilers(_ info: EpisodeInfo) -> EpisodeSpoilers {
     guard !controller.isCurrent(info) else { return .none }
-    return EpisodeSpoilers(entry: BrowseMediaInfo.entry(controller.session.media), episode: info.number)
+    // Counted like the list progress: +1 when the show has an episode 0 (as MediaDetailEpisodes).
+    return EpisodeSpoilers(
+      entry: BrowseMediaInfo.entry(controller.session.media),
+      episode: info.number + (controller.hasZeroEpisode ? 1 : 0)
+    )
   }
 
   /// FileCard prompt text.
