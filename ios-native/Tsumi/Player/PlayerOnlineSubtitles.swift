@@ -328,11 +328,13 @@ extension PlayerController {
 
   /// "Automatic Online Subtitles": once the stream is ready and the extension subtitle file had time to load,
   /// adds the first online subtitle in the preferred language when the episode has no subtitle track. Quiet on
-  /// failure. Called for every episode (PlayerController.begin).
+  /// failure. Called for every episode (PlayerController.begin). Not when the show's remembered subtitle is OFF
+  /// (PC `subtitlesOff`): the track would stay off anyway, so no search, download or notice.
   func scheduleAutomaticOnlineSubtitles() {
     onlineSubtitlesTask?.cancel()
     onlineSubtitlesTask = nil
-    guard AppSettings.shared.values.onlineSubtitlesAuto else { return }
+    guard AppSettings.shared.values.onlineSubtitlesAuto,
+          PlayerPreferences.lastSubtitle(for: session.media.id) != "OFF" else { return }
     let media = session.media
     let episode = session.episode
     onlineSubtitlesTask = Task { [weak self] in
@@ -343,7 +345,8 @@ extension PlayerController {
       }
       try? await Task.sleep(nanoseconds: 4_000_000_000)
       guard !Task.isCancelled, let self, self.isReady, self.session.media.id == media.id, self.session.episode == episode,
-            self.embeddedSubtitleTracks.isEmpty, self.externalSubtitleTracks.isEmpty else { return }
+            self.embeddedSubtitleTracks.isEmpty, self.externalSubtitleTracks.isEmpty,
+            PlayerPreferences.lastSubtitle(for: media.id) != "OFF" else { return }
       let preferred = OnlineSubtitlesService.preferredLanguage(AppSettings.shared.values.subtitleLanguage)
       do {
         let list = try await OnlineSubtitlesService.shared.search(media: media, episode: episode)
