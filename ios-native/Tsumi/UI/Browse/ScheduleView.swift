@@ -270,6 +270,7 @@ struct BrowseScheduleHeader: View {
       BrowseIconButton(systemImage: "slider.horizontal.3", active: model.filters.activeCount > 0, badge: model.filters.activeCount, label: "Advanced Search") {
         showFilters = true
       }
+      BrowseReleaseMenu(release: $model.filters.release)
       BrowseIconButton(systemImage: model.filters.showMyAnime ? "hourglass" : "eye.slash", active: model.filters.hideMyAnime || model.filters.showMyAnime, tint: model.filters.showMyAnime ? BrowsePalette.partialDub : BrowsePalette.tertiary, label: model.filters.showMyAnime ? "Show My Anime" : "Hide My Anime") {
         model.toggleHideMyAnime()
       }
@@ -292,6 +293,37 @@ struct BrowseScheduleHeader: View {
       // Small / Large cards (SearchBar.svelte, shown on the Schedule page too).
       BrowseCardModeButtons(cardMode: $cardMode)
     }
+  }
+}
+
+/// Release select of the schedule search bar (SearchBar.svelte with scheduleList): episodes, movies in theaters,
+/// movies on digital. Also in the Filters sheet; a choice other than Any shows as a removable badge.
+@MainActor
+struct BrowseReleaseMenu: View {
+  @Binding var release: ScheduleRelease?
+
+  var body: some View {
+    let current = release ?? .any
+    return Menu {
+      Section("Release") {
+        ForEach(ScheduleRelease.allCases) { option in
+          Button {
+            release = option == .any ? nil : option
+          } label: {
+            if option == current {
+              Label(option.label, systemImage: "checkmark")
+            } else {
+              Text(option.label)
+            }
+          }
+        }
+      }
+    } label: {
+      BrowseIconLabel(systemImage: "movieclapper", active: current != .any)
+    }
+    .accessibilityLabel("Release")
+    .accessibilityValue(current.label)
+    .accessibilityHint("Movies show up at their theatrical release and again at their digital release")
   }
 }
 
