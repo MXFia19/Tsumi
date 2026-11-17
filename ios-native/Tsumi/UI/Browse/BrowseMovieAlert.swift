@@ -1,0 +1,80 @@
+import SwiftUI
+
+// Movie release alerts in the interface (Services/MovieAlertsService.swift): the bell of the details of a TMDB movie,
+// the line with its upcoming release days, and the bell shown on the schedule cards of the watched movies.
+
+@MainActor
+enum BrowseMovieAlert {
+  /// The bell shows for TMDB movies once their release days are loaded, unless the digital release is already
+  /// past; a watched movie always shows it, so that the alert can be turned off.
+  static func showsBell(_ media: Media, days: MovieReleaseDays?) -> Bool {
+    guard MovieAlertsService.supports(media) else { return false }
+    if MovieAlertsService.shared.isWatched(media) { return true }
+    guard let days else { return false }
+    return !MovieAlertRules.digitalReleasePassed(days, now: Date(), calendar: ServiceDates.gregorian)
+  }
+
+  /// "In theaters Nov 18 · Digital Jan 5" (releases still to come only).
+  static func upcomingText(_ days: MovieReleaseDays?) -> String? {
+    guard let days else { return nil }
+    return MovieAlertRules.upcomingText(days, now: Date(), calendar: ServiceDates.gregorian)
+  }
+}
+
+/// Release alert toggle of the movie details (bell / bell.fill).
+@MainActor
+struct BrowseMovieAlertButton: View {
+  let media: Media
+
+  var body: some View {
+    let service = MovieAlertsService.shared
+    let watched = service.isWatched(media)
+    Button {
+      if watched, let tmdbId = media.tmdbId {
+        service.remove(tmdbId: tmdbId)
+      } else {
+        service.add(media)
+        // System notifications on but not allowed yet: the permission prompt comes with the first alert.
+        let notifications = AppNotificationsService.shared
+        if AppSettings.shared.values.systemNotify && !notifications.authorizationGranted {
+          Task { @MainActor in
+            _ = await notifications.requestAuthorization()
+          }
+        }
+      }
+    } label: {
+      Image(systemName: watched ? "bell.fill" : "bell")
+        .font(.system(size: 17, weight: .semibold))
+        .foregroundStyle(watched ? BrowsePalette.tertiary : Color.white)
+        .frame(width: 44, height: 44)
+        .background(BrowsePalette.cardStrong, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Release alert")
+    .accessibilityValue(watched ? "On" : "Off")
+    .accessibilityHint(watched ? "Stops the theatrical and digital release notifications" : "Notifies you when the movie comes out in theaters and on digital")
+  }
+}
+
+/// Upcoming release days under the action buttons of the movie details.
+struct BrowseMovieAlertDates: View {
+  let text: String
+
+  var body: some View {
+    Label(text, systemImage: "calendar")
+      .font(.footnote.weight(.medium))
+      .foregroundStyle(BrowsePalette.muted)
+  }
+}
+
+/// Bell on the schedule card of a watched movie.
+struct BrowseMovieAlertBadge: View {
+  var body: some View {
+    Image(systemName: "bell.fill")
+      .font(.system(size: 10, weight: .bold))
+      .foregroundStyle(.white)
+      .frame(width: 20, height: 20)
+      .background(BrowsePalette.tertiary, in: Circle())
+      .accessibilityLabel("Release alert on")
+  }
+}

@@ -122,7 +122,7 @@ struct BrowseDetailStats: View {
   }
 }
 
-/// Play, list editor, favourite, trailer and share buttons.
+/// Play, list editor, favourite, trailer, release alert and share buttons.
 @MainActor
 struct BrowseDetailActions: View {
   let model: BrowseDetailModel
@@ -131,6 +131,8 @@ struct BrowseDetailActions: View {
   var body: some View {
     let media = model.live
     let entry = BrowseMediaInfo.entry(media)
+    // TMDB movies: release alert bell (Services/MovieAlertsService.swift) and the upcoming release days.
+    let movieAlert = BrowseMovieAlert.showsBell(media, days: model.movieReleaseDays)
     VStack(alignment: .leading, spacing: 10) {
       Button {
         BrowseActions.playMedia(media)
@@ -170,6 +172,9 @@ struct BrowseDetailActions: View {
           trailerButton(trailerId, media: media)
         }
         LiveCountdownDetailButton(media: media)
+        if movieAlert {
+          BrowseMovieAlertButton(media: media)
+        }
         DownloadNextMenu(media: media)
         ForEach(BrowseMediaInfo.links(media)) { link in
           BrowseShareLinkButton(link: link)
@@ -183,6 +188,9 @@ struct BrowseDetailActions: View {
             }
           }
         }
+      }
+      if movieAlert, let upcoming = BrowseMovieAlert.upcomingText(model.movieReleaseDays) {
+        BrowseMovieAlertDates(text: upcoming)
       }
     }
   }
