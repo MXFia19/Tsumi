@@ -12,6 +12,7 @@
   import { modal } from '@/modules/navigation.js'
   import { CalendarDays, Tv, ThumbsUp, ThumbsDown } from 'lucide-svelte'
   import { openSoraResult } from '@/modules/sora/searchsource.js'
+  import MovieAlertBadge from '@/components/MovieAlertBadge.svelte'
 
   /** @type {import('@/modules/al.d.ts').Media} */
   export let data
@@ -130,6 +131,8 @@
       <SmartImage class='cover-img cover-color cover-ratio w-full rounded' color={media?.coverImage?.color || 'var(--tertiary-color)'} images={[media?.coverImage?.extraLarge, media?.coverImage?.medium, './404_cover.png']} />
       {#if !_variables?.scheduleList}
         <AudioLabel {media} />
+      {:else}
+        <MovieAlertBadge {media} />
       {/if}
     </div>
     {#if type || type === 0}

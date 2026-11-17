@@ -38,9 +38,19 @@ export function isAlertable (media) {
   return !!(media?.isTmdb && media.idTmdb && media.format === 'MOVIE')
 }
 
-/** Theatrical and digital release days of a movie (release dates cached 12 hours by tmdb.js). */
-export async function movieDays (media) {
-  return movieReleaseDays(await tmdbClient.getReleaseDates(media.idTmdb), alertRegions())
+const dayRequests = new Map()
+/**
+ * Theatrical and digital release days of a movie (release dates cached 12 hours by tmdb.js). The details ask twice
+ * (alert button and dates line): one request for both.
+ */
+export function movieDays (media) {
+  const id = media.idTmdb
+  const pending = dayRequests.get(id)
+  if (pending && Date.now() - pending.at < 60_000) return pending.promise
+  const promise = tmdbClient.getReleaseDates(id).then(results => movieReleaseDays(results, alertRegions()))
+  dayRequests.set(id, { promise, at: Date.now() })
+  promise.catch(() => dayRequests.delete(id))
+  return promise
 }
 
 const SNAPSHOT_KEYS = ['id', 'idTmdb', 'isTmdb', 'format', 'title', 'coverImage', 'bannerImage', 'description', 'seasonYear', 'status', 'genres', 'averageScore', 'popularity', 'episodes', 'duration', 'trailer', 'logo']

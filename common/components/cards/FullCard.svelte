@@ -10,6 +10,7 @@
   import { settings } from '@/modules/settings.js'
   import { hidesMedia, SPOILER_TEXT } from '@/modules/spoilers.js'
   import { openSoraResult } from '@/modules/sora/searchsource.js'
+  import MovieAlertBadge from '@/components/MovieAlertBadge.svelte'
 
   /** @type {import('@/modules/al.d.ts').Media} */
   export let data
@@ -56,6 +57,8 @@
         <SmartImage class='cover-img cover-color w-full h-270' color={media.coverImage.color || 'var(--tertiary-color)'} images={[media.coverImage.extraLarge, media.coverImage?.medium, './404_cover.png']} />
         {#if !_variables?.scheduleList}
           <AudioLabel {media} />
+        {:else}
+          <MovieAlertBadge {media} />
         {/if}
       </div>
       <div class='col h-full card-grid'>

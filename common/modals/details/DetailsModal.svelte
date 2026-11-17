@@ -18,6 +18,7 @@
   import AudioLabel from '@/components/AudioLabel.svelte'
   import Following from '@/modals/details/components/Following.svelte'
   import MovieAlertButton from '@/modals/details/components/MovieAlertButton.svelte'
+  import MovieReleaseDates from '@/modals/details/components/MovieReleaseDates.svelte'
   import RemoteResume from '@/modals/details/components/RemoteResume.svelte'
   import DownloadNextButton from '@/components/DownloadNextButton.svelte'
   import { IPC } from '@/modules/bridge.js'
@@ -616,6 +617,7 @@
                     </button>
                   </div>
                 </div>
+                <MovieReleaseDates media={staticMedia} />
                 <RemoteResume media={staticMedia} />
                 <Following media={staticMedia} />
               </div>
