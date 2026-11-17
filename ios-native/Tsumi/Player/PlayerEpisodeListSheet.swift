@@ -86,14 +86,16 @@ struct PlayerEpisodeListSheet: View {
     }
   }
 
+  /// The episode counted like the list progress: +1 when the show has an episode 0 (progress 1 = episode 0
+  /// watched), as the details page (MediaDetailEpisodes) counts it.
+  private func listNumber(_ info: EpisodeInfo) -> Int {
+    info.number + (controller.hasZeroEpisode ? 1 : 0)
+  }
+
   /// Spoiler protection (Core/SpoilerProtection.swift) of an episode after the list progress (not the one playing).
   private func spoilers(_ info: EpisodeInfo) -> EpisodeSpoilers {
     guard !controller.isCurrent(info) else { return .none }
-    // Counted like the list progress: +1 when the show has an episode 0 (as MediaDetailEpisodes).
-    return EpisodeSpoilers(
-      entry: BrowseMediaInfo.entry(controller.session.media),
-      episode: info.number + (controller.hasZeroEpisode ? 1 : 0)
-    )
+    return EpisodeSpoilers(entry: BrowseMediaInfo.entry(controller.session.media), episode: listNumber(info))
   }
 
   /// FileCard prompt text.
@@ -102,16 +104,19 @@ struct PlayerEpisodeListSheet: View {
     return progress > 0 ? "Your Current Progress Is At Episode \(progress)" : "You Haven't Watched Any Episodes Yet!"
   }
 
-  /// FileCard `behind`: the episode is further than the next one to watch in the list.
+  /// FileCard `behind`: the episode is further than the next one to watch in the list (both counted like the list
+  /// progress, so on a show with an episode 0, episode 1 asks first while episode 0 is unwatched).
   private func isBehind(_ info: EpisodeInfo) -> Bool {
     guard let entry = controller.session.media.listEntry, entry.status != .completed else { return false }
-    guard info.number - 1 >= 1 else { return false }
-    return entry.progress < info.number - 1
+    let number = listNumber(info)
+    guard number - 1 >= 1 else { return false }
+    return entry.progress < number - 1
   }
 
+  /// Watched like the details page: list progress 3 on a show with an episode 0 is episodes 0 to 2.
   private func isWatched(_ info: EpisodeInfo) -> Bool {
     guard let entry = controller.session.media.listEntry else { return false }
-    return entry.status == .completed || entry.progress >= info.number
+    return entry.status == .completed || entry.progress >= listNumber(info)
   }
 
   private func select(_ info: EpisodeInfo) {
