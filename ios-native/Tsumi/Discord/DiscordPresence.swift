@@ -362,18 +362,18 @@ final class DiscordPresence {
   private func startTimer() {
     idleSince = nil
     let period = callbackPeriod
-    if let timer {
-      guard timer.timeInterval != period else { return }
-      timer.invalidate()
+    if let running = self.timer {
+      guard running.timeInterval != period else { return }
+      running.invalidate()
       self.timer = nil
     }
-    let timer = Timer(timeInterval: period, repeats: true) { _ in
+    let newTimer = Timer(timeInterval: period, repeats: true) { _ in
       MainActor.assumeIsolated {
         DiscordPresence.shared.tick()
       }
     }
-    RunLoop.main.add(timer, forMode: .common)
-    self.timer = timer
+    RunLoop.main.add(newTimer, forMode: .common)
+    self.timer = newTimer
   }
 
   private func stopTimer() {
@@ -406,7 +406,7 @@ final class DiscordPresence {
     if needsCallbacks {
       idleSince = nil
       // Disconnected: 1 Hz; connecting again (a status callback, reconnect()): back to 10 Hz.
-      if let timer, timer.timeInterval != callbackPeriod { startTimer() }
+      if let running = self.timer, running.timeInterval != callbackPeriod { startTimer() }
     } else if let since = idleSince {
       if now.timeIntervalSince(since) >= Self.idleGrace {
         stopTimer()
