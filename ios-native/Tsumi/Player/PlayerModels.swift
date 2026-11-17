@@ -510,49 +510,63 @@ enum PlayerLanguage {
     return matches(tag: lhs, wanted: primary(rhs)) || matches(tag: rhs, wanted: primary(lhs))
   }
 
-  /// Audio track picked when a stream with several audio tracks loads (checkAudio plus the per-show memory): the
-  /// track remembered for the show (same name and language, else same language), then the preferred audio
-  /// language setting, then Japanese. Nil keeps the stream's default track.
+  /// Audio track picked when a stream with several audio tracks loads, like PC pickAudioTrack
+  /// (common/modules/audiotracks.js). With a remembered track: (a) the same name (trimmed, any case) and, when a
+  /// language was remembered, the same language; (b) else the first track in the remembered language (the same tag
+  /// first, so es-419 wins over es-ES); (c) else the first track with the same name, whatever its language. Then the
+  /// preferred audio language setting, then Japanese. Nil keeps the stream's default track.
   static func preferredAudioTrack(_ tracks: [PlayerTrackOption], remembered: PlayerAudioMemory?, preferred: String) -> Int? {
+    guard tracks.count > 1 else { return nil }
+    func name(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
     if let remembered {
-      let name = remembered.name.lowercased()
-      if let language = normalizedTag(remembered.language) {
-        // Same name and language, else the same tag, else the same language in another form ("ja" / "jpn").
-        if let match = tracks.first(where: { $0.name.lowercased() == name && sameLanguage($0.languageTag, language) })
-            ?? tracks.first(where: { normalizedTag($0.languageTag)?.lowercased() == language.lowercased() })
+      let wantedName = name(remembered.name)
+      let language = normalizedTag(remembered.language)
+      if !wantedName.isEmpty || language != nil {
+        if let match = tracks.first(where: { name($0.name) == wantedName && (language == nil || sameLanguage($0.languageTag, language)) }) {
+          return match.id
+        }
+        if let language, let match = tracks.first(where: { normalizedTag($0.languageTag)?.lowercased() == language.lowercased() })
             ?? tracks.first(where: { sameLanguage($0.languageTag, language) }) {
           return match.id
         }
-      } else if let match = tracks.first(where: { $0.name.lowercased() == name && normalizedTag($0.languageTag) == nil }) {
-        // A track without language: the same name, also without language.
+        if !wantedName.isEmpty, let match = tracks.first(where: { name($0.name) == wantedName }) {
+          return match.id
+        }
+      }
+    }
+    for wanted in [preferred, "jpn"] where !wanted.isEmpty {
+      if let match = tracks.first(where: { matches(tag: $0.languageTag, wanted: wanted) }) { return match.id }
+      // "lat": Latin American Spanish first (matches), else any Spanish track (PC compares the language only).
+      if wanted.lowercased() == "lat", let match = tracks.first(where: { matches(tag: $0.languageTag, wanted: "spa") }) {
         return match.id
       }
     }
-    if let match = tracks.first(where: { matches(tag: $0.languageTag, wanted: preferred) }) { return match.id }
-    return tracks.first(where: { matches(tag: $0.languageTag, wanted: "jpn") })?.id
+    return nil
   }
 
-  /// Audio menu label: the track name, plus its language when the name does not already say it ("Main (fr)";
-  /// "Japanese" or "English (en)" stay as they are).
-  static func audioLabel(name: String, tag: String?) -> String {
-    guard let tag = normalizedTag(tag), !mentionsLanguage(name, tag: tag) else { return name }
-    return "\(name) (\(tag))"
-  }
-
-  /// The name contains the tag ("en-US"), its code ("en", "jpn") or the language name in English, in the device
-  /// language or in the language itself ("Japanese", "Japonais", the Japanese name).
-  static func mentionsLanguage(_ name: String, tag: String) -> Bool {
-    let lowerName = name.lowercased()
+  /// English name of a language tag ("fr-FR" / "fre" -> "French"), the code in capitals when unknown. PC
+  /// languageName (Intl.DisplayNames in English).
+  static func englishName(_ tag: String) -> String {
     let code = primary(tag)
-    let words = lowerName.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "-" }).map(String.init)
-    if words.contains(tag.lowercased()) || words.contains(code) { return true }
-    if words.contains(where: { $0.count == 3 && sameLanguage($0, code) }) { return true }
-    for locale in [Locale(identifier: "en"), Locale.current, Locale(identifier: code)] {
-      if let language = locale.localizedString(forLanguageCode: code)?.lowercased(), !language.isEmpty, lowerName.contains(language) {
-        return true
-      }
+    let lookup = code.count == 3 ? (twoLetter[code]?.first ?? code) : code
+    if let name = Locale(identifier: "en").localizedString(forLanguageCode: lookup), !name.isEmpty, name.lowercased() != lookup {
+      return name
     }
-    return false
+    return code.uppercased()
+  }
+
+  /// Audio menu label, like PC audioTrackLabel: the name, plus the English language name when the name says neither
+  /// it nor the raw tag ("VF (French)", "Main (French)", "English" stays "English"); no name gives the language, nothing
+  /// at all "Track N" (`index` from 0).
+  static func audioLabel(name: String, tag: String?, index: Int) -> String {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    let rawTag = normalizedTag(tag)
+    let language = rawTag.map { englishName($0) }
+    guard !trimmed.isEmpty else { return language ?? "Track \(index + 1)" }
+    guard let language, let rawTag else { return trimmed }
+    let lower = trimmed.lowercased()
+    if lower.contains(language.lowercased()) || lower.contains(rawTag.lowercased()) { return trimmed }
+    return "\(trimmed) (\(language))"
   }
 }
 

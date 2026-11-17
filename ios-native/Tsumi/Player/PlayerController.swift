@@ -1354,9 +1354,11 @@ final class PlayerController {
     let legible = try? await asset.loadMediaSelectionGroup(for: .legible)
     guard generation == itemGeneration, !isClosed else { return }
     audioGroup = audible
-    audioOptions = audible?.options ?? []
+    audioOptions = PlayerController.playableAudioOptions(audible, asset: asset)
+    // Raw names (empty when the stream has none): the menu label and the per-show memory work like PC
+    // (audioTrackLabel / pickAudioTrack), "Track N" is only a label.
     audioTracks = audioOptions.enumerated().map { index, option in
-      PlayerTrackOption(id: index, name: PlayerController.trackName(option, index: index), languageTag: PlayerController.languageTag(option))
+      PlayerTrackOption(id: index, name: option.displayName.trimmingCharacters(in: .whitespacesAndNewlines), languageTag: PlayerController.languageTag(option))
     }
     legibleGroup = legible
     legibleOptions = (legible?.options ?? []).filter { !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles) }
@@ -1370,6 +1372,18 @@ final class PlayerController {
     } else {
       applySubtitlePreference()
     }
+  }
+
+  /// Audio options that can play. A downloaded HLS package (.movpkg) only holds the audio renditions that were
+  /// downloaded: the others are left out, so neither the menu nor the remembered track can pick one that is not there.
+  private static func playableAudioOptions(_ group: AVMediaSelectionGroup?, asset: AVURLAsset) -> [AVMediaSelectionOption] {
+    guard let group else { return [] }
+    let options = group.options
+    guard asset.url.isFileURL, asset.url.pathExtension.lowercased() == "movpkg", let cache = asset.assetCache else { return options }
+    let cached = cache.mediaSelectionOptions(in: group)
+    guard !cached.isEmpty else { return options }
+    let kept = options.filter { cached.contains($0) }
+    return kept.isEmpty ? cached : kept
   }
 
   private static func trackName(_ option: AVMediaSelectionOption, index: Int) -> String {
