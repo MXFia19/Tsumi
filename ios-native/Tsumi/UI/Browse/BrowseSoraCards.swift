@@ -72,7 +72,8 @@ struct BrowseSoraResultCard: View {
   }
 
   private var cover: some View {
-    BrowseImage([result.imageURL], placeholder: BrowsePalette.skeleton)
+    // Module-supplied address: extension image rules (size cap, no local address, downsampled).
+    ExtensionCoverImage(url: result.imageURL, placeholder: BrowsePalette.skeleton, allowsLocalNetwork: ExtensionImageLoader.allowsLocalNetwork(extensionKey: result.extensionKey))
       .overlay {
         if isMatching {
           ZStack {
