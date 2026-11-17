@@ -16,11 +16,18 @@
   import { writable } from 'simple-store-svelte'
   import SectionsManager from '@/modules/sections.js'
   import ErrorCard from '@/components/cards/ErrorCard.svelte'
+  import { compareTimes } from '@/modules/schedule/listing.js'
 
   const items = writable([])
   export let key
   export let search
   export let clearNow = writable(false)
+  /**
+   * Schedule (SchedulePage.svelte): time of a result, `(media, variables) => number | null`. Each page comes sorted,
+   * but a later page of TMDB shows and movies can hold earlier dates: the loaded results are kept sorted by it.
+   * @type {((media: any, variables: any) => number | null) | null}
+   */
+  export let order = null
   const unsubscribeSearch = search?.subscribe((value) => ($clearNow = value?.clearNow))
 
   let page = 0
@@ -60,9 +67,11 @@
    */
   function loadSearchData () {
     const load = $search.load || SectionsManager.createFallbackLoad()
-    const loaded = load(++page, undefined, { ...searchCleanup($search), isSearch: true })
+    const variables = { ...searchCleanup($search), isSearch: true }
+    const loaded = load(++page, undefined, variables)
     const nextData = Array.isArray(loaded) ? loaded : []
     $items = [...$items, ...nextData]
+    if (order) sortOnceLoaded(nextData, variables)
     requestAnimationFrame(updateRowMarkers)
     // The page info of this load (sections.js wrapResponse; a shared store was overwritten by the rows of Home loading
     // meanwhile, which stopped the infinite scroll early). Loads without it (schedule feeds) go on while they come back
@@ -70,6 +79,27 @@
     if (nextData.hasNextPage) return nextData.hasNextPage
     return Promise.resolve(nextData[nextData.length - 1]?.data).then(last => !!last, () => false)
   }
+  /** Time of each loaded result (order): a result still loading counts as last. */
+  const resultTimes = new WeakMap()
+  /**
+   * Sorts the results by `order` once this page is in: its results can belong before those of the earlier pages.
+   * The cards are keyed by result (see the markup), so they move without loading again.
+   */
+  function sortOnceLoaded (pageItems, variables) {
+    const loadKey = $key
+    const timed = pageItems.map(item => Promise.resolve(item.data).then(
+      media => resultTimes.set(item, media ? order(media, variables) : null),
+      () => resultTimes.set(item, null)
+    ))
+    Promise.all(timed).then(() => {
+      if (loadKey !== $key) return // a newer search took over
+      const sorted = [...$items].sort((a, b) => compareTimes(resultTimes.get(a), resultTimes.get(b)))
+      if (sorted.every((item, index) => item === $items[index])) return
+      $items = sorted
+      requestAnimationFrame(updateRowMarkers)
+    })
+  }
+
   const update = debounce((event) => {
     if (!event.target.classList.contains('no-bubbles')) {
       $key = {}
@@ -170,9 +200,16 @@
     class='w-full d-grid d-md-flex flex-wrap flex-row px-40 justify-content-center align-content-start'
   >
     {#key $key}
-      {#each $items as card}
-        <div class='grid-card'><Card {card} variables={{ ...$search }} /></div>
-      {/each}
+      {#if order}
+        <!-- Keyed: sorting the loaded results (sortOnceLoaded) moves their cards. -->
+        {#each $items as card (card)}
+          <div class='grid-card'><Card {card} variables={{ ...$search }} /></div>
+        {/each}
+      {:else}
+        {#each $items as card}
+          <div class='grid-card'><Card {card} variables={{ ...$search }} /></div>
+        {/each}
+      {/if}
       {#if $items?.length}
         <ErrorCard promise={$items[0].data} />
       {/if}
