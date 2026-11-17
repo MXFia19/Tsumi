@@ -648,6 +648,11 @@ struct StremioAddon: Hashable {
 /// Request cache of stremio.js (`requestCache`): same URL within the TTL shares one request,
 /// failed requests are dropped from the cache. Bounded: expired answers are dropped, and above `capacity` the least
 /// recently used ones go first (the desktop cache grew for the whole session).
+///
+/// Cancellation: an uncached request (ttl 0, streams) runs in the caller's task, so cancelling the caller stops it at
+/// once. A shared request runs in its own task; it is cancelled (and dropped from the cache) when every caller
+/// waiting for it was cancelled, which also ends their wait. A cancelled caller sharing it with others keeps waiting
+/// for the answer (bounded by the request timeouts).
 actor StremioRequestCache {
   static let shared = StremioRequestCache()
   /// Answers kept at most (catalog pages, metas, searches).
@@ -658,30 +663,62 @@ actor StremioRequestCache {
     var expires: Date
     var lastUsed: Date
     var task: Task<StremioPayload, Error>
+    /// Callers waiting for the answer.
+    var waiters: Set<UUID> = []
+    /// The answer arrived (a cached answer is never cancelled).
+    var done = false
   }
 
   private var entries: [String: Entry] = [:]
 
   func load(_ url: URL, resource: String, ttl: TimeInterval) async throws -> StremioPayload {
+    guard ttl > 0 else {
+      return try await StremioAddon.fetch(url, resource: resource)
+    }
     let key = url.absoluteString
     let now = Date()
-    if ttl > 0, var entry = entries[key], entry.expires > now {
+    if var entry = entries[key], entry.expires > now {
       entry.lastUsed = now
       entries[key] = entry
-      return try await entry.task.value
-    }
-    let task = Task.detached { try await StremioAddon.fetch(url, resource: resource) }
-    let id = UUID()
-    if ttl > 0 {
-      entries[key] = Entry(id: id, expires: now.addingTimeInterval(ttl), lastUsed: now, task: task)
+    } else {
+      let task = Task.detached { try await StremioAddon.fetch(url, resource: resource) }
+      entries[key] = Entry(id: UUID(), expires: now.addingTimeInterval(ttl), lastUsed: now, task: task)
       prune(now: now)
     }
+    guard let entry = entries[key] else {
+      // Dropped at once by the pruning (not expected): a request of its own.
+      return try await StremioAddon.fetch(url, resource: resource)
+    }
+    let id = entry.id
+    let task = entry.task
+    let waiter = UUID()
+    entries[key]?.waiters.insert(waiter)
     do {
-      return try await task.value
+      let payload = try await withTaskCancellationHandler {
+        try await task.value
+      } onCancel: {
+        Task { await self.leave(key, id: id, waiter: waiter, cancelled: true) }
+      }
+      if entries[key]?.id == id { entries[key]?.done = true }
+      leave(key, id: id, waiter: waiter, cancelled: false)
+      return payload
     } catch {
       if entries[key]?.id == id { entries[key] = nil }
       throw error
     }
+  }
+
+  /// A caller stops waiting. When it was cancelled and nobody else waits for an answer still in progress, the request
+  /// is cancelled and dropped (a later caller starts a new one).
+  private func leave(_ key: String, id: UUID, waiter: UUID, cancelled: Bool) {
+    guard var entry = entries[key], entry.id == id else { return }
+    entry.waiters.remove(waiter)
+    if cancelled && entry.waiters.isEmpty && !entry.done {
+      entry.task.cancel()
+      entries[key] = nil
+      return
+    }
+    entries[key] = entry
   }
 
   /// Drops the expired answers, then the least recently used ones above `capacity`.
@@ -720,6 +757,8 @@ actor StremioAnimeIds {
   /// MyAnimeList id -> AniList id, built once from animap.
   private var malIndex: [Int: Int] = [:]
   private var malIndexBuilt: Date?
+  /// Build of `malIndex` in progress, shared by the lookups made meanwhile (every item of a catalog page at once).
+  private var malIndexTask: Task<[Int: Int], Never>?
   private var resolved: [AnimeId: Int] = [:]
   /// Ids ani.zip does not know (not asked again this session).
   private var missing: Set<AnimeId> = []
@@ -772,15 +811,32 @@ actor StremioAnimeIds {
     // Built again when animap was not available (offline), at most every 5 minutes.
     let stale = malIndexBuilt.map { malIndex.isEmpty && Date().timeIntervalSince($0) > 300 } ?? true
     if stale {
-      malIndexBuilt = Date()
-      let index = await AnimeMappingsService.shared.animapIndex()
-      var map: [Int: Int] = [:]
-      for entry in index.byAnilist.values {
-        if let mal = entry.malId, map[mal] == nil { map[mal] = entry.anilistId }
+      // One build, awaited by every lookup made meanwhile: they no longer see an empty index marked fresh (and all
+      // go to api.ani.zip) while the first one builds it.
+      let task: Task<[Int: Int], Never>
+      if let running = malIndexTask {
+        task = running
+      } else {
+        task = Task { await StremioAnimeIds.buildMalIndex() }
+        malIndexTask = task
       }
-      malIndex = map
+      let map = await task.value
+      if malIndexTask == task {
+        malIndexTask = nil
+        malIndex = map
+        malIndexBuilt = Date()
+      }
     }
     return malIndex[malId]
+  }
+
+  private static func buildMalIndex() async -> [Int: Int] {
+    let index = await AnimeMappingsService.shared.animapIndex()
+    var map: [Int: Int] = [:]
+    for entry in index.byAnilist.values {
+      if let mal = entry.malId, map[mal] == nil { map[mal] = entry.anilistId }
+    }
+    return map
   }
 
   private static func lookup(_ id: AnimeId) async -> Lookup {
