@@ -5,7 +5,7 @@
   import SmartImage from '@/components/visual/SmartImage.svelte'
   import AudioLabel from '@/components/AudioLabel.svelte'
   import { anilistClient, seasons } from '@/modules/anilist.js'
-  import { mediaCache } from '@/modules/cache.js'
+  import { mediaCache, cachedCopy } from '@/modules/cache.js'
   import { modal } from '@/modules/navigation.js'
   import { settings } from '@/modules/settings.js'
   import { hidesMedia, SPOILER_TEXT } from '@/modules/spoilers.js'
@@ -18,11 +18,12 @@
   const _variables = variables
 
   let media
-  $: if (data && !media) media = mediaCache.value[data?.id] || data
-  // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data.
+  $: if (data && !media) media = cachedCopy(data) || data
+  // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data, and a
+  // TMDB show never takes the cached movie of the same id (or the reverse, see cachedCopy).
   // Unsubscribed with the card: cards that left the page kept comparing their media on every cache update.
   onDestroy(mediaCache.subscribe((value) => {
-    const cached = value?.[media?.id]
+    const cached = cachedCopy(media, value)
     if (cached && cached !== media && JSON.stringify(cached) !== JSON.stringify(media)) media = cached
   }))
   $: maxEp = getMediaMaxEp(media)

@@ -4,7 +4,8 @@
   import { playAnime } from '@/modals/extension/ExtensionModal.svelte'
   import { copyToClipboard } from '@/modules/clipboard.js'
   import { settings } from '@/modules/settings.js'
-  import { mediaCache } from '@/modules/cache.js'
+  import { mediaCache, cachedCopy } from '@/modules/cache.js'
+  import { sameKind } from '@/modules/cachepolicy.js'
   import { anilistClient } from '@/modules/anilist.js'
   import { tmdbClient } from '@/modules/tmdb.js'
   import { isValidNumber } from '@/modules/util.js'
@@ -53,13 +54,14 @@
   let scrollTags = null
   let scrollGenres = null
   let staticMedia
-  $: media = mediaCache.value[view?.id] || view
+  $: media = cachedCopy(view) || view
   $: {
-    if (media && (!staticMedia || staticMedia?.id !== media?.id)) { staticMedia = media } else if (!media && staticMedia) staticMedia = null
+    if (media && (!staticMedia || staticMedia?.id !== media?.id || !sameKind(staticMedia, media))) { staticMedia = media } else if (!media && staticMedia) staticMedia = null
   }
-  // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data.
+  // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data, and a
+  // TMDB show never takes the cached movie of the same id (or the reverse, see cachedCopy).
   mediaCache.subscribe((value) => {
-    const cached = value?.[media?.id]
+    const cached = cachedCopy(media, value)
     if (cached && cached !== media && JSON.stringify(cached) !== JSON.stringify(media)) { media = cached }
   })
   // Identity of the shown title. The TMDB enrichment below replaces staticMedia with the same title: that must not

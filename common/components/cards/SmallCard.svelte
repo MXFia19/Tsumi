@@ -8,7 +8,7 @@
   import AudioLabel from '@/components/AudioLabel.svelte'
   import { anilistClient, currentYear } from '@/modules/anilist.js'
   import { settings } from '@/modules/settings.js'
-  import { mediaCache } from '@/modules/cache.js'
+  import { mediaCache, cachedCopy } from '@/modules/cache.js'
   import { modal } from '@/modules/navigation.js'
   import { CalendarDays, Tv, ThumbsUp, ThumbsDown } from 'lucide-svelte'
   import { openSoraResult } from '@/modules/sora/searchsource.js'
@@ -22,11 +22,12 @@
   $: _variables = variables
 
   let media
-  $: media = mediaCache.value[data?.id] || data
-  // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data.
+  $: media = cachedCopy(data) || data
+  // Follows the cached copy of the media; titles the cache does not hold (Stremio catalog items) keep their data, and a
+  // TMDB show never takes the cached movie of the same id (or the reverse, see cachedCopy).
   // Unsubscribed with the card: cards that left the page kept comparing their media on every cache update.
   onDestroy(mediaCache.subscribe((value) => {
-    const cached = value?.[media?.id]
+    const cached = cachedCopy(media, value)
     if (cached && cached !== media && JSON.stringify(cached) !== JSON.stringify(media)) media = cached
   }))
   function viewMedia () {

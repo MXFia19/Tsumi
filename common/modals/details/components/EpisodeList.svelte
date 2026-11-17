@@ -55,7 +55,8 @@
   import { toast } from 'svelte-sonner'
   import { ListPlus } from 'lucide-svelte'
   import { state as w2gState, queueEpisode, queueResultText } from '@/routes/w2g/components/session.js'
-  import { mediaCache } from '@/modules/cache.js'
+  import { mediaCache, cachedCopy } from '@/modules/cache.js'
+  import { mediaKey } from '@/modules/cachepolicy.js'
   import { hidesEpisode, spoilerText } from '@/modules/spoilers.js'
 
   /** Watch Together "Add to Watch Together queue" on an episode card. */
@@ -88,7 +89,7 @@
   $: duration = media.duration
   $: animeProgress = liveAnimeProgress(id)
   // Spoiler protection follows the live list entry (the details keep their first copy of the media).
-  $: spoilerMedia = $mediaCache?.[id] || media
+  $: spoilerMedia = cachedCopy(media, $mediaCache) || media
 
   let loadScroll = false
   const maxEpisodes = 15
@@ -289,10 +290,11 @@
     return episodeList.length > 0 ? episodeList : null
   }
 
-  // Loads again for another title only: the details replace their media with the same title (TMDB enrichment).
+  // Loads again for another title only: the details replace their media with the same title (TMDB enrichment). A TMDB
+  // show and movie with the same id are two titles (mediaKey).
   let loadedId
-  $: if (media && media.id !== loadedId) {
-    loadedId = media.id
+  $: if (media && mediaKey(media) !== loadedId) {
+    loadedId = mediaKey(media)
     episodeList = []
     episodeOrder = true
     currentEpisodes = []
