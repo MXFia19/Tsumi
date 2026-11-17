@@ -5,7 +5,7 @@ import { tmdbClient } from '@/modules/tmdb.js'
 import { modal } from '@/modules/navigation.js'
 import { toast } from 'svelte-sonner'
 import Debug from 'debug'
-import { matchTargets, pickBestMatch, resultMedia } from './match.js'
+import { matchTargets, pickBestMatch, resultMedia, cleanResultTitle } from './match.js'
 
 const debug = Debug('ui:sora-search')
 
@@ -43,7 +43,8 @@ export function soraSection (ext) {
   return {
     key: ext.key,
     title: ext.manifest?.sourceName || ext.key,
-    load: (pageNumber = 1, perPage = 50, variables = null) => {
+    // Up to 100 results (searchPage keeps that many), like iOS: the search page asks for its default page size.
+    load: (pageNumber = 1, perPage = 100, variables = null) => {
       const query = typeof variables?.search === 'string' ? variables.search.trim() : ''
       return SectionsManager.wrapResponse(searchPage(ext, query, pageNumber), perPage)
     },
@@ -85,10 +86,13 @@ export async function findMatch (sora) {
   const stored = extensionManager.extensions.get(sora.extensionKey)
   const ext = stored && { key: sora.extensionKey, ...stored }
   const targets = matchTargets(ext?.manifest)
-  let match = pickBestMatch([sora.title], await candidates([sora.title], targets))
+  // "Attack on Titan (Dub)" is searched and scored as "Attack on Titan" (the original title is still scored).
+  const clean = (list) => list.map(cleanResultTitle).filter((title, index, all) => title && all.indexOf(title) === index)
+  const titles = clean([sora.title])
+  let match = pickBestMatch([...titles, sora.title], await candidates(titles, targets))
   if (!match && ext) {
-    const aliases = await resultAliases(ext, sora.href)
-    if (aliases.length) match = pickBestMatch([sora.title, ...aliases], await candidates(aliases, targets))
+    const aliases = clean(await resultAliases(ext, sora.href))
+    if (aliases.length) match = pickBestMatch([...titles, sora.title, ...aliases], await candidates(aliases, targets))
   }
   return match
 }

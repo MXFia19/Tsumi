@@ -19,6 +19,25 @@ export function matchTargets (manifest) {
   return { anime: true, western: true }
 }
 
+// Version tags modules add at the end of titles: "Attack on Titan (Dub)", "Naruto Shippuden VF", "One Piece [VOSTFR]",
+// "Dune (2021)". AniList and TMDB titles have none, so they are removed before searching and scoring.
+const VERSION_TAG = /(?:\s*[([]\s*(?:(?:english|french|eng|fr)\s+)?(?:dub(?:bed)?|sub(?:bed)?|vf|vostfr|vost|vo|multi|uncensored|censored|(?:19|20)\d\d)\s*[)\]]|\s+(?:dub|sub|vf|vostfr|vost|multi)|\s*\[[^\]]*\])\s*$/i
+
+/**
+ * Title of a module result without its version tags (several in a row: "X (Dub) [HD]"); the title itself when that
+ * would leave nothing.
+ * @param {string} title
+ */
+export function cleanResultTitle (title) {
+  let text = String(title || '').trim()
+  for (let i = 0; i < 5; i++) {
+    const next = text.replace(VERSION_TAG, '').trim()
+    if (next === text || !next) break
+    text = next
+  }
+  return text
+}
+
 /**
  * Best media for a result title among the candidates: the highest title score (aliases included), then the most
  * popular. null when nothing reaches MATCH_MIN_SCORE (better no match than another show).

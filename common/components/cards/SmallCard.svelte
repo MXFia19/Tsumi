@@ -41,8 +41,10 @@
   function setHoverState (state) {
     const focused = document.activeElement
     if (container && focused?.offsetParent != null && (container.contains(focused)) && (!previewCard || !previewCard.contains(focused))) ignoreFocus = true
-    // Module results have no AniList data to preview (trailer, score...).
-    if (settings.value.cardPreview && !media?.isSora) preview = state
+    // Module results have no AniList data to preview (trailer, score...), and opening one starts a title lookup: they
+    // open on click / tap / Enter only, never on hover.
+    if (media?.isSora) return
+    if (settings.value.cardPreview) preview = state
     else if (state) viewMedia()
   }
 
