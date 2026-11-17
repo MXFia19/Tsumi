@@ -254,7 +254,7 @@ enum W2GSync {
       return status.state == .playing ? W2GBadge(kind: .playing, text: "Playing") : W2GBadge(kind: .paused, text: "Paused")
     }
 
-    if status.mediaKey != local.mediaKey { return W2GBadge(kind: .other, text: "Other episode") }
+    if !sameMediaKey(status.mediaKey, local.mediaKey) { return W2GBadge(kind: .other, text: "Other episode") }
 
     let expected = expectedTime(status, receivedAt: signal.receivedAt ?? now, now: now, rttMs: signal.rtt)
     let localTime = expectedTime(local.status, receivedAt: local.at, now: now, rttMs: 0)
@@ -291,7 +291,7 @@ enum W2GSync {
     guard enabled, !isHost, let hostStatus, let local else { return idle }
     guard hostStatus.following, local.following else { return idle }
     guard hostStatus.state == .playing, local.state == .playing else { return idle }
-    guard hostStatus.mediaKey == local.mediaKey else { return idle }
+    guard sameMediaKey(hostStatus.mediaKey, local.mediaKey) else { return idle }
     // v2.5: at another playback rate the drift grows again right after each jump.
     guard !differentRate(hostStatus.rate, local.rate) else { return idle }
 
@@ -422,7 +422,7 @@ enum W2GSync {
       }
       let previousKey = previous.mediaKey
       let nextKey = status.mediaKey
-      if status.state != .idle && !previousKey.isEmpty && !nextKey.isEmpty && previousKey != nextKey {
+      if status.state != .idle && !previousKey.isEmpty && !nextKey.isEmpty && !sameMediaKey(previousKey, nextKey) {
         if !status.following {
           // v2.2: "Alice is watching {title · episode}" replaces "switched to".
           let label = status.nowPlaying?.label ?? ""
@@ -431,7 +431,7 @@ enum W2GSync {
           events.append(W2GPresenceEvent(kind: .switched, detail: switchLabel(from: previousKey, to: nextKey)))
         }
       }
-      if previousKey == nextKey && !previous.source.isEmpty && !status.source.isEmpty && previous.source != status.source {
+      if sameMediaKey(previousKey, nextKey) && !previous.source.isEmpty && !status.source.isEmpty && previous.source != status.source {
         events.append(W2GPresenceEvent(kind: .source, detail: status.source))
       }
     } else if watchingStates.contains(status.state) {
@@ -500,7 +500,7 @@ enum W2GSync {
       return now - introducedAt >= noSignalMs
     }
     if badge == .nosignal { return true }
-    return status.state == .idle || !status.following || status.mediaKey != offeredKey
+    return status.state == .idle || !status.following || !sameMediaKey(status.mediaKey, offeredKey)
   }
 
   // MARK: - v2.3 lobby watching, join, invite from anywhere
@@ -520,8 +520,8 @@ enum W2GSync {
 
   /// The status follows the lobby and is on the lobby key in a watching state.
   static func matchesLobby(_ status: W2GStatus?, lobbyKey: String) -> Bool {
-    guard let status, !lobbyKey.isEmpty else { return false }
-    return status.following && status.mediaKey == lobbyKey && isWatchingState(status.state)
+    guard let status, !lobbyKey.isEmpty, !status.mediaKey.isEmpty else { return false }
+    return status.following && sameMediaKey(status.mediaKey, lobbyKey) && isWatchingState(status.state)
   }
 
   /// The lobby's reference member: the host when it watches the lobby media, else the smallest following userId
@@ -551,7 +551,7 @@ enum W2GSync {
   static func offersJoin(referenceId: String?, selfId: String, localState: W2GPlaybackState, localKey: String, following: Bool, lobbyKey: String) -> Bool {
     guard let referenceId, referenceId != selfId, !lobbyKey.isEmpty else { return false }
     if !following { return true }
-    return localState == .idle || localKey != lobbyKey
+    return localState == .idle || !sameMediaKey(localKey, lobbyKey)
   }
 
   private static let protocolVersion2 = 2
@@ -567,7 +567,7 @@ enum W2GSync {
   /// sync.js inviteTarget: the host's expected position if it is on the same episode, else the inviter's time
   /// plus the elapsed time when it was playing. `fromHost` tells which one was used.
   static func inviteTarget(key: String, time: Double, paused: Bool, receivedAt: Double, host: W2GHostTarget?, now: Double) -> (time: Double, paused: Bool, fromHost: Bool) {
-    if let host, let hostKey = host.mediaKey, hostKey == key, host.time.isFinite {
+    if let host, let hostKey = host.mediaKey, !hostKey.isEmpty, sameMediaKey(hostKey, key), host.time.isFinite {
       return (time: host.time, paused: host.paused, fromHost: true)
     }
     let elapsed = paused ? 0 : max(0, now - receivedAt) / 1000

@@ -154,6 +154,9 @@ struct W2GStartView: View {
 struct W2GLobbyView: View {
   let client: WatchTogetherClient
   @State private var draft = ""
+  /// Leaving needs a second tap within 3 s, as in the player panel (a mis-tap does not leave the lobby).
+  @State private var confirmLeave = false
+  @State private var leaveTask: Task<Void, Never>?
   /// Shift+Return was pressed on a hardware keyboard: the newline it types is kept (Lobby.svelte
   /// checkInput: Enter sends, Shift+Enter adds a line).
   @State private var newlineAllowedUntil = Date.distantPast
@@ -183,8 +186,28 @@ struct W2GLobbyView: View {
       }
     }
     .onAppear { markRead() }
+    .onDisappear {
+      leaveTask?.cancel()
+      confirmLeave = false
+    }
     // The last message id: the count stops changing once the 200 kept messages are reached.
     .onChange(of: client.messages.last?.id) { _, _ in markRead() }
+  }
+
+  /// First tap: "Leave?" for 3 s; second tap: leaves (same as W2GPlayerOverlay leaveTapped).
+  private func leaveTapped() {
+    leaveTask?.cancel()
+    if confirmLeave {
+      confirmLeave = false
+      client.leave()
+      return
+    }
+    confirmLeave = true
+    leaveTask = Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 3_000_000_000)
+      guard !Task.isCancelled else { return }
+      confirmLeave = false
+    }
   }
 
   /// The chat is on screen (not under the full screen player): nothing unread.
@@ -209,15 +232,24 @@ struct W2GLobbyView: View {
   private var inputBar: some View {
     HStack(alignment: .bottom, spacing: 12) {
       Button {
-        client.leave()
+        leaveTapped()
       } label: {
-        Image(systemName: "door.left.hand.open")
-          .font(.title2)
-          .frame(minHeight: 40)
+        HStack(spacing: 4) {
+          Image(systemName: "door.left.hand.open")
+            .font(.title2)
+          if confirmLeave {
+            Text("Leave?")
+              .font(.subheadline.weight(.semibold))
+              .fixedSize()
+          }
+        }
+        .frame(minHeight: 40)
+        .padding(.horizontal, confirmLeave ? 8 : 0)
+        .background(Capsule().fill(Color.red.opacity(confirmLeave ? 0.2 : 0)))
       }
       .tint(.red)
       .foregroundStyle(.red)
-      .accessibilityLabel("Leave")
+      .accessibilityLabel(confirmLeave ? "Tap again to leave" : "Leave")
 
       Button {
         client.copyInvite()

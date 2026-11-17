@@ -36,7 +36,7 @@ extension W2GSync {
   /// v2.4: a `countdown` is applied only on the lobby media, or while playing nothing.
   static func appliesCountdown(localKey: String, lobbyKey: String?) -> Bool {
     guard !localKey.isEmpty, let lobbyKey, !lobbyKey.isEmpty else { return true }
-    return localKey == lobbyKey
+    return sameMediaKey(localKey, lobbyKey)
   }
 
   /// `init.features`, cleaned: distinct short strings, empty when missing or malformed.
@@ -163,7 +163,7 @@ extension W2GSync {
 
   /// Same title and episode, even when two apps wrote the key differently ("21:5" / "21::5").
   static func sameQueueEntry(key: String, mediaId: W2GJSON?, episode: W2GJSON?, as other: W2GQueueItem) -> Bool {
-    if !key.isEmpty && key == other.key { return true }
+    if !key.isEmpty && !other.key.isEmpty && sameMediaKey(key, other.key) { return true }
     guard let id = queueId(mediaId), id == queueId(other.mediaJSON["id"]) else { return false }
     guard let identity = episodeIdentity(episode) else { return false }
     return identity == episodeIdentity(other.episodeJSON)
@@ -411,7 +411,8 @@ struct W2GQueueItem: Identifiable, Equatable {
     episodeJSON = episode
     self.key = key
     title = W2GSync.queueText(json["title"], max: 120)
-    cover = W2GSync.queueText(json["cover"], max: 500)
+    // v2.6: an http(s) image URL of at most 500 characters, like every other image, else none.
+    cover = W2GSync.cleanURL(json["cover"], max: 500) ?? ""
     addedBy = W2GSync.queueId(json["addedBy"]) ?? ""
     addedByName = W2GSync.queueText(json["addedByName"], max: 64)
     var votes: [String] = []
