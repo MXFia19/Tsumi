@@ -98,7 +98,14 @@
   IPC.on('w2glink', (link) => {
     // tsumi://w2g/CODE (maybe with a trailing slash or a query) and Discord join secrets: the code only.
     const code = parseLobbyCode(link)
-    if (!code) return
+    if (!code) {
+      // tsumi://w2g/ without a code: the jump-list task "Create a New Watch Together Lobby". It creates one, or shows
+      // the lobby we are in (a new lobby would leave it). Any other text without a code is ignored.
+      if (typeof link !== 'string' || !/^[\s/]*$/.test(link)) return
+      page.navigateTo(page.WATCH_TOGETHER)
+      if (!state.value) joinLobby()
+      return
+    }
     page.navigateTo(page.WATCH_TOGETHER)
     // Our own lobby: just show it (joining again would leave it, and the host would lose its role).
     if (state.value?.code === code) return
