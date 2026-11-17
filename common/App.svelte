@@ -4,17 +4,20 @@
   import { anilistClient } from '@/modules/anilist.js'
   import { page, modal, destroyHistory, enableHistory } from '@/modules/navigation.js'
   import { movieMedia, startMovieAlerts } from '@/modules/moviealerts.js'
+  import { toast } from 'svelte-sonner'
   export const statusTransition = writable(false)
 
   export async function handleAnime (detail) {
     IPC.emit('window-show')
-    modal.close(modal.ANIME_DETAILS)
-    // TMDB movies ("tmdb-123", release alert notifications): not on AniList.
+    // TMDB movies ("tmdb-123", release alert notifications): not on AniList. What is open stays open if it fails.
     if (typeof detail?.id === 'string' && detail.id.startsWith('tmdb-')) {
-      const movie = await movieMedia(detail.id)
-      if (movie) modal.open(modal.ANIME_DETAILS, movie)
+      const movie = await movieMedia(detail.id).catch(() => null)
+      if (!movie) return toast.error('Could not open this movie', { description: 'TMDB did not answer, try again later.' })
+      modal.close(modal.ANIME_DETAILS)
+      modal.open(modal.ANIME_DETAILS, movie)
       return
     }
+    modal.close(modal.ANIME_DETAILS)
     const foundMedia = (
       await anilistClient.searchIDSingle(
         !detail.mal ? { id: detail.id } : { idMal: detail.id }

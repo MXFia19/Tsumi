@@ -42,7 +42,12 @@
     else updateSort()
   }
 
-  window.addEventListener('notification-app', (event) => queueNotification(event.detail, settings.value.systemNotify && (event.detail.button?.length || event.detail.activation)))
+  window.addEventListener('notification-app', (event) => {
+    queueNotification(event.detail, settings.value.systemNotify && (event.detail.button?.length || event.detail.activation))
+    // A movie release alert is marked as notified at once (modules/moviealerts.js): stored without the 15 s wait, so
+    // quitting meanwhile does not lose it.
+    if (event.detail?.release) processNotifications()
+  })
   window.addEventListener('notification-read', (event) => markRead(event.detail))
   window.addEventListener('notification-reset', () => { notifications.set([]); incomingNotifications.length = 0; currentNotifications = [] })
 
@@ -97,7 +102,8 @@
         else return !(existing.id === notification.id && existing.episode === notification.episode && existing.delayed === true) // If the new notification is not delayed, remove any existing delayed notifications
       })
 
-      const filtered = filterDelayed.filter((existing) => (existing.id !== notification.id || existing.episode !== notification.episode || existing.dub !== notification.dub))
+      // The theatrical and digital releases of a movie (release) are two notifications.
+      const filtered = filterDelayed.filter((existing) => (existing.id !== notification.id || existing.episode !== notification.episode || existing.dub !== notification.dub || existing.release !== notification.release))
       const cachedMedia = cache.getMedia(notification?.id)
       if (isValidNumber(notification.episode) && (cachedMedia?.mediaListEntry?.status === 'COMPLETED' || ((cachedMedia?.mediaListEntry?.progress || -1) >= (!isValidNumber(notification.season) ? notification.episode : cachedMedia?.episodes)))) notification.read = true
       return sort([notification, ...filtered])

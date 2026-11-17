@@ -81,8 +81,9 @@ export function toggleMovieAlert (media) {
  * @param {string} id
  */
 export async function movieMedia (id) {
+  // A TMDB show shares the "tmdb-<id>" key space: only a cached movie is this one.
   const cached = mediaCache.value[id]
-  if (cached) return cached
+  if (cached?.format === 'MOVIE') return cached
   const alert = movieAlerts.value.find(alert => alert.id === id)
   if (alert?.media) return alert.media
   const idTmdb = Number(String(id).replace(/^tmdb-/, ''))
@@ -112,42 +113,60 @@ function notify (alert, kind, day, now) {
   }))
 }
 
-let checking = null
+/** An alert is the same one while it stays on (turned off and on again, it is a new one). */
+const alertKey = (alert) => `${alert.idTmdb}:${alert.addedAt}`
+
 /** One pass over the alerts: notifies the releases that came out and drops the finished alerts. */
-export function checkMovieAlerts () {
-  checking ??= (async () => {
-    try {
-      const regions = alertRegions()
-      const now = Date.now()
-      const updates = new Map()
-      for (const alert of movieAlerts.value) {
-        let days
-        try {
-          days = movieReleaseDays(await tmdbClient.getReleaseDates(alert.idTmdb), regions)
-        } catch (error) {
-          debug('Release dates failed', alert.idTmdb, error)
-          continue
-        }
-        const result = dueRelease(alert, days, now)
-        if (result.notify) {
-          debug(`${alert.title}: ${result.notify} release ${result.day}`)
-          notify(alert, result.notify, result.day, now)
-        }
-        if (result.done || result.notify) updates.set(alert.idTmdb, result)
+async function runChecks () {
+  try {
+    const regions = alertRegions()
+    const now = Date.now()
+    const updates = new Map()
+    for (const alert of movieAlerts.value) {
+      let days
+      try {
+        days = movieReleaseDays(await tmdbClient.getReleaseDates(alert.idTmdb), regions)
+      } catch (error) {
+        debug('Release dates failed', alert.idTmdb, error)
+        continue
       }
-      if (!updates.size) return
-      // The list may have changed during the requests (toggled from the details): apply to the current one.
-      save(movieAlerts.value.flatMap(alert => {
-        const result = updates.get(alert.idTmdb)
-        if (!result) return [alert]
-        return result.done ? [] : [{ ...alert, notified: result.notified }]
-      }))
-    } catch (error) {
-      debug('Movie alerts check failed', error)
-    } finally {
-      checking = null
+      const result = dueRelease(alert, days, now)
+      if (result.notify) {
+        debug(`${alert.title}: ${result.notify} release ${result.day}`)
+        notify(alert, result.notify, result.day, now)
+      }
+      if (result.done || result.notify) updates.set(alertKey(alert), result)
     }
-  })()
+    if (!updates.size) return
+    // The list may have changed during the requests (toggled from the details): apply to the current one.
+    save(movieAlerts.value.flatMap(alert => {
+      const result = updates.get(alertKey(alert))
+      if (!result) return [alert]
+      return result.done ? [] : [{ ...alert, notified: result.notified }]
+    }))
+  } catch (error) {
+    debug('Movie alerts check failed', error)
+  }
+}
+
+let checking = null
+let checkAgain = false
+/**
+ * Runs a check, or one more after the running one (it may have started before an alert was turned on). `checking` is
+ * reset in a `.finally` callback, which always runs after the assignment (a check with no alert ends synchronously).
+ */
+export function checkMovieAlerts () {
+  if (checking) {
+    checkAgain = true
+    return checking
+  }
+  checking = runChecks().finally(() => {
+    checking = null
+    if (checkAgain) {
+      checkAgain = false
+      checkMovieAlerts()
+    }
+  })
   return checking
 }
 
