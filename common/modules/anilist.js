@@ -7,6 +7,7 @@ import { malDubs } from '@/modules/anime/animedubs.js'
 import { isSubbedProgress, getMediaMaxEp } from '@/modules/anime/anime.js'
 import { sleep, debounce } from '@/modules/util.js'
 import { printError, status } from '@/modules/networking.js'
+import { toast } from 'svelte-sonner'
 import { cache, caches, mediaCache } from '@/modules/cache.js'
 import { malClient } from '@/modules/myanimelist.js'
 import Helper from '@/modules/helper.js'
@@ -946,8 +947,20 @@ class AnilistClient {
     const cachedMedia = cache.getMedia(variables.id)
     const isFavourite = cachedMedia?.isFavourite
     // A new media object: the media cache only saves entries whose reference changed.
-    if (cachedMedia?.id) mediaCache.update(current => ({ ...current, [variables.id]: { ...current[variables.id], isFavourite: !isFavourite } }))
-    this.alRequest(query, variables).catch(error => debug('Failed to toggle the favourite', error))
+    const setFavourite = (value) => mediaCache.update(current => current[variables.id] ? { ...current, [variables.id]: { ...current[variables.id], isFavourite: value } } : current)
+    if (cachedMedia?.id) setFavourite(!isFavourite)
+    // Not saved (offline, expired session, AniList error): the heart goes back, unless it was toggled again since.
+    this.alRequest(query, variables).catch(error => ({ errors: [error] })).then(res => {
+      if (res?.data?.ToggleFavourite) return
+      debug('Failed to toggle the favourite', res?.errors?.[0])
+      if (cachedMedia?.id && !!mediaCache.value[variables.id]?.isFavourite === !isFavourite) setFavourite(isFavourite)
+      if (settings.value.toasts.includes('All') || settings.value.toasts.includes('Errors')) {
+        toast.error(isFavourite ? 'Failed to Remove Favourite' : 'Failed to Add Favourite', {
+          description: `${this.title(cachedMedia) || 'This title'} was not changed on AniList${res?.errors?.[0]?.message ? `: ${res.errors[0].message}` : '.'}`,
+          duration: 6000
+        })
+      }
+    })
     return !isFavourite
   }
 
