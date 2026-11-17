@@ -66,15 +66,26 @@ export function protocolParams (rest) {
   return new URLSearchParams(text.replace(/\+/g, '%2B'))
 }
 
+/**
+ * tsumi:// links that carry sign-in credentials (AniList token, MyAnimeList authorization code): protocol.js accepts
+ * them only from the app's sign-in window.
+ * @param {string} key the part after tsumi://, lower case
+ */
+export function isSignInLinkKey (key) {
+  return key === 'alauth' || key === 'malauth'
+}
+
 /** YouTube video id (11 characters of [A-Za-z0-9_-]). */
 export function isYouTubeId (value) {
   return typeof value === 'string' && /^[\w-]{11}$/.test(value)
 }
 
 /**
- * Removes secrets from a log line: Authorization values, JWTs, OAuth fields, the path of Stremio addon manifests
- * (their configuration, often with debrid API keys, is in it), and the query / fragment of every http(s) URL (stream
- * links carry their tokens there; the host and path are kept so the log stays useful).
+ * Removes secrets from a log line: Authorization values, JWTs, OAuth fields, string values of JSON keys that name a
+ * secret (…credential, …password, …secret, …token, …key; also in JSON that was itself put in a string, \"key\":\"…\"),
+ * the path of Stremio addon manifests (their configuration, often with debrid API keys, is in it), and the query /
+ * fragment of every http(s) URL (stream links carry their tokens there; the host and path are kept so the log stays
+ * useful).
  * @param {string} text
  */
 export function redact (text) {
@@ -82,6 +93,8 @@ export function redact (text) {
   return text
     .replace(/\b(Bearer|Basic)\s+[\w\-.~+/]+=*/gi, '$1 [redacted]')
     .replace(/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g, '[redacted]')
+    // $2: the backslash of escaped JSON, or nothing.
+    .replace(/((\\?)"[\w$.-]*(?:credential|password|secret|token|key)\2"\s*:\s*\2")(?:[^"\\]|\\.)*?(\2")/gi, '$1[redacted]$3')
     .replace(/\b((?:access_token|refresh_token|id_token|client_secret|code_verifier)["']?\s*[=:]\s*["']?)[^"'&\s,;}]+/gi, '$1[redacted]')
     .replace(/\b((?:https?|stremio):\/\/[^\s"'<>/?#]+)\/[^\s"'<>?#]*\/manifest\.json/gi, '$1/[redacted]/manifest.json')
     .replace(/\b(https?:\/\/[^\s"'<>?#]+)[?#][^\s"'<>]*/gi, '$1?[redacted]')

@@ -210,12 +210,16 @@ export function sandboxRuntime () {
     let h = headers
     let m = method
     let b = body
+    // redirect false (or an options object with redirect 'manual' / 'error'): the 3xx answer is the result, with its
+    // Location header, like the iOS app (SoraPrelude.swift fetchv2).
+    let follow = redirect
     if (looksLikeOptions(h)) {
       m = m || h.method
       b = b !== undefined ? b : h.body
+      if (follow === undefined && h.redirect) follow = h.redirect !== 'manual' && h.redirect !== 'error'
       h = h.headers
     }
-    const reply = await send('fetchv2', url, String(m || 'GET').toUpperCase(), normHeaders(h), b)
+    const reply = await send('fetchv2', url, String(m || 'GET').toUpperCase(), normHeaders(h), b, { redirect: follow === false ? 'manual' : null })
     if (reply.error !== undefined) throw new Error(reply.error)
     return makeResponse(reply.response || {}, 'fetchv2', typeof encoding === 'string' ? encoding : null)
   }

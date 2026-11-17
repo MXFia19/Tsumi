@@ -1,4 +1,6 @@
+import { readFile } from 'node:fs/promises'
 import { getDownloadManager, hlsJsPath } from './manager.js'
+import { isPinnedHlsJs } from './hlsjs.js'
 
 // Local playback of the downloads on the stream proxy (streamProxy.js): http://localhost:<port>/<token>/downloads/<id>/<file>.
 // sendFile answers Range requests, so seeking works for direct files; hls.js reads the local playlists.
@@ -16,10 +18,12 @@ const SEND_OPTIONS = {
  * @param {import('express').Router} router routes behind the secret path segment of the proxy
  */
 export function registerDownloadRoutes (router) {
-  router.get('/downloads/hls.js', (req, res) => {
-    res.sendFile(hlsJsPath(), { ...SEND_OPTIONS, headers: { ...SEND_OPTIONS.headers, 'Content-Type': 'application/javascript' } }, (error) => {
-      if (error && !res.headersSent) res.status(404).end()
-    })
+  // The offline hls.js runs in the app page: served only when it is exactly the pinned file (checked on every request,
+  // the file on disk could have been replaced since it was saved).
+  router.get('/downloads/hls.js', async (req, res) => {
+    const data = await readFile(hlsJsPath()).catch(() => null)
+    if (!isPinnedHlsJs(data)) return res.status(404).end()
+    res.set({ ...SEND_OPTIONS.headers, 'Content-Type': 'application/javascript' }).send(data)
   })
 
   // Express already decodes the captured groups (req.params): they are used as they are.

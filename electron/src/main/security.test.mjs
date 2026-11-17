@@ -1,6 +1,6 @@
 // Main process security helpers. Run with: node electron/src/main/security.test.mjs
 import assert from 'node:assert/strict'
-import { isExternalUrl, isWebUrl, isAppUrl, isLoopbackHost, protocolParams, isYouTubeId, redact } from './security.js'
+import { isExternalUrl, isWebUrl, isAppUrl, isLoopbackHost, protocolParams, isYouTubeId, redact, isSignInLinkKey } from './security.js'
 
 let passed = 0
 let failed = 0
@@ -107,6 +107,24 @@ test('redact removes tokens and URL queries, keeps hosts and paths', () => {
   assert.equal(redact('https://addon.example/manifest.json'), 'https://addon.example/manifest.json')
   assert.equal(redact(''), '')
   assert.equal(redact(undefined), undefined)
+})
+
+test('redact removes the string values of JSON keys that name a secret', () => {
+  assert.equal(
+    redact('{"w2gTurnUrl":"turn:relay.example:3478","w2gTurnUsername":"me","w2gTurnCredential":"s3cr\\"et","volume":1}'),
+    '{"w2gTurnUrl":"turn:relay.example:3478","w2gTurnUsername":"me","w2gTurnCredential":"[redacted]","volume":1}'
+  )
+  assert.equal(redact('{"password": "hunter2", "apiKey":"k-1", "clientSecret":"x", "refreshToken":"r"}'), '{"password": "[redacted]", "apiKey":"[redacted]", "clientSecret":"[redacted]", "refreshToken":"[redacted]"}')
+  // JSON put in a string (a logged object that held a JSON text).
+  assert.equal(redact('"{\\"debridKey\\":\\"abc\\",\\"name\\":\\"x\\"}"'), '"{\\"debridKey\\":\\"[redacted]\\",\\"name\\":\\"x\\"}"')
+  // Objects, numbers and other keys stay.
+  assert.equal(redact('{"keybinds":{"a":"b"},"tokenExpiry":123,"title":"Key Visual"}'), '{"keybinds":{"a":"b"},"tokenExpiry":123,"title":"Key Visual"}')
+})
+
+test('isSignInLinkKey: AniList and MyAnimeList sign-in links only', () => {
+  assert.equal(isSignInLinkKey('alauth'), true)
+  assert.equal(isSignInLinkKey('malauth'), true)
+  for (const key of ['anime', 'w2g', 'trakt', 'search', 'show', '']) assert.equal(isSignInLinkKey(key), false, key)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

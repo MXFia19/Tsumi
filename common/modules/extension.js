@@ -73,16 +73,23 @@ async function moduleRequest (request, signal, policy) {
   const body = method === 'GET' || method === 'HEAD' ? null : (request.body ?? null)
   const proxyPort = request.kind === 'fetchv2' && (body === null || typeof body === 'string') ? await getProxyPort() : null
 
+  const redirect = request.redirect === 'manual' || request.redirect === 'error' ? request.redirect : 'follow'
   let response
   if (proxyPort) {
+    // The main process applies the network rules itself, on every redirect and on the address each name resolves to
+    // (electron/src/main/streamProxy.js /fetch): it gets the module's policy and redirect mode.
     response = await fetch(proxyFetchUrl(proxyPort), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: url.href, headers, method, ...(body !== null ? { body } : {}) }),
+      body: JSON.stringify({ url: url.href, headers, method, ...(body !== null ? { body } : {}), redirect, allowLocal: !!policy?.allowLocal }),
       signal
     })
+    // Refused (local address...) or failed (connection, too large): the module's request fails, as a direct fetch would.
+    if (response.headers.get('x-proxy-error')) {
+      const reason = await response.json().then(data => data?.error, () => null)
+      throw new Error(reason || `Request failed (${response.status})`)
+    }
   } else {
-    const redirect = request.redirect === 'manual' || request.redirect === 'error' ? request.redirect : 'follow'
     response = await fetch(url.href, { method, headers, body: body ?? undefined, redirect, credentials: 'omit', signal })
     // A redirect can lead anywhere: the module never reads a local address it could not request itself.
     if (response.redirected && response.url) {
@@ -94,13 +101,15 @@ async function moduleRequest (request, signal, policy) {
       }
     }
   }
+  // Through the proxy: the final URL and the Location of a redirect left to the module come in X- headers.
+  const location = proxyPort ? response.headers.get('x-location') : null
   return {
     status: response.status,
     statusText: response.statusText,
-    url: proxyPort ? url.href : (response.url || url.href),
-    redirected: response.redirected,
+    url: proxyPort ? (response.headers.get('x-final-url') || url.href) : (response.url || url.href),
+    redirected: proxyPort ? response.headers.has('x-redirected') : response.redirected,
     type: response.type,
-    headers: [...response.headers],
+    headers: location ? [...response.headers, ['location', location]] : [...response.headers],
     body: await readCapped(response)
   }
 }
