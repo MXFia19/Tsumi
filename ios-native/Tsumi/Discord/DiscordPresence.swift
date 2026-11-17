@@ -36,6 +36,9 @@ final class DiscordPresence {
   private static let tokenAccount = "discord.refreshToken"
   /// Discord_RunCallbacks period.
   private static let callbackInterval: TimeInterval = 0.1
+  /// Same while linked but disconnected with nothing in flight: no answer is awaited, so once a second is enough
+  /// until a reconnect starts (it switches back to `callbackInterval`).
+  private static let disconnectedCallbackInterval: TimeInterval = 1
   /// Player sampling period.
   private static let checkInterval: TimeInterval = 1
   /// Throttle of UpdateRichPresence (the desktop app debounces 4.5 s).
@@ -349,10 +352,22 @@ final class DiscordPresence {
 
   // MARK: - Presence
 
+  /// Period the callback timer should run at now.
+  private var callbackPeriod: TimeInterval {
+    if case .disconnected = account, !busy { return Self.disconnectedCallbackInterval }
+    return Self.callbackInterval
+  }
+
+  /// Starts the callback timer, or restarts it when its period no longer fits the account state.
   private func startTimer() {
     idleSince = nil
-    guard timer == nil else { return }
-    let timer = Timer(timeInterval: Self.callbackInterval, repeats: true) { _ in
+    let period = callbackPeriod
+    if let timer {
+      guard timer.timeInterval != period else { return }
+      timer.invalidate()
+      self.timer = nil
+    }
+    let timer = Timer(timeInterval: period, repeats: true) { _ in
       MainActor.assumeIsolated {
         DiscordPresence.shared.tick()
       }
@@ -368,8 +383,8 @@ final class DiscordPresence {
   }
 
   /// RunCallbacks is needed: an account flow or connection runs, or a presence is kept up. Unlinked, or with
-  /// the presence disabled once its clear went out, the 10 Hz timer stops after `idleGrace` (link, reconnect,
-  /// the setting and the return to the foreground start it again).
+  /// the presence disabled once its clear went out, the timer stops after `idleGrace` (link, reconnect, the
+  /// setting and the return to the foreground start it again). Linked but disconnected, it runs at 1 Hz.
   private var needsCallbacks: Bool {
     if busy { return true }
     let enabled = AppSettings.shared.values.enableRPC != "disabled"
@@ -390,6 +405,8 @@ final class DiscordPresence {
     let now = Date()
     if needsCallbacks {
       idleSince = nil
+      // Disconnected: 1 Hz; connecting again (a status callback, reconnect()): back to 10 Hz.
+      if let timer, timer.timeInterval != callbackPeriod { startTimer() }
     } else if let since = idleSince {
       if now.timeIntervalSince(since) >= Self.idleGrace {
         stopTimer()
