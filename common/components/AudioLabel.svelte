@@ -24,9 +24,15 @@
   const isPartial = writable(false)
 
   $: dubEpisodes = null
-  animeSchedule.dubAiredLists.subscribe(async (value) => getDubEpisodes(await value))
+  // Both store subscriptions are released in onDestroy: otherwise every card ever rendered stays alive (with its
+  // detached DOM) and recomputes its dub episodes on each dub feed refresh.
+  let destroyed = false
+  const unsubscribeDubAired = animeSchedule.dubAiredLists.subscribe(async (value) => {
+    const lists = await value
+    if (!destroyed) getDubEpisodes(lists)
+  })
   function getDubEpisodes (dubAiredLists) {
-    if (banner) return
+    if (banner || !media) return
     const dubAiring = animeSchedule.dubAiring.value?.find(entry => entry.unaired && entry.media?.media?.id === media.id)
     const airedEpisodes = dubAiredLists?.filter(ep => ep.id === media.id)?.map(ep => ep.episode.aired) || []
     const episodes = String((($isDubbed || $isPartial) && airedEpisodes.length > 0 && airedEpisodes.length) || (dubAiredLists?.find(entry => entry.media?.media?.id === media.id)?.episodeNumber && '0') || (!$isPartial && media.status !== 'RELEASING' && media.status !== 'NOT_YET_RELEASED' && Number(media.seasonYear || 0) < 2025 && !dubAiring && getMediaMaxEp(media)) || '')
@@ -34,10 +40,10 @@
   }
 
   $: if (media) setLabel()
-  malDubs.dubLists.subscribe(() => setLabel())
+  const unsubscribeDubLists = malDubs.dubLists.subscribe(() => setLabel())
   async function setLabel () {
     const dubLists = await malDubs.dubLists.value
-    if (media?.idMal && dubLists?.dubbed) {
+    if (!destroyed && media?.idMal && dubLists?.dubbed) {
       const episodeOrMedia = !episode || await malDubs.isDubMedia(data?.parseObject)
       isDubbed.set(episodeOrMedia && dubLists.dubbed.includes(media.idMal))
       isPartial.set(episodeOrMedia && dubLists.incomplete.includes(media.idMal))
@@ -61,18 +67,23 @@
   }
 
   let observer = null
+  // removeEventListener needs the same function reference, so the handler is kept here.
+  const onResize = () => handleUpdate()
   $: {
     if (audioContainer && !observer) {
       observer = new ResizeObserver(handleUpdate)
       observer.observe(audioContainer)
-      window.addEventListener('resize', () => handleUpdate())
+      window.addEventListener('resize', onResize)
     }
   }
   afterUpdate(handleUpdate)
   onDestroy(() => {
+    destroyed = true
+    unsubscribeDubAired()
+    unsubscribeDubLists()
     observer?.disconnect()
     observer = null
-    window.removeEventListener('resize', () => handleUpdate())
+    window.removeEventListener('resize', onResize)
   })
 </script>
 {#if settings.value.cardAudio}
