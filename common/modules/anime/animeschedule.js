@@ -10,6 +10,7 @@ import { printError } from '@/modules/networking.js'
 import Helper from '@/modules/helper.js'
 import equal from 'fast-deep-equal/es6'
 import WPC from '@/modules/wpc.js'
+import { releaseCheckTime } from '@/modules/anime/releasecheck.js'
 import Debug from 'debug'
 const debug = Debug('ui:animeschedule')
 
@@ -421,7 +422,8 @@ class AnimeSchedule {
           }
         }
       }
-      if ((newReleases?.length > 0) || (lastNotified <= 1)) cache.setEntry(caches.NOTIFICATIONS, `last${type}`, currentTime)
+      // Checked up to the newest release seen (feed times), not the device time: see releaseCheckTime.
+      if ((newReleases?.length > 0) || (lastNotified <= 1)) cache.setEntry(caches.NOTIFICATIONS, `last${type}`, releaseCheckTime(combinedItems?.data?.Page?.media, lastNotified, currentTime))
     }
 
     this[`${type.toLowerCase()}AiredListsCache`].value[`${page}-${perPage}`] = {
