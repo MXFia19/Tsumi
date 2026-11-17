@@ -15,7 +15,12 @@ struct MediaNotification: Codable, Hashable, Identifiable {
     case view = "VIEW"
   }
 
-  var id: String { "\(mediaId)-\(episode.map { String($0) } ?? "none")-\(dub)" }
+  var id: String {
+    // Movie release alerts: their own identity (media key + release kind), never shared with an episode or an
+    // announcement of the same numeric id (TMDB and AniList ids can collide).
+    if let release { return "\(mediaKey)-release-\(release)" }
+    return "\(mediaId)-\(episode.map { String($0) } ?? "none")-\(dub)"
+  }
   var mediaId: Int
   var mediaKey: String
   var title: String
@@ -31,9 +36,28 @@ struct MediaNotification: Codable, Hashable, Identifiable {
   var delayed: Bool
   var clickAction: ClickAction
   var read: Bool
+  /// Movie release alert (MovieAlertsService): "theatrical" or "digital"; nil for every other notification.
+  /// Optional so that the stored notifications of older versions still decode.
+  var release: String? = nil
 
-  /// tsumi://anime/<id>, the activation link of the notification.
-  var deepLink: URL? { URL(string: "tsumi://anime/\(mediaId)") }
+  /// Release kind of a movie release alert.
+  var releaseKind: MovieRelease.Kind? {
+    release.flatMap { MovieRelease.Kind(rawValue: $0) }
+  }
+
+  /// TMDB id of a "tmdb-movie-<id>" media key.
+  static func tmdbMovieId(_ mediaKey: String) -> Int? {
+    let prefix = "tmdb-movie-"
+    guard mediaKey.hasPrefix(prefix) else { return nil }
+    return Int(mediaKey.dropFirst(prefix.count))
+  }
+
+  /// Activation link of the notification: tsumi://anime/<id>, or tsumi://movie/<tmdbId> for a TMDB movie (its id
+  /// is not an AniList id).
+  var deepLink: URL? {
+    if let movieId = Self.tmdbMovieId(mediaKey) { return URL(string: "tsumi://movie/\(movieId)") }
+    return URL(string: "tsumi://anime/\(mediaId)")
+  }
 
   /// Core representation.
   var appNotification: AppNotification {
@@ -148,6 +172,8 @@ enum TsumiNotificationCategory {
   static let startWatching = "start_watching"
   static let continueWatching = "continue_watching"
   static let watchNow = "watch_now"
+  /// Movie release alerts: "View Movie" opens the details (tsumi://movie/<id>).
+  static let viewMovie = "view_movie"
 
   /// Action identifiers (app.js `actionId`).
   static let viewAction = "view_anime"
@@ -158,11 +184,13 @@ enum TsumiNotificationCategory {
     let start = UNNotificationAction(identifier: watchAction, title: "Start Watching", options: [.foreground])
     let resume = UNNotificationAction(identifier: watchAction, title: "Resume", options: [.foreground])
     let watch = UNNotificationAction(identifier: watchAction, title: "Watch", options: [.foreground])
+    let viewMovieAction = UNNotificationAction(identifier: viewAction, title: "View Movie", options: [.foreground])
     let categories: Set<UNNotificationCategory> = [
       UNNotificationCategory(identifier: viewAnime, actions: [view], intentIdentifiers: [], options: []),
       UNNotificationCategory(identifier: startWatching, actions: [start, view], intentIdentifiers: [], options: []),
       UNNotificationCategory(identifier: continueWatching, actions: [resume, view], intentIdentifiers: [], options: []),
-      UNNotificationCategory(identifier: watchNow, actions: [watch, view], intentIdentifiers: [], options: [])
+      UNNotificationCategory(identifier: watchNow, actions: [watch, view], intentIdentifiers: [], options: []),
+      UNNotificationCategory(identifier: viewMovie, actions: [viewMovieAction], intentIdentifiers: [], options: [])
     ]
     UNUserNotificationCenter.current().setNotificationCategories(categories)
   }
@@ -281,12 +309,14 @@ final class AppNotificationsService {
     }
   }
 
-  /// One refresh pass, e.g. from a BGAppRefreshTask (AniList notifications, schedule announcements and the
-  /// "Episode N is out" sub / dub releases, which otherwise come from the home rows).
+  /// One refresh pass, e.g. from a BGAppRefreshTask (AniList notifications, schedule announcements, the
+  /// "Episode N is out" sub / dub releases, which otherwise come from the home rows, and the movie release alerts).
   func backgroundRefresh() async {
     await checkAniList()
     await AnimeScheduleService.shared.checkForUpdates()
     await AnimeScheduleService.shared.checkNewReleases()
+    // Movies in theaters / on digital (bell of the movie details).
+    await MovieAlertsService.shared.check()
   }
 
   // MARK: - AniList notifications (findNewNotifications)
@@ -382,13 +412,20 @@ final class AppNotificationsService {
   /// addNotification: replaces delayed / released duplicates, auto read when already watched.
   private func add(_ incoming: MediaNotification) {
     var notification = incoming
+    if notification.release != nil {
+      // Movie release alert: only replaces itself (same movie, same release), never another notification.
+      items = Self.capped(Self.sorted([notification] + items.filter { $0.id != notification.id }))
+      return
+    }
     var current = items.filter { existing in
+      // Movie release alerts are never replaced by episodes or announcements (their ids may collide).
+      if existing.release != nil { return true }
       if notification.delayed {
         return !(existing.mediaId == notification.mediaId && existing.episode == notification.episode && existing.dub && existing.clickAction == .play)
       }
       return !(existing.mediaId == notification.mediaId && existing.episode == notification.episode && existing.delayed)
     }
-    current = current.filter { $0.mediaId != notification.mediaId || $0.episode != notification.episode || $0.dub != notification.dub }
+    current = current.filter { $0.release != nil || $0.mediaId != notification.mediaId || $0.episode != notification.episode || $0.dub != notification.dub }
     if let episode = notification.episode, let media = MediaStore.shared.media(notification.mediaKey) {
       let target = notification.season == nil ? episode : (media.episodes ?? episode)
       if media.listEntry?.status == .completed || (media.listEntry?.progress ?? -1) >= target {
@@ -547,6 +584,7 @@ final class AppNotificationsService {
   /// app.js actionTypeId: "View Anime" only for announcements; otherwise Start Watching (nothing watched
   /// yet), Resume (some progress) or Watch, each with "View Anime".
   private static func category(for notification: MediaNotification) -> String {
+    if notification.release != nil { return TsumiNotificationCategory.viewMovie }
     guard watchLink(for: notification) != nil else { return TsumiNotificationCategory.viewAnime }
     let progress = MediaStore.shared.media(notification.mediaKey)?.listEntry?.progress ?? 0
     if progress > 0 { return TsumiNotificationCategory.continueWatching }

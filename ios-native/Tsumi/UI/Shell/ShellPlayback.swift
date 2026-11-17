@@ -444,6 +444,11 @@ final class ShellEpisodeListLoader {
 enum ShellNotificationMedia {
   static func resolve(_ notification: MediaNotification, direct: Bool) async -> Media? {
     if let stored = MediaStore.shared.media(notification.mediaKey) { return stored }
+    if let movieId = MediaNotification.tmdbMovieId(notification.mediaKey) {
+      // TMDB movie (release alerts): built from its details when opened, nothing to load for the list row.
+      guard direct else { return nil }
+      return await TMDBService.shared.media(id: movieId, type: .movie)
+    }
     guard notification.mediaKey.hasPrefix("al-"), notification.mediaId > 0 else { return nil }
     if direct {
       return try? await AniListService.shared.media(id: notification.mediaId)

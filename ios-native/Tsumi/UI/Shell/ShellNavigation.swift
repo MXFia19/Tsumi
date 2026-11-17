@@ -251,7 +251,7 @@ enum ShellNavigation {
 }
 
 /// Deep links: capacitor/src/main/protocol.js and electron/src/main/protocol.js protocolMap,
-/// plus notification taps (tsumi://anime/<id>).
+/// plus notification taps (tsumi://anime/<id>, tsumi://movie/<tmdbId>).
 @MainActor
 enum ShellDeepLinks {
   static func handle(_ url: URL) {
@@ -278,15 +278,15 @@ enum ShellDeepLinks {
 
   static func route(_ link: TsumiDeepLink) async {
     switch link {
-    case .anime, .malAnime, .play, .schedule:
+    case .anime, .malAnime, .movie, .play, .schedule:
       // What these open would not show over a screen's own sheet.
       await ShellNavigation.dismissLocalSheets()
     case .watchTogether, .loginCallback:
       break
     }
     switch link {
-    case .anime, .malAnime:
-      // App.svelte handleAnime: searchIDSingle by id / idMal, then open the details.
+    case .anime, .malAnime, .movie:
+      // App.svelte handleAnime: searchIDSingle by id / idMal (TMDB details for a movie), then open the details.
       if let media = await Services.shared.media(for: link) {
         ShellNavigation.openDetails(media)
       }

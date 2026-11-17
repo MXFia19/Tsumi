@@ -43,9 +43,19 @@ struct TMDBReleaseDate: Codable, Hashable, Sendable {
   var date: String
 }
 
+/// Theatrical and digital release days of a movie ("YYYY-MM-DD", nil when TMDB has none).
+struct MovieReleaseDays: Hashable, Sendable {
+  var theatrical: String?
+  var digital: String?
+
+  func day(_ kind: MovieRelease.Kind) -> String? {
+    kind == .theatrical ? theatrical : digital
+  }
+}
+
 /// A theatrical or digital release still to come.
 struct MovieRelease: Hashable, Sendable {
-  enum Kind: String, Sendable {
+  enum Kind: String, CaseIterable, Sendable {
     case theatrical
     case digital
   }
@@ -101,12 +111,22 @@ enum MovieReleases {
     return anywhere ? days(nil).first : nil
   }
 
-  /// releaseDay: local midnight of a "YYYY-MM-DD" day.
-  static func releaseDay(_ day: String) -> Date? {
+  /// releaseDay: local midnight of a "YYYY-MM-DD" day (in the time zone of `calendar`).
+  static func releaseDay(_ day: String, calendar: Calendar = ServiceDates.gregorian) -> Date? {
     let parts = day.prefix(10).split(separator: "-").compactMap { Int($0) }
     guard parts.count == 3 else { return nil }
     // TMDB days are Gregorian, whatever the device calendar.
-    return ServiceDates.gregorian.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+    return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+  }
+
+  /// Theatrical and digital release days used by the release alerts (MovieAlertsService) and the details bell:
+  /// theatrical = first day of types 2 / 3 in the release regions (no fallback), digital = first day of type 4 in
+  /// the release regions, else anywhere (the same days as the schedule).
+  static func days(_ countries: [TMDBReleaseCountry], regions: [String]) -> MovieReleaseDays {
+    MovieReleaseDays(
+      theatrical: releaseDate(countries, types: theatricalTypes, regions: regions),
+      digital: releaseDate(countries, types: digitalTypes, regions: regions, anywhere: true)
+    )
   }
 
   /// movieReleaseNodes: the theatrical and digital releases still to come within `days`, earliest first.

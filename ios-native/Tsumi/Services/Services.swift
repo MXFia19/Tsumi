@@ -10,6 +10,8 @@ enum TsumiDeepLink: Hashable {
   case anime(Int)
   /// tsumi://malanime/<malId>
   case malAnime(Int)
+  /// tsumi://movie/<tmdbId>: details of a TMDB movie (movie release alerts).
+  case movie(Int)
   /// tsumi://search/<anilistId>: play the anime.
   case play(Int)
   /// tsumi://w2g/<link>
@@ -56,6 +58,8 @@ final class Services {
     lists.start()
     schedule.start()
     notifications.start()
+    // Movie release alerts: first check a few seconds after launch, then every 6 hours.
+    MovieAlertsService.shared.start()
     sections.rebuild()
     observeLifecycle()
     Task.detached(priority: .utility) {
@@ -138,6 +142,8 @@ final class Services {
       return Int(Self.trimmed(value)).map { TsumiDeepLink.anime($0) }
     case "malanime":
       return Int(Self.trimmed(value)).map { TsumiDeepLink.malAnime($0) }
+    case "movie":
+      return Int(Self.trimmed(value)).map { TsumiDeepLink.movie($0) }
     case "search":
       return Int(Self.trimmed(value)).map { TsumiDeepLink.play($0) }
     case "w2g":
@@ -178,6 +184,8 @@ final class Services {
       return try? await anilist.media(id: id)
     case .malAnime(let id):
       return try? await anilist.media(malId: id)
+    case .movie(let id):
+      return await tmdb.media(id: id, type: .movie)
     default:
       return nil
     }

@@ -219,6 +219,8 @@ enum ShellLifecycle {
       // Same for the Discord connection (rich presence).
       DiscordPresence.shared.appBecameActive()
       TsumiWidgetBridge.appBecameActive()
+      // Movie release alerts: the 6 hour loop does not run while suspended.
+      MovieAlertsService.shared.checkIfStale()
     case .background:
       TsumiWidgetBridge.appEnteredBackground()
       // Delivers the queued notifications before the app is suspended (15 s debounce otherwise).
