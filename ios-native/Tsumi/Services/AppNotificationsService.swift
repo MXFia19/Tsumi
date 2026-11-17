@@ -250,7 +250,8 @@ final class AppNotificationsService {
   @ObservationIgnored private var incoming: [(notification: MediaNotification, system: Bool)] = []
   @ObservationIgnored private var debounceTask: Task<Void, Never>?
   @ObservationIgnored private var pollTask: Task<Void, Never>?
-  @ObservationIgnored private var saveTask: Task<Void, Never>?
+  /// Serial queue of the list file writes (`save` / `saveNow`).
+  private static let saveQueue = DispatchQueue(label: "org.tsumi.notifications.save", qos: .utility)
   /// System notifications being handed to iOS (image download + add), awaited by `flushAndWait()`.
   @ObservationIgnored private var deliveries: [UUID: Task<Void, Never>] = [:]
 
@@ -376,6 +377,16 @@ final class AppNotificationsService {
       if Task.isCancelled { return }
       self.processIncoming()
     }
+  }
+
+  /// Stores a notification at once, without the 15 s debounce, and writes the list before returning; the system
+  /// notification follows when `systemNotify` is on. Movie release alerts are marked as announced right after, so a
+  /// quit during the debounce must not lose them.
+  func addNow(_ notification: MediaNotification, systemNotify: Bool) {
+    add(notification)
+    saveNow()
+    updateBadge()
+    if systemNotify { deliver(notification) }
   }
 
   /// Processes the queue immediately (e.g. before the app goes to background).
@@ -611,14 +622,28 @@ final class AppNotificationsService {
     UNUserNotificationCenter.current().setBadgeCount(count) { _ in }
   }
 
+  /// Writes the list in the background. The writes go through one serial queue, so an older list never lands after
+  /// a newer one (`saveNow` included).
   private func save() {
     let snapshot = items
     let url = Self.fileURL
-    saveTask?.cancel()
-    saveTask = Task.detached(priority: .utility) {
-      if let data = try? JSONEncoder().encode(snapshot) {
-        try? data.write(to: url, options: .atomic)
-      }
+    Self.saveQueue.async {
+      AppNotificationsService.write(snapshot, to: url)
+    }
+  }
+
+  /// Writes the list before returning (after the writes already queued).
+  private func saveNow() {
+    let snapshot = items
+    let url = Self.fileURL
+    Self.saveQueue.sync {
+      AppNotificationsService.write(snapshot, to: url)
+    }
+  }
+
+  private nonisolated static func write(_ list: [MediaNotification], to url: URL) {
+    if let data = try? JSONEncoder().encode(list) {
+      try? data.write(to: url, options: .atomic)
     }
   }
 }

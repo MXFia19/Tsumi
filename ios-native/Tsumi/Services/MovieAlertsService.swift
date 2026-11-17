@@ -24,6 +24,12 @@ struct MovieAlertEntry: Codable, Hashable, Identifiable {
   func wasNotified(_ kind: MovieRelease.Kind) -> Bool {
     notified.contains(kind.rawValue)
   }
+
+  /// Same alert: same movie turned on at the same time. An alert turned off and on again during a check is another
+  /// alert, which never gets the result computed for the old one.
+  func isSameAlert(_ other: MovieAlertEntry) -> Bool {
+    tmdbId == other.tmdbId && addedAt == other.addedAt
+  }
 }
 
 /// Pure rules of the release alerts (no state, no network), kept apart so they are easy to reason about.
@@ -231,32 +237,33 @@ final class MovieAlertsService {
     guard !entries.isEmpty else { return }
     let calendar = ServiceDates.gregorian
     let regions = MovieReleases.regions
-    var changed = false
-    // Every entry once, including the ones added while this check awaits its requests (a check started by `add`
-    // only awaits this one, so the new entry must not be left for the next 6 hour check).
-    var checked = Set<Int>()
-    while let snapshot = entries.first(where: { !checked.contains($0.tmdbId) }) {
-      checked.insert(snapshot.tmdbId)
+    // Every alert once, including the ones turned on while this check awaits its requests (a check started by `add`
+    // only awaits this one, so the new alert must not be left for the next 6 hour check). An alert is the movie and
+    // the time it was turned on, so an alert turned off and on again meanwhile is checked as a new one.
+    var checked: [MovieAlertEntry] = []
+    while let snapshot = entries.first(where: { entry in !checked.contains(where: { $0.isSameAlert(entry) }) }) {
+      checked.append(snapshot)
       if MovieAlertRules.isExpired(snapshot, now: Date(), calendar: calendar) {
-        changed = apply(MovieAlertRules.Decision(notify: nil, markNotified: [], remove: true), to: snapshot.tmdbId) || changed
+        if apply(MovieAlertRules.Decision(notify: nil, markNotified: [], remove: true), to: snapshot) { save() }
         continue
       }
       let days = await releaseDays(movieId: snapshot.tmdbId, regions: regions)
-      // The alert may have been turned off (or on again) during the request.
-      guard let entry = entries.first(where: { $0.tmdbId == snapshot.tmdbId }) else { continue }
+      // The alert may have been turned off (or off and on again) during the request: only the same alert gets this
+      // result, with its current state.
+      guard let entry = entries.first(where: { $0.isSameAlert(snapshot) }) else { continue }
       let now = Date()
       let decision = MovieAlertRules.decide(entry, theatrical: days.theatrical, digital: days.digital, now: now, calendar: calendar)
       if let kind = decision.notify, let value = days.day(kind), let day = MovieReleases.releaseDay(value, calendar: calendar) {
+        // Stored (in-app list written) before the alert is saved as announced: a quit right after loses nothing.
         post(entry, kind: kind, message: MovieAlertRules.message(kind, day: day, now: now, calendar: calendar), now: now)
       }
-      changed = apply(decision, to: entry.tmdbId) || changed
+      if apply(decision, to: entry) { save() }
     }
-    if changed { save() }
   }
 
   /// Returns true when the list changed.
-  private func apply(_ decision: MovieAlertRules.Decision, to tmdbId: Int) -> Bool {
-    guard let index = entries.firstIndex(where: { $0.tmdbId == tmdbId }) else { return false }
+  private func apply(_ decision: MovieAlertRules.Decision, to alert: MovieAlertEntry) -> Bool {
+    guard let index = entries.firstIndex(where: { $0.isSameAlert(alert) }) else { return false }
     if decision.remove {
       entries.remove(at: index)
       return true
@@ -269,8 +276,9 @@ final class MovieAlertsService {
     return changed
   }
 
-  /// In-app + system notification (system when systemNotify is on), through the shared queue. Its own identity
-  /// (media key + release kind) keeps it apart from every other notification.
+  /// In-app + system notification (system when systemNotify is on), stored at once (no queue debounce) so that it is
+  /// written before the alert is saved as announced. Its own identity (media key + release kind) keeps it apart
+  /// from every other notification.
   private func post(_ entry: MovieAlertEntry, kind: MovieRelease.Kind, message: String, now: Date) {
     let notification = MediaNotification(
       mediaId: entry.tmdbId,
@@ -290,7 +298,7 @@ final class MovieAlertsService {
       read: false,
       release: kind.rawValue
     )
-    AppNotificationsService.shared.queue(notification, systemNotify: AppSettings.shared.values.systemNotify)
+    AppNotificationsService.shared.addNow(notification, systemNotify: AppSettings.shared.values.systemNotify)
   }
 
   private func save() {
