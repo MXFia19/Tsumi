@@ -9,7 +9,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.4.3"
+    MARKETING_VERSION: "1.4.4"
     CURRENT_PROJECT_VERSION: "1"
 packages:
   # Native WebRTC (binary xcframework of Google libwebrtc), used by Watch Together data channels.
