@@ -8,7 +8,7 @@
   import { playDownloadedIfAvailable } from '@/modules/downloads/downloads.js'
   import { preferredSources } from '@/modules/sora/searchsource.js'
   import { resultModule, resultEpisodes } from '@/modules/sora/resultpage.js'
-  import { episodeFor, playableMedia } from '@/modules/sora/moduleresult.js'
+  import { episodeFor, playableMedia, episodeName } from '@/modules/sora/moduleresult.js'
   import { toast } from 'svelte-sonner'
   import Debug from 'debug'
   const debug = Debug('ui:extension-modal')
@@ -62,6 +62,8 @@
       if (signal.aborted) return
       const episode = episodeFor(episodes, number)
       if (!episode) throw new Error(`${media.sora.extensionName} has no episode ${number} for this result`)
+      // With seasons, the number played is the place in the list: the message gives the season and its number.
+      if (episode.season != null) toast.loading(`Loading ${episodeName(episode)} of "${media.sora.title}"…`, { id: toastId })
       const raw = await callExtension(ext, 'extractStreamUrl', [episode.href], { signal })
       if (signal.aborted) return
       const streamData = streamFrom(raw)

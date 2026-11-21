@@ -1,6 +1,6 @@
 // Module results opened as they are, pure logic. Run with: node common/modules/sora/moduleresult.test.mjs
 import assert from 'node:assert/strict'
-import { linksResults, moduleEpisodes, moduleDetails, episodeLabel, playableMedia, episodeFor } from './moduleresult.js'
+import { linksResults, moduleEpisodes, moduleDetails, episodeLabel, playableMedia, episodeFor, moduleSeasons, seasonLabel, startSeason, episodeName } from './moduleresult.js'
 
 let passed = 0
 let failed = 0
@@ -32,9 +32,9 @@ test('moduleEpisodes: links once, the module numbers when all different whole nu
     { href: 'https://v.example/5', number: 5 }
   ])
   assert.deepEqual(moduleEpisodes(raw), [
-    { href: 'https://v.example/1', number: 1, title: '' },
-    { href: 'https://v.example/2', number: 2, title: 'Second' },
-    { href: 'https://v.example/5', number: 5, title: '' }
+    { href: 'https://v.example/1', number: 1, title: '', season: null, seasonEpisode: 1 },
+    { href: 'https://v.example/2', number: 2, title: 'Second', season: null, seasonEpisode: 2 },
+    { href: 'https://v.example/5', number: 5, title: '', season: null, seasonEpisode: 5 }
   ])
 })
 
@@ -80,6 +80,72 @@ test('episodeFor: exact number only', () => {
   assert.equal(episodeFor(episodes, '1').href, 'a')
   assert.equal(episodeFor(episodes, 3), null)
   assert.equal(episodeFor([{ number: 5, href: 'only' }], 4), null)
+})
+
+test('moduleEpisodes: seasons where the numbers start again, played by their place in the list', () => {
+  const list = [1, 2, 3, 1, 2, 0, 1].map((number, index) => ({ href: `h${index}`, number }))
+  const episodes = moduleEpisodes(list)
+  assert.deepEqual(episodes.map(episode => episode.number), [1, 2, 3, 4, 5, 6, 7])
+  assert.deepEqual(episodes.map(episode => episode.season), [1, 1, 1, 2, 2, 3, 3])
+  assert.deepEqual(episodes.map(episode => episode.seasonEpisode), [1, 2, 3, 1, 2, 0, 1])
+  assert.equal(episodeLabel(episodes[3], episodes.length), 'Episode 1')
+})
+
+test('moduleEpisodes: seasons given by the module win', () => {
+  const episodes = moduleEpisodes([
+    { href: 'a', number: 1, season: 1 },
+    { href: 'b', number: 2, season: '1' },
+    { href: 'c', number: 3, season: 2 },
+    { href: 'd', number: 4, season: 2 },
+    { href: 'e', number: 1, season: 0 }
+  ])
+  assert.deepEqual(episodes.map(episode => episode.season), [1, 1, 2, 2, 0])
+  assert.deepEqual(episodes.map(episode => episode.seasonEpisode), [1, 2, 3, 4, 1])
+  // The numbers repeat (1 twice): played by place.
+  assert.deepEqual(episodes.map(episode => episode.number), [1, 2, 3, 4, 5])
+  // One season given for all: no season picker.
+  assert.deepEqual(moduleEpisodes([{ href: 'a', number: 1, season: 2 }, { href: 'b', number: 2, season: 2 }]).map(episode => episode.season), [null, null])
+})
+
+test('moduleEpisodes: no seasons for lists numbered downwards or without a restart at 0 / 1', () => {
+  const seasons = (numbers) => moduleEpisodes(numbers.map((number, index) => ({ href: `h${index}`, number }))).map(episode => episode.season)
+  // Newest first: would start a season at every episode.
+  assert.deepEqual(seasons([5, 4, 3, 2, 1]), [null, null, null, null, null])
+  assert.deepEqual(seasons([3, 2, 1, 3, 2, 1]), [null, null, null, null, null, null])
+  // A number out of order is not a new season.
+  assert.deepEqual(seasons([1, 2, 4, 3, 5]), [null, null, null, null, null])
+  // No numbers.
+  assert.deepEqual(seasons([undefined, undefined]), [null, null])
+  // Missing numbers do not break a season.
+  assert.deepEqual(seasons([1, 2, undefined, 1, 2, 3]), [1, 1, 1, 2, 2, 2])
+})
+
+test('moduleSeasons / seasonLabel / startSeason', () => {
+  const episodes = moduleEpisodes([
+    { href: 'e', number: 1, season: 0 },
+    { href: 'a', number: 1, season: 2 },
+    { href: 'b', number: 1, season: 1 },
+    { href: 'c', number: 2, season: 1 }
+  ])
+  const groups = moduleSeasons(episodes)
+  assert.deepEqual(groups.map(group => group.season), [1, 2, 0])
+  assert.deepEqual(groups[0].episodes.map(episode => episode.href), ['b', 'c'])
+  assert.equal(seasonLabel(2), 'Season 2')
+  assert.equal(seasonLabel(0), 'Specials')
+  assert.equal(episodeName({ number: 7, season: 2, seasonEpisode: 1 }), 'S2E1')
+  assert.equal(episodeName({ number: 9, season: 0, seasonEpisode: 1 }), 'special 1')
+  assert.equal(episodeName({ number: 3, season: null, seasonEpisode: 3 }), 'episode 3')
+  assert.equal(episodeName({ number: 4 }), 'episode 4')
+  const flat = moduleSeasons(moduleEpisodes([{ href: 'x', number: 1 }, { href: 'y', number: 2 }]))
+  assert.deepEqual(flat.map(group => [group.season, group.episodes.length]), [[null, 2]])
+  assert.deepEqual(moduleSeasons([]), [])
+  // Opens on the last season with an episode started, else the first.
+  const startedNumbers = (numbers) => (number) => numbers.includes(number)
+  const byHref = Object.fromEntries(episodes.map(episode => [episode.href, episode.number]))
+  assert.equal(startSeason(groups, startedNumbers([])), 1)
+  assert.equal(startSeason(groups, startedNumbers([byHref.b, byHref.a])), 2)
+  assert.equal(startSeason(flat, () => false), null)
+  assert.equal(startSeason([], () => false), null)
 })
 
 console.log(`\n${passed} passed, ${failed} failed`)

@@ -19,7 +19,7 @@ struct DefaultLoadingView: View {
         .multilineTextAlignment(.center)
         .lineLimit(2)
         .padding(.bottom, 5)
-      Text("Episode \(model.episode.number)")
+      Text(model.episodeName ?? "Episode \(model.episode.number)")
         .font(.subheadline)
         .foregroundStyle(ExtensionPalette.muted)
       Text(model.statusText)

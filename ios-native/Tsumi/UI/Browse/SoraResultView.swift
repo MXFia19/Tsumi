@@ -21,6 +21,8 @@ final class SoraResultModel {
   let media: Media
   private(set) var details: SoraResultDetails?
   private(set) var phase: EpisodesPhase = .loading
+  /// Season picked in the season picker (results with seasons, SoraResultSource.seasons).
+  var selectedSeason: Int?
 
   @ObservationIgnored private var started = false
   @ObservationIgnored private var token = 0
@@ -57,6 +59,9 @@ final class SoraResultModel {
       do {
         let list = try await SoraResultSource.episodes(result)
         guard let self, current == self.token else { return }
+        // Opens on the season of the last episode started here.
+        let progress = self.progress
+        self.selectedSeason = SoraResultSource.startSeason(SoraResultSource.seasons(of: list)) { progress[$0] != nil }
         self.phase = .loaded(list)
       } catch {
         guard let self, current == self.token, !PlaybackResolver.isCancellation(error) else { return }
@@ -207,13 +212,41 @@ struct SoraResultView: View {
 
   private func episodeList(_ list: [SoraResultEpisode]) -> some View {
     let progress = model.progress
+    let groups = SoraResultSource.seasons(of: list)
+    let shown = groups.first { $0.season == model.selectedSeason } ?? groups[0]
     return VStack(alignment: .leading, spacing: 10) {
       Text("Episodes")
         .font(.headline)
         .foregroundStyle(.white)
+      if groups.count > 1 {
+        seasonPicker(groups, selected: shown.season)
+      }
       LazyVStack(spacing: 8) {
-        ForEach(list) { episode in
-          row(episode, label: "Episode \(episode.number)", progress: progress)
+        ForEach(groups.count > 1 ? shown.episodes : list) { episode in
+          row(episode, label: "Episode \(episode.seasonEpisode)", progress: progress)
+        }
+      }
+    }
+  }
+
+  /// Seasons of the result (the module's `season`, or its numbers starting again), like the PC module page.
+  private func seasonPicker(_ groups: [SoraResultSeason], selected: Int?) -> some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 8) {
+        ForEach(groups) { group in
+          let isSelected = group.season == selected
+          Button {
+            model.selectedSeason = group.season
+          } label: {
+            Text(group.label)
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(.white)
+              .padding(.horizontal, 14)
+              .padding(.vertical, 8)
+              .background(isSelected ? BrowsePalette.tertiary : BrowsePalette.card, in: Capsule())
+          }
+          .buttonStyle(.plain)
+          .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         }
       }
     }

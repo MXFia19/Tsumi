@@ -8,10 +8,14 @@ final class DefaultLoadingModel {
   let media: Media
   let episode: EpisodeRef
   var statusText = "Connecting to extension..."
+  /// Episode shown instead of "Episode N": a module result with seasons plays by its place in the list, the dialog
+  /// names its season and number ("S2E1", SoraResultEpisode.seasonName).
+  let episodeName: String?
 
-  init(media: Media, episode: EpisodeRef) {
+  init(media: Media, episode: EpisodeRef, episodeName: String? = nil) {
     self.media = media
     self.episode = episode
+    self.episodeName = episodeName
   }
 
   var title: String { ExtensionContext.shared.displayTitle(media) }
@@ -268,7 +272,7 @@ final class PlaybackRequestCoordinator {
   /// is searched: a failure is shown as a toast and the module page stays.
   func playSoraResult(_ media: Media, episode: SoraResultEpisode, source: PlaybackSource) {
     cancelRunningWork()
-    let model = DefaultLoadingModel(media: media, episode: episode.ref)
+    let model = DefaultLoadingModel(media: media, episode: episode.ref, episodeName: episode.seasonName)
     presentation = PlaybackRequestPresentation(kind: .loading(model))
     task = Task { [weak self] in await self?.playSoraEpisode(model, episodeHref: episode.href, source: source) }
   }

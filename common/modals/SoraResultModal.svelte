@@ -5,7 +5,7 @@
   import { click } from '@/modules/click.js'
   import { playAnime } from '@/modals/extension/ExtensionModal.svelte'
   import { resultEpisodes, resultDetails, forgetEpisodes } from '@/modules/sora/resultpage.js'
-  import { episodeLabel } from '@/modules/sora/moduleresult.js'
+  import { episodeLabel, moduleSeasons, seasonLabel, startSeason } from '@/modules/sora/moduleresult.js'
   import { getAnimeProgress } from '@/modules/anime/animeprogress.js'
   import { X, Play, Loader, CircleAlert, RefreshCw, Puzzle } from 'lucide-svelte'
 
@@ -22,12 +22,18 @@
   let error = ''
   let details = { description: '', airdate: '' }
   let detailsController = null
+  /** Season picked in the season picker (results with seasons, sora/moduleresult.js moduleEpisodes). */
+  let season = null
 
   $: if (media?.id !== loadedFor) load(media)
+  $: seasons = moduleSeasons(episodes)
+  $: shownSeason = seasons.find(group => group.season === season) || seasons[0]
+  $: shown = seasons.length > 1 ? shownSeason.episodes : episodes
 
   async function load (target) {
     loadedFor = target?.id
     episodes = []
+    season = null
     error = ''
     details = { description: '', airdate: '' }
     detailsController?.abort()
@@ -38,7 +44,11 @@
     loading = true
     try {
       const list = await resultEpisodes(target)
-      if (loadedFor === target.id) episodes = list
+      if (loadedFor === target.id) {
+        // Opens on the season of the last episode started here.
+        season = startSeason(moduleSeasons(list), number => !!getAnimeProgress({ mediaId: target.id, episode: number })?.currentTime)
+        episodes = list
+      }
     } catch (err) {
       if (loadedFor === target.id) error = err?.message || String(err)
     } finally {
@@ -108,8 +118,16 @@
           {:else if !episodes.length}
             <div class='text-muted font-scale-16'>No episodes found</div>
           {:else}
+            {#if seasons.length > 1}
+              <div class='d-flex flex-wrap mb-5' role='tablist' aria-label='Seasons'>
+                {#each seasons as group (group.season)}
+                  {@const selected = group === shownSeason}
+                  <button type='button' role='tab' aria-selected={selected} class='season btn btn-sm rounded-2 mr-10 mb-10 font-scale-16' class:selected class:bg-dark-light={!selected} use:click={() => { season = group.season }}>{seasonLabel(group.season)}</button>
+                {/each}
+              </div>
+            {/if}
             <div class='episodes'>
-              {#each episodes as episode (episode.href)}
+              {#each shown as episode (episode.href)}
                 {@const progress = watched(episode.number)}
                 <button type='button' class='btn bg-dark-light d-flex align-items-center rounded-2 px-15 py-10 h-auto text-left position-relative overflow-hidden' use:click={() => playAnime(media, { number: episode.number })} title={episodeLabel(episode, episodes.length)}>
                   <Play size='1.6rem' class='mr-10 flex-shrink-0' fill='currentColor' />
@@ -151,6 +169,10 @@
   .watched {
     height: .3rem;
     background: var(--accent-color);
+  }
+  .season.selected {
+    background: var(--accent-color);
+    color: var(--white-color);
   }
   .episodes {
     display: grid;
