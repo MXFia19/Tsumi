@@ -61,7 +61,7 @@ settings, migrated once from the old UserDefaults keys) and `ServiceSettingsExtr
 | 1.2 | `getDistanceFromTitle` (Levenshtein, synonyms +2) | AL 26-33 | `AniListParser.distance`, `ServiceText.levenshtein` | done |
 | 1.3 | `queryObjects` media fields (titles, dates, tags, cover, airing schedule, list entry, relations, streaming episodes, trailer, stats...) | AL 35-134 | `AniListService.baseMediaFields` + `AniListParser.media` → `Media` + `MediaExtras` | done |
 | 1.4 | `queryComplexObjects` (studios, recommendations) with `queryComplexity` | AL 136-153, 409 | `AniListService.complexMediaFields`, added by `mediaFields` when `SettingsValues.queryComplexity` is "Complex" (default); "Simple" leaves them out and `recommendationIds(id:)` fetches recommendations on demand | done (Simple results use their own cache keys, so switching back to Complex does not reuse pages without studios) |
-| 1.5 | Bottleneck limiter (90 / min, 10 concurrent, 100 ms) | AL 156-162 | `ServiceRateLimiter(capacity: 90, interval: 60, minSpacing: 0.1)` | done (no concurrency cap, spacing only) |
+| 1.5 | Bottleneck limiter (90 / min, 10 concurrent, 100 ms), mutations with priority 0 | AL 156-162, 309 | `ServiceRateLimiter(capacity: 90, interval: 60, minSpacing: 0.1, urgentReserve: 5)`, mutations `acquire(urgent: true)` (first in line, 5 of each window kept for them) | done (no concurrency cap, spacing only; the reserve is iOS only) |
 | 1.6 | `failed` handler: 429 Retry-After +1 s, 500 retry, offline stop, error toast | AL 173-185 | `AniListService.request` (pause limiter, up to 4 attempts, offline throws, `ServiceMessages` toast) | done |
 | 1.7 | `handleRequest`: fetch, JSON, error toasts "Search Failed" | AL 212-242 | `AniListService.request` | done (muted during an AniList outage, see 13.9) |
 | 1.8 | `alRequest`: default `page 1 / perPage 50 / sort TRENDING_DESC`, `sort: 'OMIT'`, Authorization token | AL 248-277 | `AniListVariables` defaults (`sort == nil` = OMIT), `request(token:)` | done (sends `Bearer <token>`, the documented AniList format) |
@@ -99,7 +99,7 @@ settings, migrated once from the old UserDefaults keys) and `ServiceSettingsExtr
 |---|---|---|---|---|
 | 2.1 | Client id (base64) | MAL 13 | `MyAnimeListService.clientID` | done |
 | 2.2 | `queryFields` | MAL 15-38 | `MyAnimeListService.queryFields` | done |
-| 2.3 | Limiter 20 / 4 s, 2 concurrent, 1 s spacing, failed handler (Retry-After, 500) | MAL 41-68 | `ServiceRateLimiter(capacity: 20, interval: 4, minSpacing: 1)` in `request` | done |
+| 2.3 | Limiter 20 / 4 s, 2 concurrent, 1 s spacing, failed handler (Retry-After, 500) | MAL 41-68 | `ServiceRateLimiter(capacity: 20, interval: 4, minSpacing: 1, urgentReserve: 2)` in `request`, list changes (not GET) urgent | done |
 | 2.4 | User lists loaded at start and refreshed every 15 min | MAL 70-77 | `MediaListService.start()` | done |
 | 2.5 | `malRequest` (Bearer token, form body) | MAL 84-98 | `MyAnimeListService.request` | done |
 | 2.6 | `handleRequest`: skip failed refresh / reauth profiles, refresh before `refresh_in`, invalid_token → refresh + retry, error toasts | MAL 109-170 | `MyAnimeListService.request` | done |

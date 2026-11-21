@@ -206,11 +206,12 @@ struct BrowseListEditor: View {
     // title without an episode count has a limit of 0, which turned progress 40 into 0 on a score change).
     let savedProgress = progress == initialProgress ? progress : min(max(progress, 0), max(progressLimit, 0))
     let values = (progress: savedProgress, score: score, repeatCount: repeatCount)
+    // Like the PC editor (Scoring.svelte toggleModal): the sheet closes at once and the change is saved meanwhile,
+    // with a toast when AniList / MyAnimeList answered. It stayed open until the other profiles were synced too.
     Task { @MainActor in
       await MediaListService.shared.save(target, status: status, progress: values.progress, score: values.score, repeatCount: values.repeatCount)
-      isWorking = false
-      dismiss()
     }
+    dismiss()
   }
 
   private func remove() {
@@ -222,8 +223,7 @@ struct BrowseListEditor: View {
     let target = media
     Task { @MainActor in
       await MediaListService.shared.delete(target)
-      isWorking = false
-      dismiss()
     }
+    dismiss()
   }
 }

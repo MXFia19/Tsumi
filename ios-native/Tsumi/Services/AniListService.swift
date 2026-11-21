@@ -159,7 +159,8 @@ final class AniListService: @unchecked Sendable {
 
   static let endpoint: URL = URL(string: "https://graphql.anilist.co") ?? URL(fileURLWithPath: "/")
 
-  private let limiter = ServiceRateLimiter(capacity: 90, interval: 60, minSpacing: 0.1)
+  /// Mutations (list changes, favourites) are urgent: 5 requests of each window are kept for them.
+  private let limiter = ServiceRateLimiter(capacity: 90, interval: 60, minSpacing: 0.1, urgentReserve: 5)
   private let inflight = ServiceInflight()
   private let batcher = AniListMediaBatcher()
   private let favourites = ServiceLocked<[Int: Bool]>([:])
@@ -388,7 +389,7 @@ final class AniListService: @unchecked Sendable {
     var attempt = 0
     while true {
       attempt += 1
-      await limiter.acquire()
+      await limiter.acquire(urgent: isMutation)
       let (data, response) = try await HTTP.data(Self.endpoint, method: "POST", headers: headers, body: body, timeout: 60, allowErrorStatus: true)
       // The limiter follows the quota AniList reports instead of assuming 90 a minute.
       await limiter.observe(

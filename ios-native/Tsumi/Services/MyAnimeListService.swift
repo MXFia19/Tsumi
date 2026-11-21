@@ -68,7 +68,8 @@ final class MyAnimeListService: @unchecked Sendable {
     "average_episode_duration", "rating"
   ].joined(separator: ",")
 
-  private let limiter = ServiceRateLimiter(capacity: 20, interval: 4, minSpacing: 1)
+  /// List changes (any method but GET) are urgent: they go before the list and search downloads waiting.
+  private let limiter = ServiceRateLimiter(capacity: 20, interval: 4, minSpacing: 1, urgentReserve: 2)
   /// Tokens whose refresh MyAnimeList rejected (invalid_grant): the profile must log in again.
   private let failedRefresh = ServiceLocked<Set<String>>([])
   /// Tokens whose refresh failed for a transient reason (network, 5xx, 429): next attempt not before this date.
@@ -118,7 +119,7 @@ final class MyAnimeListService: @unchecked Sendable {
     var attempt = 0
     while true {
       attempt += 1
-      await limiter.acquire()
+      await limiter.acquire(urgent: method != "GET")
       let (data, response) = try await HTTP.data(url, method: method, headers: headers, body: body, timeout: 60, allowErrorStatus: true)
       if response.statusCode == 429 || response.statusCode == 500 {
         if attempt >= 4 {

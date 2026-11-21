@@ -306,6 +306,8 @@ class AnilistClient {
       options.sessionExpired = true
     }
 
+    // A list change (status, progress, favourite) goes before the queries waiting for the rate limit, like iOS.
+    if (isMutationBody(options.body)) return this.handleRequest.withOptions({ priority: 0 }, options)
     return this.handleRequest(options)
   }
 

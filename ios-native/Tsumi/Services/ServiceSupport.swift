@@ -58,31 +58,45 @@ actor ServiceRateLimiter {
   private var capacity: Int
   private let interval: TimeInterval
   private let minSpacing: TimeInterval
+  /// Requests of each window left to the urgent ones (a third of the window at most): background requests (home
+  /// sections, schedule, details) stop before them, so a list change never waits for the next window.
+  private let urgentReserve: Int
   private var tokens: Int
   private var windowStart: Date = Date()
   private var nextSlot: Date = .distantPast
   private var pausedUntil: Date = .distantPast
+  /// Urgent requests waiting for a slot: they get it before the background ones.
+  private var urgentWaiting = 0
 
-  init(capacity: Int, interval: TimeInterval, minSpacing: TimeInterval) {
+  init(capacity: Int, interval: TimeInterval, minSpacing: TimeInterval, urgentReserve: Int = 0) {
     self.capacity = capacity
     self.interval = interval
     self.minSpacing = minSpacing
+    self.urgentReserve = urgentReserve
     self.tokens = capacity
   }
 
-  /// Waits until a request may be sent.
-  func acquire() async {
+  /// Waits until a request may be sent. `urgent`: a request the user waits for (a list change): it goes before the
+  /// waiting background requests and may use the reserve. A status change used to wait in line behind dozens of
+  /// queries, a minute or more once AniList's quota (30 a minute when degraded) was used up.
+  func acquire(urgent: Bool = false) async {
+    if urgent { urgentWaiting += 1 }
+    defer { if urgent { urgentWaiting -= 1 } }
     while true {
       let now = Date()
       if now.timeIntervalSince(windowStart) >= interval {
         tokens = capacity
         windowStart = now
       }
+      let reserve = urgent ? 0 : min(urgentReserve, capacity / 3)
       var wait: TimeInterval = 0
       if pausedUntil > now {
         wait = pausedUntil.timeIntervalSince(now)
-      } else if tokens <= 0 {
+      } else if tokens <= reserve {
         wait = interval - now.timeIntervalSince(windowStart)
+      } else if !urgent && urgentWaiting > 0 {
+        // The next slot is an urgent request's.
+        wait = max(minSpacing, 0.05)
       } else if nextSlot > now {
         wait = nextSlot.timeIntervalSince(now)
       }
