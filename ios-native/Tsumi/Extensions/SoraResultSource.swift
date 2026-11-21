@@ -148,14 +148,16 @@ enum SoraResultSource {
     return Int(value)
   }
 
-  /// Number of an episode title that only says "Episode N" ("Épisode 12.5" for a special), else nil
-  /// (moduleresult.js labelNumber).
+  /// Number of an episode title that only says "Episode N" ("Épisode 12.5", "Épisode SP" for a special), else nil
+  /// (moduleresult.js labelNumber): a number right after the word, or a word after a space ("Episodes" is none).
   static func labelNumber(_ title: String?) -> String? {
     guard let title else { return nil }
     let lower = title.lowercased()
     guard let prefix = ["épisode", "episode"].first(where: { lower.hasPrefix($0) }) else { return nil }
-    let rest = String(title.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-    guard let first = rest.unicodeScalars.first, CharacterSet.decimalDigits.contains(first),
+    let after = title.dropFirst(prefix.count)
+    let rest = String(after).trimmingCharacters(in: .whitespaces)
+    guard let first = rest.unicodeScalars.first,
+          CharacterSet.decimalDigits.contains(first) || (after.first?.isWhitespace == true && CharacterSet.letters.contains(first)),
           rest.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || "._-".unicodeScalars.contains($0) })
     else { return nil }
     return rest

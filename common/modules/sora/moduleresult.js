@@ -131,9 +131,10 @@ export function seasonLabel (season, title) {
   return season === 0 ? 'Specials' : `Season ${season}`
 }
 
-/** Number of an episode title that only says "Episode N" ("Épisode 12.5" for a special), else null. */
+/** Number of an episode title that only says "Episode N" ("Épisode 12.5", "Épisode SP" for a special), else null. */
 function labelNumber (title) {
-  return /^[ée]pisode\s*(\d[\w.-]*)$/i.exec(title || '')?.[1] ?? null
+  const match = /^[ée]pisode(?:\s*(\d[\w.-]*)|\s+([a-z][\w.-]*))$/i.exec(title || '')
+  return match ? (match[1] ?? match[2]) : null
 }
 
 /**

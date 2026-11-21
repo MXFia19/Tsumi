@@ -145,6 +145,9 @@ test('episodeLabel: a title that only says "Episode N" gives the number', () => 
   assert.equal(episodeLabel({ number: 14, seasonEpisode: 14, title: 'Épisode 13' }, 30), 'Episode 13')
   assert.equal(episodeLabel({ number: 1, seasonEpisode: 1, title: 'Memory Snow' }, 2), 'Episode 1 - Memory Snow')
   assert.equal(episodeLabel({ number: 2, seasonEpisode: 2, title: 'Episodes' }, 2), 'Episode 2 - Episodes')
+  assert.equal(episodeLabel({ number: 24, seasonEpisode: 24, title: 'Épisode SP' }, 24), 'Episode SP')
+  assert.equal(episodeLabel({ number: 1, seasonEpisode: 1, title: 'Épisode 0' }, 13), 'Episode 0')
+  assert.equal(episodeLabel({ number: 3, seasonEpisode: 3, title: 'Episode3' }, 5), 'Episode 3')
 })
 
 test('moduleSeasons / seasonLabel / startSeason', () => {
