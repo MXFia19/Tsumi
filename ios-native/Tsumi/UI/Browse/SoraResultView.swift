@@ -223,13 +223,14 @@ struct SoraResultView: View {
       }
       LazyVStack(spacing: 8) {
         ForEach(groups.count > 1 ? shown.episodes : list) { episode in
-          row(episode, label: "Episode \(episode.seasonEpisode)", progress: progress)
+          row(episode, label: "Episode \(episode.shownNumber)", progress: progress)
         }
       }
     }
   }
 
-  /// Seasons of the result (the module's `season`, or its numbers starting again), like the PC module page.
+  /// Seasons of the result (the module's season names, its `season`, or its numbers starting again), like the PC
+  /// module page.
   private func seasonPicker(_ groups: [SoraResultSeason], selected: Int?) -> some View {
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 8) {
@@ -254,7 +255,7 @@ struct SoraResultView: View {
 
   private func row(_ episode: SoraResultEpisode, label: String, progress: [Int: Int]) -> some View {
     let percent = progress[episode.number] ?? 0
-    let spokenLabel: String = episode.title.map { "\(label), \($0)" } ?? label
+    let spokenLabel: String = episode.subtitle.map { "\(label), \($0)" } ?? label
     let spokenValue: String = percent > 0 ? "\(percent)% watched" : ""
     return Button {
       model.play(episode)
@@ -269,7 +270,7 @@ struct SoraResultView: View {
           Text(label)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white)
-          if let title = episode.title {
+          if let title = episode.subtitle {
             Text(title)
               .font(.footnote)
               .foregroundStyle(BrowsePalette.muted)

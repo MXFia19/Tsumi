@@ -203,7 +203,8 @@ enum ExtensionCalls {
         number: ExtensionJSON.number(object["number"]),
         season: ExtensionJSON.isNullish(object["season"]) ? nil : ExtensionJSON.number(object["season"]),
         title: ExtensionJSON.string(object["title"]),
-        href: ExtensionJSON.string(object["href"]) ?? ""
+        href: ExtensionJSON.string(object["href"]) ?? "",
+        seasonTitle: (object["seasonTitle"] as? String) ?? (object["seasonName"] as? String)
       )
     }
   }

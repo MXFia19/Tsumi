@@ -122,7 +122,7 @@
               <div class='d-flex flex-wrap mb-5' role='tablist' aria-label='Seasons'>
                 {#each seasons as group (group.season)}
                   {@const selected = group === shownSeason}
-                  <button type='button' role='tab' aria-selected={selected} class='season btn btn-sm rounded-2 mr-10 mb-10 font-scale-16' class:selected class:bg-dark-light={!selected} use:click={() => { season = group.season }}>{seasonLabel(group.season)}</button>
+                  <button type='button' role='tab' aria-selected={selected} class='season btn btn-sm rounded-2 mr-10 mb-10 font-scale-16' class:selected class:bg-dark-light={!selected} use:click={() => { season = group.season }}>{seasonLabel(group.season, group.title)}</button>
                 {/each}
               </div>
             {/if}

@@ -43,15 +43,22 @@ function seasonsOf (entries) {
   return seasons
 }
 
+/** Name of the season given by the module (`seasonTitle`, or `seasonName`), '' when none. */
+function seasonTitleOf (entry) {
+  const value = typeof entry.seasonTitle === 'string' ? entry.seasonTitle : typeof entry.seasonName === 'string' ? entry.seasonName : ''
+  return value.trim().slice(0, 80)
+}
+
 /**
  * Episodes of an `extractEpisodes` answer (a JSON text or an array): entries with a link, once per link, in the
  * module's order. The module's numbers are kept when they are all different whole numbers; otherwise (no number,
  * seasons starting again at 1...) the episodes are numbered 1, 2, 3... in the list order, so a number (playback, saved
- * position, next episode) always means one episode. With seasons (`season` of the module, or numbers starting again),
- * each episode also has its season and its number in that season (`seasonEpisode`, shown on the module page). Like
- * iOS SoraResultSource.
+ * position, next episode) always means one episode. With seasons, each episode also has its season and its number in
+ * that season (`seasonEpisode`, shown on the module page). Seasons come from the season names of the module
+ * (`seasonTitle` on every episode: "Saison 1", "Films", "Kai"... in the module's order), else from its `season`
+ * numbers or its numbers starting again. Like iOS SoraResultSource.
  * @param {any} raw
- * @returns {{ href: string, number: number, title: string, season: number | null, seasonEpisode: number }[]}
+ * @returns {{ href: string, number: number, title: string, season: number | null, seasonTitle: string | null, seasonEpisode: number }[]}
  */
 export function moduleEpisodes (raw) {
   let parsed = raw
@@ -72,11 +79,14 @@ export function moduleEpisodes (raw) {
     const title = typeof entry.title === 'string' ? entry.title.trim().slice(0, 200) : ''
     const number = entry.number == null || entry.number === '' ? NaN : Number(entry.number)
     const season = entry.season == null || entry.season === '' ? NaN : Number(entry.season)
-    episodes.push({ href, number, title, season })
+    episodes.push({ href, number, title, season, seasonTitle: seasonTitleOf(entry) })
   }
   const numbers = episodes.map(episode => episode.number)
   const own = numbers.every(number => Number.isInteger(number) && number >= 0) && new Set(numbers).size === numbers.length
-  const seasons = seasonsOf(episodes)
+  // Named seasons: every episode has a season name, and there are several. Numbered 1, 2, 3... in the module's order.
+  const names = episodes.map(episode => episode.seasonTitle)
+  const named = names.length > 0 && names.every(Boolean) && new Set(names).size > 1 ? [...new Set(names)] : null
+  const seasons = named ? names.map(name => named.indexOf(name) + 1) : seasonsOf(episodes)
   /** season -> episodes of it so far (number in the season when the module gives none) */
   const counts = new Map()
   return episodes.map((episode, index) => {
@@ -85,16 +95,17 @@ export function moduleEpisodes (raw) {
     const place = (counts.get(season) || 0) + 1
     counts.set(season, place)
     const seasonEpisode = season == null ? number : (whole(episode.number) ?? place)
-    return { href: episode.href, number, title: episode.title, season, seasonEpisode }
+    return { href: episode.href, number, title: episode.title, season, seasonTitle: named ? episode.seasonTitle : null, seasonEpisode }
   })
 }
 
 /**
  * Episodes of a module result by season, for the season picker of the module page: seasons in order, specials
- * (season 0) last. One group with season null when the result has no seasons.
- * @template {{ season?: number | null }} T
+ * (season 0) last, with the module's season name when it gives one. One group with season null when the result has
+ * no seasons.
+ * @template {{ season?: number | null, seasonTitle?: string | null }} T
  * @param {T[]} episodes
- * @returns {{ season: number | null, episodes: T[] }[]}
+ * @returns {{ season: number | null, title: string | null, episodes: T[] }[]}
  */
 export function moduleSeasons (episodes) {
   /** @type {Map<number | null, T[]>} */
@@ -105,20 +116,42 @@ export function moduleSeasons (episodes) {
     groups.get(season).push(episode)
   }
   const order = (season) => (season === 0 ? Infinity : season ?? -1)
-  return [...groups].map(([season, list]) => ({ season, episodes: list })).sort((a, b) => order(a.season) - order(b.season))
+  return [...groups]
+    .map(([season, list]) => ({ season, title: list[0].seasonTitle || null, episodes: list }))
+    .sort((a, b) => order(a.season) - order(b.season))
 }
 
-/** Name of a season in the picker. */
-export function seasonLabel (season) {
+/**
+ * Name of a season in the picker: the module's name, else "Season N" ("Specials" for 0).
+ * @param {number | null} season
+ * @param {string | null} [title]
+ */
+export function seasonLabel (season, title) {
+  if (title) return title
   return season === 0 ? 'Specials' : `Season ${season}`
+}
+
+/** Number of an episode title that only says "Episode N" ("Épisode 12.5" for a special), else null. */
+function labelNumber (title) {
+  return /^[ée]pisode\s*(\d[\w.-]*)$/i.exec(title || '')?.[1] ?? null
+}
+
+/**
+ * Number shown for an episode: the one of its title when the title only says "Episode N" (a module numbering its
+ * specials 12.5 and the next episodes after them), else its number in its season.
+ * @param {{ number: number, title?: string, seasonEpisode?: number }} episode
+ */
+function shownNumber (episode) {
+  return labelNumber(episode.title) ?? episode.seasonEpisode ?? episode.number
 }
 
 /**
  * Short name of an episode in messages ("Loading S2E1..."): with its season when the result has seasons.
- * @param {{ number: number, season?: number | null, seasonEpisode?: number }} episode
+ * @param {{ number: number, title?: string, season?: number | null, seasonTitle?: string | null, seasonEpisode?: number }} episode
  */
 export function episodeName (episode) {
-  const number = episode.seasonEpisode ?? episode.number
+  const number = shownNumber(episode)
+  if (episode.seasonTitle) return `${episode.seasonTitle} · episode ${number}`
   if (episode.season == null) return `episode ${number}`
   return episode.season === 0 ? `special ${number}` : `S${episode.season}E${number}`
 }
@@ -162,14 +195,15 @@ export function moduleDetails (raw) {
 
 /**
  * Button text of an episode: "Play" for a result with one episode (a video, a stream), else "Episode N" (its number
- * in its season when the result has seasons) and the episode title when the module gives one.
+ * in its season when the result has seasons, or the number of a title that only says "Episode N") and the episode
+ * title when the module gives one.
  * @param {{ number: number, title: string, seasonEpisode?: number }} episode
  * @param {number} count episodes of the result
  */
 export function episodeLabel (episode, count) {
   if (count === 1) return 'Play'
-  const title = episode.title && !/^episode\s*\d+$/i.test(episode.title) ? ` - ${episode.title}` : ''
-  return `Episode ${episode.seasonEpisode ?? episode.number}${title}`
+  const title = episode.title && labelNumber(episode.title) == null ? ` - ${episode.title}` : ''
+  return `Episode ${shownNumber(episode)}${title}`
 }
 
 /**

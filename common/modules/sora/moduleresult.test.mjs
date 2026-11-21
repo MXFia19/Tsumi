@@ -32,9 +32,9 @@ test('moduleEpisodes: links once, the module numbers when all different whole nu
     { href: 'https://v.example/5', number: 5 }
   ])
   assert.deepEqual(moduleEpisodes(raw), [
-    { href: 'https://v.example/1', number: 1, title: '', season: null, seasonEpisode: 1 },
-    { href: 'https://v.example/2', number: 2, title: 'Second', season: null, seasonEpisode: 2 },
-    { href: 'https://v.example/5', number: 5, title: '', season: null, seasonEpisode: 5 }
+    { href: 'https://v.example/1', number: 1, title: '', season: null, seasonTitle: null, seasonEpisode: 1 },
+    { href: 'https://v.example/2', number: 2, title: 'Second', season: null, seasonTitle: null, seasonEpisode: 2 },
+    { href: 'https://v.example/5', number: 5, title: '', season: null, seasonTitle: null, seasonEpisode: 5 }
   ])
 })
 
@@ -120,6 +120,33 @@ test('moduleEpisodes: no seasons for lists numbered downwards or without a resta
   assert.deepEqual(seasons([1, 2, undefined, 1, 2, 3]), [1, 1, 1, 2, 2, 2])
 })
 
+test('moduleEpisodes: season names of the module, in its order', () => {
+  const tab = (seasonTitle, count, extra = {}) => Array.from({ length: count }, (_, index) => ({ href: `${seasonTitle}/${index}`, number: index + 1, title: `Épisode ${index + 1}`, seasonTitle, ...extra }))
+  const episodes = moduleEpisodes([
+    ...tab('Saison 1', 3, { season: 1 }),
+    ...tab("Saison 1 Director's Cut", 2),
+    ...tab('Films', 2, { season: 0 }),
+    ...tab('Saison 2', 2, { season: 2 }),
+    ...tab('Kai', 1)
+  ])
+  assert.deepEqual(episodes.map(episode => episode.season), [1, 1, 1, 2, 2, 3, 3, 4, 4, 5])
+  assert.deepEqual(episodes.map(episode => episode.number), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+  const groups = moduleSeasons(episodes)
+  assert.deepEqual(groups.map(group => seasonLabel(group.season, group.title)), ['Saison 1', "Saison 1 Director's Cut", 'Films', 'Saison 2', 'Kai'])
+  assert.deepEqual(groups[1].episodes.map(episode => episode.seasonEpisode), [1, 2])
+  // seasonName is read too; a single name, or a name missing on an episode: no named seasons.
+  assert.equal(moduleEpisodes([{ href: 'a', number: 1, seasonName: 'A' }, { href: 'b', number: 1, seasonName: 'B' }])[1].seasonTitle, 'B')
+  assert.deepEqual(moduleEpisodes([{ href: 'a', number: 1, seasonTitle: 'A' }, { href: 'b', number: 2, seasonTitle: 'A' }]).map(episode => episode.season), [null, null])
+  assert.deepEqual(moduleEpisodes([{ href: 'a', number: 1, seasonTitle: 'A' }, { href: 'b', number: 2 }]).map(episode => episode.seasonTitle), [null, null])
+})
+
+test('episodeLabel: a title that only says "Episode N" gives the number', () => {
+  assert.equal(episodeLabel({ number: 13, seasonEpisode: 13, title: 'Épisode 12.5' }, 30), 'Episode 12.5')
+  assert.equal(episodeLabel({ number: 14, seasonEpisode: 14, title: 'Épisode 13' }, 30), 'Episode 13')
+  assert.equal(episodeLabel({ number: 1, seasonEpisode: 1, title: 'Memory Snow' }, 2), 'Episode 1 - Memory Snow')
+  assert.equal(episodeLabel({ number: 2, seasonEpisode: 2, title: 'Episodes' }, 2), 'Episode 2 - Episodes')
+})
+
 test('moduleSeasons / seasonLabel / startSeason', () => {
   const episodes = moduleEpisodes([
     { href: 'e', number: 1, season: 0 },
@@ -136,6 +163,7 @@ test('moduleSeasons / seasonLabel / startSeason', () => {
   assert.equal(episodeName({ number: 9, season: 0, seasonEpisode: 1 }), 'special 1')
   assert.equal(episodeName({ number: 3, season: null, seasonEpisode: 3 }), 'episode 3')
   assert.equal(episodeName({ number: 4 }), 'episode 4')
+  assert.equal(episodeName({ number: 14, title: 'Épisode 13', season: 1, seasonTitle: 'Saison 1', seasonEpisode: 14 }), 'Saison 1 · episode 13')
   const flat = moduleSeasons(moduleEpisodes([{ href: 'x', number: 1 }, { href: 'y', number: 2 }]))
   assert.deepEqual(flat.map(group => [group.season, group.episodes.length]), [[null, 2]])
   assert.deepEqual(moduleSeasons([]), [])

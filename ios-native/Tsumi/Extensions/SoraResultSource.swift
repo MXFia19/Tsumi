@@ -15,20 +15,28 @@ struct SoraResultEpisode: Identifiable, Hashable {
   var number: Int
   var title: String?
   var href: String
-  /// Season of the episode when the result has seasons (the module's `season`, or its numbers starting again), nil
-  /// otherwise (SoraResultSource.seasons).
+  /// Season of the episode when the result has seasons (the module's season names, its `season`, or its numbers
+  /// starting again), nil otherwise (SoraResultSource.seasons).
   var season: Int? = nil
-  /// Number shown ("Episode N"): its number in its season when the result has seasons, else `number`.
+  /// Its number in its season when the result has seasons, else `number`.
   var seasonEpisode: Int
+  /// Name of its season given by the module ("Saison 1", "Films"), nil when the seasons have no names.
+  var seasonTitle: String? = nil
 
   var id: String { "\(number)|\(href)" }
   var ref: EpisodeRef { EpisodeRef(number: number, season: nil, localEpisode: nil) }
   /// Entry of the player's episode list.
-  var info: EpisodeInfo { EpisodeInfo(number: number, title: title) }
-  /// Short name with the season ("S2E1", "Special 1"), nil without seasons (moduleresult.js episodeName).
+  var info: EpisodeInfo { EpisodeInfo(number: number, title: subtitle) }
+  /// Number shown ("Episode N"): the one of its title when the title only says "Episode N" (a module numbering its
+  /// specials 12.5 and the next episodes after them), else `seasonEpisode` (moduleresult.js shownNumber).
+  var shownNumber: String { SoraResultSource.labelNumber(title) ?? String(seasonEpisode) }
+  /// Title shown under "Episode N": none when it only says "Episode N".
+  var subtitle: String? { SoraResultSource.labelNumber(title) == nil ? title : nil }
+  /// Short name with the season ("S2E1", "Saison 2 · Episode 1"), nil without seasons (moduleresult.js episodeName).
   var seasonName: String? {
     guard let season else { return nil }
-    return season == 0 ? "Special \(seasonEpisode)" : "S\(season)E\(seasonEpisode)"
+    if let seasonTitle { return "\(seasonTitle) · Episode \(shownNumber)" }
+    return season == 0 ? "Special \(shownNumber)" : "S\(season)E\(shownNumber)"
   }
 }
 
@@ -39,7 +47,9 @@ struct SoraResultSeason: Identifiable, Hashable {
   var episodes: [SoraResultEpisode]
 
   var id: Int { season ?? -1 }
+  /// The module's name of the season, else "Season N" ("Specials" for 0).
   var label: String {
+    if let title = episodes.first?.seasonTitle { return title }
     guard let season else { return "Episodes" }
     return season == 0 ? "Specials" : "Season \(season)"
   }
@@ -102,7 +112,13 @@ enum SoraResultSource {
     let numbers = usable.map { $0.number }
     let allWhole = numbers.allSatisfy { whole($0) != nil }
     let ownNumbers = allWhole && Set(numbers).count == numbers.count
-    let seasonList = seasons(usable)
+    // Named seasons ("Saison 1", "Films", "Kai"): every episode has a season name, and there are several. Numbered 1,
+    // 2, 3... in the module's order (moduleresult.js moduleEpisodes).
+    let names = usable.map { String(($0.seasonTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)) }
+    var order: [String] = []
+    for name in names where !order.contains(name) { order.append(name) }
+    let named = !names.isEmpty && !names.contains("") && order.count > 1
+    let seasonList: [Int]? = named ? names.map { (order.firstIndex(of: $0) ?? 0) + 1 } : seasons(usable)
     /// season -> episodes of it so far (number in the season when the module gives none)
     var counts: [Int: Int] = [:]
     return usable.enumerated().map { index, item in
@@ -120,7 +136,8 @@ enum SoraResultSource {
         title: (title?.isEmpty ?? true) ? nil : title,
         href: item.href,
         season: season,
-        seasonEpisode: seasonEpisode
+        seasonEpisode: seasonEpisode,
+        seasonTitle: named ? names[index] : nil
       )
     }
   }
@@ -129,6 +146,19 @@ enum SoraResultSource {
   private static func whole(_ value: Double?) -> Int? {
     guard let value, value.isFinite, value >= 0, value == value.rounded(), value < 1_000_000 else { return nil }
     return Int(value)
+  }
+
+  /// Number of an episode title that only says "Episode N" ("Épisode 12.5" for a special), else nil
+  /// (moduleresult.js labelNumber).
+  static func labelNumber(_ title: String?) -> String? {
+    guard let title else { return nil }
+    let lower = title.lowercased()
+    guard let prefix = ["épisode", "episode"].first(where: { lower.hasPrefix($0) }) else { return nil }
+    let rest = String(title.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+    guard let first = rest.unicodeScalars.first, CharacterSet.decimalDigits.contains(first),
+          rest.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || "._-".unicodeScalars.contains($0) })
+    else { return nil }
+    return rest
   }
 
   /// Season of each episode, nil when the result has one season only (moduleresult.js seasonsOf). Same rules as the

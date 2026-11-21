@@ -194,6 +194,9 @@ struct ExtensionEpisode {
   var season: Double?
   var title: String?
   var href: String
+  /// Name of the episode's season given by the module (`seasonTitle`, or `seasonName`): "Saison 1", "Films"...
+  /// Shown by the module page of a result opened as it is (SoraResultSource).
+  var seasonTitle: String? = nil
 }
 
 /// Error carrying the same message the Svelte app shows.
