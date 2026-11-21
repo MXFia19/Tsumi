@@ -22,6 +22,14 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.4.3",
+          "date": "2026-11-21T05:28:21Z",
+          "localizedDescription": "Full Changelog: https://github.com/MXFia19/Tsumi/compare/v1.4.2...v1.4.3",
+          "downloadURL": "https://github.com/MXFia19/Tsumi/releases/download/v1.4.3/Tsumi.ipa",
+          "size": 13863781,
+          "minOSVersion": "17.0"
+        },
+        {
           "version": "1.4.2",
           "date": "2026-11-16T18:34:06Z",
           "localizedDescription": "Full Changelog: https://github.com/MXFia19/Tsumi/compare/v1.4.1...v1.4.2",
@@ -52,11 +60,11 @@
           "NSLocalNetworkUsageDescription": "Watch Together connects directly to the other people in your lobby, including devices on the same network."
         }
       },
-      "version": "1.4.2",
-      "versionDate": "2026-11-16T18:34:06Z",
-      "versionDescription": "Full Changelog: https://github.com/MXFia19/Tsumi/compare/v1.4.1...v1.4.2",
-      "downloadURL": "https://github.com/MXFia19/Tsumi/releases/download/v1.4.2/Tsumi.ipa",
-      "size": 13312231
+      "version": "1.4.3",
+      "versionDate": "2026-11-21T05:28:21Z",
+      "versionDescription": "Full Changelog: https://github.com/MXFia19/Tsumi/compare/v1.4.2...v1.4.3",
+      "downloadURL": "https://github.com/MXFia19/Tsumi/releases/download/v1.4.3/Tsumi.ipa",
+      "size": 13863781
     }
   ],
   "news": []
